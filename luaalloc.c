@@ -246,7 +246,7 @@ static Block *_allocblock(u16 nelems, u16 elemsz)
 }
 
 /* Given the sorting order of LA->all, find the right spot to insert p that preserves the sorting order.
-   Returns the address of the block that is <= p.
+   Returns the address of the block that is <= p, or one past the end if no such block was found.
    Use cases:
    1) Pass a block to get the address where this block is stored
    2) Pass any other pointer to get ONE BLOCK PAST the address of the block that would contain it (this is not checked)
@@ -254,7 +254,6 @@ static Block *_allocblock(u16 nelems, u16 elemsz)
 static Block **findspot(LuaAlloc * LA_RESTRICT LA, void * LA_RESTRICT p)
 {
     Block **all = LA->all;
-    //ASSERT(LA->allnum < LA->allcap); /* Must be non-empty and have leftover space */
 
     /* Binary search to find leftmost element */
     size_t L = 0;
@@ -263,7 +262,7 @@ static Block **findspot(LuaAlloc * LA_RESTRICT LA, void * LA_RESTRICT p)
     while(L < R)
     {
         m = (L + R) / 2u;
-        if(all[m] && (void*)all[m] < p) /* NULL block counts as infinitely high address, only to be found at array end */
+        if((void*)all[m] < p)
             L = m + 1;
         else
             R = m;
@@ -279,7 +278,6 @@ static size_t enlarge(LuaAlloc *LA)
     Block **newall = (Block**)realloc(LA->all, sizeof(Block*) * newcap);
     if(newall)
     {
-        LA_MEMSET(newall + LA->allcap, 0, incr * sizeof(Block*));
         LA->all = newall;
         LA->allcap = newcap;
         return newcap;
@@ -303,13 +301,9 @@ static Block *insertblock(LuaAlloc * LA_RESTRICT LA, Block * LA_RESTRICT b)
 
     /* inserting in the middle? Must preserve sort order */
     if(spot < end)
-    {
         /* move other pointers up */
         LA_MEMMOVE(spot+1, spot, (end - spot) * sizeof(Block*));
-        *spot = NULL;
-    }
 
-    ASSERT(*spot == NULL);
     *spot = b;
     ++LA->allnum;
 
@@ -346,7 +340,6 @@ static void freeblock(LuaAlloc * LA_RESTRICT LA, Block ** LA_RESTRICT spot)
         /* Move other pointers down */
         LA_MEMMOVE(spot, spot+1, (end - (spot+1)) * sizeof(Block*));
     }
-    end[-1] = NULL;
     --LA->allnum;
     /* Invariant: Array is still sorted after removing an element */
 
@@ -490,8 +483,8 @@ static void _Free(LuaAlloc * LA_RESTRICT LA , void * LA_RESTRICT p, size_t oldsi
 
     if(oldsize <= LA_MAX_ALLOC)
     {
-        Block **spot = findspot(LA, p);
-        spot -= (spot > LA->all); /* One back unless we're already at the front */
+        Block **spot = findspot(LA, p); /* Here, spot might point one past the end */
+        spot -= (spot > LA->all); /* One back unless we're already at the front -- now spot is always valid */
         Block *b = *spot;
         checkblock(b);
         if(contains(b, p))
