@@ -7,9 +7,9 @@ Pile of various tiny (single- or two-file) libs.
 - [X] Self-contained.
 - [x] No build system, no hassle.
 
-|Thing|Files|Language|Summary|
-|:------|:-------|:-----|:-----|
-|LuaAlloc|[.c](luaalloc.c) + [.h](luaalloc.h)|C99|Lua small block allocator|
+|Thing|Files|Language|Summary|Status|
+|:------|:-------|:-----|:-----|:-----|
+|LuaAlloc|[.c](luaalloc.c) + [.h](luaalloc.h)|C99|Lua small block allocator| Not yet ready, ***do not use***
 
 My other tiny libs that reside in their own repos for historical reasons:
 
