@@ -9,7 +9,7 @@ Pile of various tiny (single- or two-file) libs.
 
 |Thing|Files|Language|Summary|Status|
 |:------|:-------|:-----|:-----|:-----|
-|LuaAlloc|[.c](luaalloc.c) + [.h](luaalloc.h)|C99|Lua small block allocator| Not yet ready, ***do not use***
+|LuaAlloc|[.c](luaalloc.c) + [.h](luaalloc.h)|C99|Lua small block allocator| Seems to work. Needs testing.
 
 My other tiny libs that reside in their own repos for historical reasons:
 
