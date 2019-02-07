@@ -5,16 +5,16 @@ License:
 
 Dependencies:
   libc by default, change defines below to use your own functions
-  Compiles as C or C++ code.
+  Compiles as C99 or C++ code.
 
 Thread safety:
   No global state. LuaAlloc instances are not thread-safe (same as Lua).
 
 Background:
   Lua tends to make tiny allocations (4, 8, 16, generally less than 100 bytes) most of the time.
-  The system malloc() & friends tend to be rather slow and also add some bytes of overhead for bookkeeping (typically 8 or 16 bytes),
+  malloc() & friends tend to be rather slow and also add some bytes of overhead for bookkeeping (typically 8 or 16 bytes),
   so a large percentage of the actually allocated memory is wasted.
-  This allocator groups allocations of the same (small) size into blocks and passes on larger allocations.
+  This allocator groups allocations of the same (small) size into blocks and passes through larger allocations.
   Small allocations have an overhead of 1 bit plus some bookkeeping information for each block.
   This allocator is also rather fast; in the typical case a block known to contain free slots is cached,
   and inside of this block, finding a free slot is a tiny loop checking 32 slots at once,
@@ -23,50 +23,54 @@ Background:
   then flip the bit for that slot to mark it as unused. (Bitmap position and bit index is computed from the address, no loop there.)
   Once a block for a given size bin is full, other blocks in this bin are filled. A new block is allocated from the system if there is no free block.
   Unused blocks are free()d as soon as they are completely empty.
-  By default large Lua allocations and internal block allocations use the system malloc() and free() but this can be changed.
 
 Origin:
   https://github.com/fgenesis/tinypile/blob/master/luaalloc.c
 
 Inspired by:
   http://dns.achurch.org/cgi-bin/hg/aquaria-psp/file/tip/PSP/src/lalloc.c
+  http://wiki.luajit.org/New-Garbage-Collector#arenas (--> LuaJIT has its own allocator. Don't use this one for LuaJIT.)
 
 */
 
 /* ---- Configuration begin ---- */
 
-/* Enable this to get an overview of your memory usage. */
-/*#define LA_TRACK_STATS*/
+/* Track allocation stats to get an overview of your memory usage. By default disabled in release mode. */
+#ifndef NDEBUG
+#  define LA_TRACK_STATS
+#endif
 
-/* Internal consistency checks, should be off in release mode / NDEBUG */
-#include <assert.h>
-#define ASSERT(x) assert(x)
+/* Internal consistency checks. By default disabled in release mode. */
+#ifdef NDEBUG
+#  define LA_ASSERT(x)
+#else
+#  include <assert.h>
+#  define LA_ASSERT(x) assert(x)
+#endif
 
 /* Required libc functions. Use your own if needed */
+#include <string.h> /* for memcpy, memmove, memset */
 #define LA_MEMCPY(dst, src, n) memcpy((dst), (src), (n))
 #define LA_MEMMOVE(dst, src, n) memmove((dst), (src), (n))
 #define LA_MEMSET(dst, val, n) memset((dst), (val), (n))
-#define LA_MALLOC(n) malloc(n)  /* Used to allocate new blocks */
-#define LA_ZEROALLOC(n) calloc(1, n) /* for luaalloc_create() */
-#define LA_FREE(p) free(p)
 
-/* Large alloc/free for user allocations larger than LA_MAX_ALLOC */
-#define LARGE_MALLOC(n) LA_MALLOC(n)
-#define LARGE_FREE(p) LA_FREE(p)
+/* If you want to turn off the internal default system allocator, comment out the next line.
+   If the default sysalloc is disabled, symbols for realloc()/free() won't be pulled in. */
+#define LA_ENABLE_DEFAULT_ALLOC
 
-/* Maximum size of allocations to handle. Any size beyond that will be redirected to LARGE_MALLOC().
+/* Maximum size of allocations to handle. Any size beyond that will be redirected to the system allocator.
    Must be a multiple of LA_ALLOC_STEP */
 #define LA_MAX_ALLOC 128
 
 /* Provide pools in increments of this size, up to LA_MAX_ALLOC. 4 or 8 are good values. */
-/* E.g. A value of 4 will create pools of size 4, 8, 12, ... 128; which is 32 distinct sizes. */
+/* E.g. A value of 4 will create pools for size 4, 8, 12, ... 128; which is 32 distinct sizes. */
 #define LA_ALLOC_STEP 4
 
 /* Initial/Max. # of elements per block. Default growing behavior is to double the size for each full block until hitting LA_ELEMS_MAX.
    Note that each element requires 1 bit in the bitmap, the number of elements is rounded up so that no bit is unused,
    and the bitmap array is sized accordingly. Best is to use powers of 2. */
 #define LA_ELEMS_MIN 64
-#define LA_ELEMS_MAX 2048
+#define LA_ELEMS_MAX 2048 /* Stored in u16, don't go higher than 0x8000 */
 #define LA_GROW_BLOCK_SIZE(n) (n * 2)
 
 typedef unsigned int u32;
@@ -86,10 +90,12 @@ typedef u32 ubitmap;
 
 #include "luaalloc.h"
 
-#include <stddef.h> /* for ptrdiff_t */
-#include <stdlib.h> /* for malloc, free, memcpy, calloc */
-#include <string.h> /* for memmove, memset */
+#include <stddef.h> /* for size_t, ptrdiff_t */
 #include <limits.h> /* for CHAR_BIT */
+
+#ifdef LA_ENABLE_DEFAULT_ALLOC
+#include <stdlib.h> /* for realloc, free */
+#endif
 
 /* ---- Intrinsics ---- */
 
@@ -116,14 +122,14 @@ inline static unsigned ctz32(u32 x)
     return r;
 #else /* bit magic */
     x = (x & -x) - 1;
-    /* begin popcnt32 */
-	x -= ((x >> 1) & 0x55555555);
-	x = (((x >> 2) & 0x33333333) + (x & 0x33333333));
-	x = (((x >> 4) + x) & 0x0f0f0f0f);
-	x += (x >> 8);
-	x += (x >> 16);
-	x &= 0x0000003f;
-    /* end popcnt32 */
+    /* begin popcount32 */
+    x -= ((x >> 1) & 0x55555555);
+    x = (((x >> 2) & 0x33333333) + (x & 0x33333333));
+    x = (((x >> 4) + x) & 0x0f0f0f0f);
+    x += (x >> 8);
+    x += (x >> 16);
+    x &= 0x0000003f;
+    /* end popcount32 */
     return x;
 #endif
 }
@@ -155,6 +161,8 @@ typedef struct LuaAlloc
     Block **all; /* All blocks in use, sorted by address */
     size_t allnum; /* number of blocks in use */
     size_t allcap; /* capacity of array */
+    LuaSysAlloc sysalloc;
+    void *user;
 #ifdef LA_TRACK_STATS
     struct
     {
@@ -168,7 +176,7 @@ typedef struct LuaAlloc
 
 /* ---- Helper functions ---- */
 
-static const u16 BITMAP_ELEM_SIZE = sizeof(ubitmap) * CHAR_BIT; /* always power of 2 */
+static const u16 BITMAP_ELEM_SIZE = sizeof(ubitmap) * CHAR_BIT;
 
 inline static ubitmap *getbitmap(Block *b)
 {
@@ -187,7 +195,7 @@ inline static void *getdataend(Block *b)
 
 inline unsigned sizeindex(u16 elemSize)
 {
-    ASSERT(elemSize && elemSize <= LA_MAX_ALLOC);
+    LA_ASSERT(elemSize && elemSize <= LA_MAX_ALLOC);
     return (elemSize - 1) / LA_ALLOC_STEP;
 }
 
@@ -203,28 +211,71 @@ static int contains(Block * b, const void *p)
 
 inline static u16 roundToFullBitmap(u16 n) 
 {
-    return (n + BITMAP_ELEM_SIZE - 1) & -BITMAP_ELEM_SIZE;
+#if CHAR_BIT == 8
+    return (n + BITMAP_ELEM_SIZE - 1) & -BITMAP_ELEM_SIZE; /* Fast round if BITMAP_ELEM_SIZE is a power of 2 */
+#else
+#  error Weird hardware detected! CHAR_BIT != 8, does this mean BITMAP_ELEM_SIZE is not a power of 2? Check this, and CTZ function.
+#endif
 }
 
 inline static void checkblock(Block *b)
 {
-    ASSERT(b->elemSize && (b->elemSize % LA_ALLOC_STEP) == 0);
-    ASSERT(b->bitmapInts * BITMAP_ELEM_SIZE == b->elemstotal);
-    ASSERT(b->elemsfree <= b->elemstotal);
-    ASSERT(b->elemstotal >= LA_ELEMS_MIN);
-    ASSERT(b->elemstotal <= LA_ELEMS_MAX);
+    LA_ASSERT(b->elemSize && (b->elemSize % LA_ALLOC_STEP) == 0);
+    LA_ASSERT(b->bitmapInts * BITMAP_ELEM_SIZE == b->elemstotal);
+    LA_ASSERT(b->elemsfree <= b->elemstotal);
+    LA_ASSERT(b->elemstotal >= LA_ELEMS_MIN);
+    LA_ASSERT(b->elemstotal <= LA_ELEMS_MAX);
 }
 
+inline static size_t blocksize(Block *b)
+{
+    return (char*)getdataend(b) - (char*)b;
+}
+
+inline static u16 nextblockelems(Block *b)
+{
+    if(!b)
+        return LA_ELEMS_MIN;
+    u32 n = LA_GROW_BLOCK_SIZE(b->elemstotal);
+    return (u16)(n < LA_ELEMS_MAX ? n : LA_ELEMS_MAX);
+}
+
+/* ---- System allocator interface ---- */
+
+typedef enum
+{
+    LA_TYPE_LARGELUA = 0,
+    LA_TYPE_BLOCK    = 1,
+    LA_TYPE_INTERNAL = 2
+} AllocType;
+
+inline static void *sysmalloc(LuaAlloc *LA, AllocType osize, size_t nsize)
+{
+    LA_ASSERT(nsize);
+    return LA->sysalloc(LA->user, NULL, osize, nsize);
+}
+
+inline static void sysfree(LuaAlloc * LA_RESTRICT LA, void * LA_RESTRICT p, size_t osize)
+{
+    LA_ASSERT(p && osize);
+    LA->sysalloc(LA->user, p, osize, 0); /* ignore return value */
+}
+
+inline static void *sysrealloc(LuaAlloc * LA_RESTRICT LA, void * LA_RESTRICT p, size_t osize, size_t nsize)
+{
+    LA_ASSERT(osize && nsize); /* This assert is correct even if an AllocType enum value is passed as osize. */
+    return LA->sysalloc(LA->user, p, osize, nsize);
+}
 
 /* ---- Allocator internals ---- */
 
-static Block *_allocblock(u16 nelems, u16 elemsz)
+static Block *_allocblock(LuaAlloc *LA, u16 nelems, u16 elemsz)
 {
     elemsz = ((elemsz + LA_ALLOC_STEP-1) / LA_ALLOC_STEP) * LA_ALLOC_STEP; /* round up */
     nelems = roundToFullBitmap(nelems); /* The bitmap array must not have any unused bits */
     const u16 nbitmap = nelems / BITMAP_ELEM_SIZE;
 
-    void *ptr = LA_MALLOC(
+    void *ptr = sysmalloc(LA, LA_TYPE_BLOCK,
           (sizeof(Block) - sizeof(ubitmap)) /* block header without bitmap[1] */
         + (nbitmap * sizeof(ubitmap))       /* actual bitmap size */
         + (nelems * elemsz)                 /* data size */
@@ -267,15 +318,14 @@ static Block **findspot(LuaAlloc * LA_RESTRICT LA, void * LA_RESTRICT p)
         else
             R = m;
     }
-
     return all + L;
 }
 
 static size_t enlarge(LuaAlloc *LA)
 {
-    size_t incr = (LA->allcap / 2) + 16;
-    size_t newcap = LA->allcap + incr; /* Rough guess */
-    Block **newall = (Block**)realloc(LA->all, sizeof(Block*) * newcap);
+    const size_t incr = (LA->allcap / 2) + 16;
+    const size_t newcap = LA->allcap + incr; /* Rough guess */
+    Block **newall = (Block**)sysrealloc(LA, LA->all, LA->all ? LA->allcap : LA_TYPE_INTERNAL, sizeof(Block*) * newcap);
     if(newall)
     {
         LA->all = newall;
@@ -290,7 +340,7 @@ static Block *insertblock(LuaAlloc * LA_RESTRICT LA, Block * LA_RESTRICT b)
     /* Enlarge central block storage if necessary */
     if(LA->allcap == LA->allnum && !enlarge(LA))
     { 
-        LA_FREE(b); /* Can't fit block, kill it and fail */
+        sysfree(LA, b, blocksize(b)); /* Can't fit block, kill it and fail */
         return NULL;
     }
 
@@ -301,8 +351,10 @@ static Block *insertblock(LuaAlloc * LA_RESTRICT LA, Block * LA_RESTRICT b)
 
     /* inserting in the middle? Must preserve sort order */
     if(spot < end)
+    {
         /* move other pointers up */
         LA_MEMMOVE(spot+1, spot, (end - spot) * sizeof(Block*));
+    }
 
     *spot = b;
     ++LA->allnum;
@@ -313,7 +365,7 @@ static Block *insertblock(LuaAlloc * LA_RESTRICT LA, Block * LA_RESTRICT b)
     LA->chain[si] = b;
     if(top)
     {
-        ASSERT(!top->next);
+        LA_ASSERT(!top->next);
         top->next = b;
     }
     b->prev = top;
@@ -329,7 +381,7 @@ static Block *insertblock(LuaAlloc * LA_RESTRICT LA, Block * LA_RESTRICT b)
 
 static void freeblock(LuaAlloc * LA_RESTRICT LA, Block ** LA_RESTRICT spot)
 {
-    ASSERT(LA->allnum);
+    LA_ASSERT(LA->allnum);
     Block *b = *spot;
     checkblock(b);
 
@@ -347,7 +399,7 @@ static void freeblock(LuaAlloc * LA_RESTRICT LA, Block ** LA_RESTRICT spot)
     unsigned si = bsizeindex(b);
     if(LA->chain[si] == b)
     {
-        ASSERT(!b->next);
+        LA_ASSERT(!b->next);
         LA->chain[si] = b->prev;
     }
 
@@ -357,12 +409,12 @@ static void freeblock(LuaAlloc * LA_RESTRICT LA, Block ** LA_RESTRICT spot)
     /* Unlink from linked list */
     if(b->next)
     {
-        ASSERT(b->next->prev == b);
+        LA_ASSERT(b->next->prev == b);
         b->next->prev = b->prev;
     }
     if(b->prev)
     {
-        ASSERT(b->prev->next == b);
+        LA_ASSERT(b->prev->next == b);
         b->prev->next = b->next;
     }
 
@@ -370,53 +422,46 @@ static void freeblock(LuaAlloc * LA_RESTRICT LA, Block ** LA_RESTRICT spot)
     LA->stats.blocks_alive[si]--;
 #endif
 
-    LA_FREE(b);
+    sysfree(LA, b, blocksize(b)); /* free it */
 }
 
 static Block *newblock(LuaAlloc *LA, u16 nelems, u16 elemsz)
 {
-    Block *b = _allocblock(nelems, elemsz);
+    Block *b = _allocblock(LA, nelems, elemsz);
     return b ? insertblock(LA, b) : NULL;
 }
 
 static void *_Balloc(Block *b)
 {
-    ASSERT(b->elemsfree);
+    LA_ASSERT(b->elemsfree);
     ubitmap *bitmap = b->bitmap;
-    unsigned i = 0;
-    for( ; !bitmap[i]; ++i) {} /* as soon as one isn't all zero, there's a free slot */
-    ASSERT(i < b->bitmapInts); /* And there must've been a free slot because b->elemsfree != 0 */
-    ubitmap bitIdx = bitmap_CTZ(bitmap[i]); /* Get exact location of free slot */
-    ASSERT(bitmap[i] & ((ubitmap)1 << bitIdx)); // make sure this is '1' (= free)
-    bitmap[i] &= ~((ubitmap)1 << bitIdx); // put '0' where '1' was (-> mark as non-free)
+    unsigned i = 0, bm;
+    for( ; !(bm = bitmap[i]); ++i) {} /* as soon as one isn't all zero, there's a free slot */
+    LA_ASSERT(i < b->bitmapInts); /* And there must've been a free slot because b->elemsfree != 0 */
+    ubitmap bitIdx = bitmap_CTZ(bm); /* Get exact location of free slot */
+    LA_ASSERT(bm & ((ubitmap)1 << bitIdx)); // make sure this is '1' (= free)
+    bm &= ~((ubitmap)1 << bitIdx); /* put '0' where '1' was (-> mark as non-free) */
+    bitmap[i] = bm;
     --b->elemsfree;
     const unsigned where = (i * BITMAP_ELEM_SIZE) + bitIdx;
-    void *ret = ((unsigned char*)getdata(b)) + (where * b->elemSize);
-    ASSERT(contains(b, ret));
+    void *ret = ((char*)getdata(b)) + (where * b->elemSize);
+    LA_ASSERT(contains(b, ret));
     return ret;
 }
 
 static void _Bfree(Block * LA_RESTRICT b, void * LA_RESTRICT p)
 {
-    ASSERT(b->elemsfree < b->elemstotal);
-    ASSERT(contains(b, p));
-    const ptrdiff_t offs = (unsigned char*)p - (unsigned char*)getdata(b);
-    ASSERT(offs % b->elemSize == 0);
+    LA_ASSERT(b->elemsfree < b->elemstotal);
+    LA_ASSERT(contains(b, p));
+    const ptrdiff_t offs = (char*)p - (char*)getdata(b);
+    LA_ASSERT(offs % b->elemSize == 0);
     const unsigned idx = (unsigned)(offs / b->elemSize);
     const unsigned bitmapIdx = idx / BITMAP_ELEM_SIZE;
     const ubitmap bitIdx = idx % BITMAP_ELEM_SIZE;
-    ASSERT(bitmapIdx < b->bitmapInts);
-    ASSERT(!(b->bitmap[bitmapIdx] & ((ubitmap)1 << bitIdx))); /* make sure this is '0' (= used) */
+    LA_ASSERT(bitmapIdx < b->bitmapInts);
+    LA_ASSERT(!(b->bitmap[bitmapIdx] & ((ubitmap)1 << bitIdx))); /* make sure this is '0' (= used) */
     b->bitmap[bitmapIdx] |= ((ubitmap)1 << bitIdx); /* put '1' where '0' was (-> mark as free) */
     ++b->elemsfree;
-}
-
-static u16 nextblockelems(Block *b)
-{
-    if(!b)
-        return LA_ELEMS_MIN;
-    u16 n = LA_GROW_BLOCK_SIZE(b->elemstotal);
-    return n < LA_ELEMS_MAX ? n : LA_ELEMS_MAX;
 }
 
 /* returns block with at least 1 free slot, NULL only in case of allocation fail */
@@ -444,7 +489,7 @@ static Block *getfreeblock(LuaAlloc *LA, u16 size)
 
 static void *_Alloc(LuaAlloc *LA, size_t size)
 {
-    ASSERT(size);
+    LA_ASSERT(size);
 
     if(size <= LA_MAX_ALLOC)
     {
@@ -453,7 +498,7 @@ static void *_Alloc(LuaAlloc *LA, size_t size)
         {
             checkblock(b);
             void *p = _Balloc(b);
-            ASSERT(p); /* Can't fail -- block was known to be free */
+            LA_ASSERT(p); /* Can't fail -- block was known to be free */
 
 #ifdef LA_TRACK_STATS
             unsigned si = bsizeindex(b);
@@ -465,7 +510,7 @@ static void *_Alloc(LuaAlloc *LA, size_t size)
         /* else try the alloc below */
     }
 
-    void *p = LARGE_MALLOC(size);
+    void *p = sysmalloc(LA, LA_TYPE_LARGELUA, size); /* large Lua allocation */
 
 #ifdef LA_TRACK_STATS
     if(p)
@@ -477,9 +522,22 @@ static void *_Alloc(LuaAlloc *LA, size_t size)
     return p;
 }
 
+static void freefromspot(LuaAlloc * LA_RESTRICT LA, Block ** LA_RESTRICT spot, void *p)
+{
+    Block *b = *spot;
+#ifdef LA_TRACK_STATS
+    unsigned si = bsizeindex(b);
+    LA->stats.alive[si]--;
+#endif
+    if(b->elemsfree + 1 == b->elemstotal)
+        freeblock(LA, spot); /* Freeing last element in the block -> just free the whole thing */
+    else
+        _Bfree(b, p);
+}
+
 static void _Free(LuaAlloc * LA_RESTRICT LA , void * LA_RESTRICT p, size_t oldsize)
 {
-    ASSERT(p);
+    LA_ASSERT(p);
 
     if(oldsize <= LA_MAX_ALLOC)
     {
@@ -489,32 +547,30 @@ static void _Free(LuaAlloc * LA_RESTRICT LA , void * LA_RESTRICT p, size_t oldsi
         checkblock(b);
         if(contains(b, p))
         {
-#ifdef LA_TRACK_STATS
-            unsigned si = bsizeindex(b);
-            LA->stats.alive[si]--;
-#endif
-            if(b->elemsfree + 1 == b->elemstotal)
-                freeblock(LA, spot); /* Freeing last element in the block -> just free the whole thing */
-            else
-                _Bfree(b, p);
-
+            freefromspot(LA, spot, p);
             return;
         }
         /* else p is outside of any block area. This case is unlikely but possible:
-           alloc large size, shrink it but fail (returns original pointer but Lua sees the new, smaller size), then free ptr. And we have this situation.
-           Therefore fall through to free a large allocation */
+           - alloc large size (falling through to system alloc),
+           - then, try to shrink it to fit inside LA_MAX_ALLOC,
+           - ... but there is no block free for that size...
+           - try to alloc new block and fail (out of memory)
+           - then _Realloc() uses the original, still valid pointer since by spec shrink requests must not fail
+           - Lua sees the "reallocated" (actually the old) pointer and records the new, smaller size;
+           - when this pointer is freed, we're here in this situation.
+           Therefore fall through to free a large allocation. */
     }
 
 #ifdef LA_TRACK_STATS
     LA->stats.alive[BLOCK_ARRAY_SIZE]--;
 #endif
 
-    LARGE_FREE(p);
+    sysfree(LA, p, oldsize); /* large Lua free */
 }
 
 static void *_Realloc(LuaAlloc * LA_RESTRICT LA, void * LA_RESTRICT p, size_t newsize, size_t oldsize)
 {
-    ASSERT(p);
+    LA_ASSERT(p);
     void *newptr = _Alloc(LA, newsize);
 
     /* If the new allocation failed, just re-use the old pointer if it was a shrink request.
@@ -534,20 +590,17 @@ static void *_Realloc(LuaAlloc * LA_RESTRICT LA, void * LA_RESTRICT p, size_t ne
 extern "C" {
 #endif
 
-void *luaalloc(void *ud, void *ptr, size_t oldsize, size_t newsize)
+void *luaalloc(void * ud, void *ptr, size_t oldsize, size_t newsize)
 {
     LuaAlloc *LA = (LuaAlloc*)ud;
     if(ptr)
     {
         if(!newsize)
-        {
             _Free(LA, ptr, oldsize);
-            return NULL;
-        }
-        else if(newsize == oldsize)
-            return ptr;
-        else
+        else if(newsize != oldsize)
             return _Realloc(LA, ptr, newsize, oldsize);
+        else
+            return ptr;
     }
     else if(newsize)
         return _Alloc(LA, newsize);
@@ -555,15 +608,46 @@ void *luaalloc(void *ud, void *ptr, size_t oldsize, size_t newsize)
     return NULL;
 }
 
-LuaAlloc * luaalloc_create()
+#ifdef LA_ENABLE_DEFAULT_ALLOC
+void *defaultalloc(void *user, void *ptr, size_t osize, size_t nsize)
 {
-    return (LuaAlloc*)LA_ZEROALLOC(sizeof(LuaAlloc));
+    (void)user;
+    (void)osize;
+    if(nsize)
+        return realloc(ptr, nsize);
+    free(ptr);
+    return NULL;
+}
+#endif
+
+LuaAlloc * luaalloc_create(LuaSysAlloc sysalloc, void *user)
+{
+    if(!sysalloc)
+    {
+#ifdef LA_ENABLE_DEFAULT_ALLOC
+        sysalloc = defaultalloc;
+#else
+        LA_ASSERT(sysalloc);
+        return NULL;
+#endif
+    }
+
+    LuaAlloc *LA = (LuaAlloc*)sysalloc(user, NULL, LA_TYPE_INTERNAL, sizeof(LuaAlloc));
+    if(LA)
+    {
+        LA_MEMSET(LA, 0, sizeof(LuaAlloc));
+        LA->sysalloc = sysalloc;
+        LA->user = user;
+    }
+    return LA;
 }
 
-void luaalloc_delete(LuaAlloc *p)
+void luaalloc_delete(LuaAlloc *LA)
 {
-    ASSERT(p->allnum == 0); /* If this fails the Lua state didn't GC everything, which is a bug */
-    LA_FREE(p);
+    LA_ASSERT(LA->allnum == 0); /* If this fails the Lua state didn't GC everything, which is a bug */
+    if(LA->all)
+        sysfree(LA, LA->all, LA->allcap * sizeof(Block*));
+    sysfree(LA, LA, sizeof(LuaAlloc)); /* free self */
 }
 
 /* ---- Optional stats tracking ---- */
@@ -581,8 +665,7 @@ unsigned luaalloc_getstats(const LuaAlloc *LA, const size_t ** alive, const size
     if(blocks)
         *blocks = LA->stats.blocks_alive;
     return BLOCK_ARRAY_SIZE + 1;
-#endif
-
+#else
     if(alive)
         *alive = NULL;
     if(total)
@@ -590,6 +673,7 @@ unsigned luaalloc_getstats(const LuaAlloc *LA, const size_t ** alive, const size
     if(blocks)
         *blocks = NULL;
     return 0;
+#endif
 }
 
 #ifdef __cplusplus
