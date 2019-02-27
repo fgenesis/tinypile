@@ -1,7 +1,7 @@
 /* Small and fast memory allocator tailored for Lua.
 
 License:
-  Public domain, WTFPL, CC0 or your favourite permissive license; whatever is available in your country.
+  Public domain, WTFPL, CC0 or your favorite permissive license; whatever is available in your country.
 
 Dependencies:
   libc by default, change defines below to use your own functions
