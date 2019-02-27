@@ -74,7 +74,7 @@ JPS::PathVector path; // The resulting path will go here.
                       //     but the resulting path vector will be empty!
 
 // Single-call interface:
-// (Further remarks about this function can be found at the bottom of this file.)
+// (Further remarks about this function can be found near the bottom of this file.)
 // Note that the path vector is NOT cleared! New path points are appended at the end.
 bool found = JPS::findPath(path, grid, startx, starty, endx, endy, step);
 
@@ -85,7 +85,7 @@ bool found = JPS::findPath(path, grid, startx, starty, endx, endy, step);
 // Make sure the passed grid reference stays valid throughout the searcher's lifetime.
 // If you need control over memory allocation, you may pass an extra pointer that will be
 // forwarded to your own JPS_realloc & JPS_free if you've set those. Otherwise it's ignored.
-JPS::Searcher<MyGrid> search(grid [, userPtr = NULL] );
+JPS::Searcher<MyGrid> search(grid, userPtr = NULL);
 
 // build path incrementally from waypoints:
 JPS::Position a, b, c, d = <...>; // set some waypoints
@@ -111,6 +111,9 @@ while(whatever)
 // Note that freeing memory aborts any incremental search currently ongoing.
 search.freeMemory();
 
+// If you need to know how much memory is internally allocated by a searcher:
+unsigned bytes = search.getTotalMemoryInUse();
+
 
 // -------------------------------
 // --- Incremental pathfinding ---
@@ -121,7 +124,7 @@ If the path is long or costly and you have a tight CPU budget per frame you may 
 stretched over multiple frames.
 
 First, call
-  ### JPS_Result res = searcher.findPathInit(Position start, Position end) ###
+  ### JPS_Result res = search.findPathInit(Position start, Position end) ###
 Don't forget to check the return value, as it may return:
 - JPS_NO_PATH if one or both of the points are obstructed
 - JPS_EMPTY_PATH if the points are equal and not obstructed
@@ -130,17 +133,17 @@ Don't forget to check the return value, as it may return:
 If it returns JPS_NEED_MORE_STEPS then the next part can start.
 
 Repeatedly call
-  ### JPS_Result res = findPathStep(int limit) ###
+  ### JPS_Result res = search.findPathStep(int limit) ###
 until it returns JPS_NO_PATH or JPS_FOUND_PATH, or JPS_OUT_OF_MEMORY.
 For consistency, you will want to ensure that the grid does not change between subsequent calls;
 if the grid changes, parts of the path may go through a now obstructed area or may be no longer optimal.
 If limit is 0, it will perform the pathfinding in one go. Values > 0 abort the search
 as soon as possible after the number of steps was exceeded, returning NEED_MORE_STEPS.
-Use getStepsDone() after some test runs to find a good value for the limit.
+Use search.getStepsDone() after some test runs to find a good value for the limit.
 
 After getting JPS_FOUND_PATH, generate the actual path points via
-  ### JPS_Result res = findPathFinish(PathVector& path, unsigned step = 0) ###
-Like described above, path points are appended, and granularity can be adjusted with the step parameter.
+  ### JPS_Result res = search.findPathFinish(PathVector& path, unsigned step = 0) ###
+As described above, path points are appended, and granularity can be adjusted with the step parameter.
 Returns JPS_FOUND_PATH if the path was successfully built and appended to the path vector.
 Returns JPS_NO_PATH if the pathfinding did not finish or generating the path failed.
 May return JPS_OUT_OF_MEMORY if the path vector must be resized but fails to allocate.
@@ -283,9 +286,9 @@ inline static Position Pos(PosType x, PosType y)
     return p;
 }
 
-template<typename T> T Max(T a, T b) { return a < b ? b : a; }
-template<typename T> T Min(T a, T b) { return a < b ? a : b; }
-template<typename T> T Abs(T a)      { return a < T(0) ? -a : a; }
+template<typename T> inline static T Max(T a, T b) { return a < b ? b : a; }
+template<typename T> inline static T Min(T a, T b) { return a < b ? a : b; }
+template<typename T> inline static T Abs(T a)      { return a < T(0) ? -a : a; }
 
 
 // Heuristics. Add new ones if you need them.
@@ -441,7 +444,7 @@ private:
 };
 
 template<typename T>
-inline void Swap (T& a, T& b)
+inline static void Swap(T& a, T& b)
 {
     const T tmp = a;
     a = b;
@@ -449,9 +452,9 @@ inline void Swap (T& a, T& b)
 }
 
 template<typename IT>
-inline void Reverse (IT first, IT last)
+inline static void Reverse(IT first, IT last)
 {
-    while ((first != last) && (first != --last))
+    while((first != last) && (first != --last))
     {
         Swap(*first, *last);
         ++first;
@@ -680,8 +683,8 @@ private:
         goto start;
         do
         {
-            idxHeap[i] = idxHeap[p];    // parent is smaller, move it down
-            i = p;                // continue with parent
+            idxHeap[i] = idxHeap[p]; // parent is smaller, move it down
+            i = p;                   // continue with parent
 start:
             p = (i - 1) >> 1;
         }
@@ -1386,6 +1389,13 @@ template<typename GRID> bool Searcher<GRID>::findPathGreedy(Node *n, Node *endno
 }
 #endif
 
+#undef JPS_ASSERT
+#undef JPS_realloc
+#undef JPS_free
+#undef JPS_sqrt
+#undef JPS_HEURISTIC_ACCURATE
+#undef JPS_HEURISTIC_ESTIMATE
+
 
 } // end namespace Internal
 
@@ -1413,7 +1423,7 @@ typedef Internal::PodVec<Position> PathVector;
 //       it only controls the coarseness of the output path.
 template <typename GRID, typename PV> bool findPath(PV& path, const GRID& grid, unsigned startx, unsigned starty, unsigned endx, unsigned endy,
                                        unsigned step = 0, // optional
-                                       size_t *stepsDone = 0, size_t *nodesExpanded = 0, // outputs; for your information
+                                       SizeT *stepsDone = 0, SizeT *nodesExpanded = 0, // outputs; for your information
                                        void *user = 0 // memory allocation userdata
                                        )
 {
@@ -1425,13 +1435,6 @@ template <typename GRID, typename PV> bool findPath(PV& path, const GRID& grid, 
         *nodesExpanded = search.getNodesExpanded();
     return found;
 }
-
-#undef JPS_ASSERT
-#undef JPS_realloc
-#undef JPS_free
-#undef JPS_sqrt
-#undef JPS_HEURISTIC_ACCURATE
-#undef JPS_HEURISTIC_ESTIMATE
 
 } // end namespace JPS
 
@@ -1449,8 +1452,8 @@ Changes compared to the older JPS.h at https://github.com/fgenesis/jps:
 
 - Added one more JPS_Result value: JPS_OUT_OF_MEMORY. See info block at the top how to handle this.
 
-- Changed signature of Searcher<>::findPathFinish() to return JPS_Result as well (was bool).
-  This is more in line with the other 2 methods, as it can now return JPS_OUT_OF_MEMORY as well.
+- Changed signature of Searcher<>::findPathFinish() to return JPS_Result (was bool).
+  This is more in line with the other 2 methods, as it can now return JPS_OUT_OF_MEMORY.
 
 - Removed skip parameter. Imho that one just added confusion and no real benefit.
   If you want it back for some reason: poke me, open an issue, whatever.
