@@ -1,4 +1,5 @@
-#include "../luaalloc.h"
+#include "luaalloc.h"
+
 typedef struct lua_Alloc lua_Alloc;
 extern "C" int runlua(int argc, const char*const*argv, void *alloc, void *ud);
 
