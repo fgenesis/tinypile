@@ -137,7 +137,7 @@ Repeatedly call
 until it returns JPS_NO_PATH or JPS_FOUND_PATH, or JPS_OUT_OF_MEMORY.
 For consistency, you will want to ensure that the grid does not change between subsequent calls;
 if the grid changes, parts of the path may go through a now obstructed area or may be no longer optimal.
-If limit is 0, it will perform the pathfinding in one go. Values > 0 abort the search
+If limit is 0, it will perform the pathfinding in one go. Values > 0 pause the search
 as soon as possible after the number of steps was exceeded, returning NEED_MORE_STEPS.
 Use search.getStepsDone() after some test runs to find a good value for the limit.
 
@@ -155,6 +155,7 @@ If findPathFinish() returns out-of-memory but previous steps finished successful
 then the found path is still valid for generating the path vector.
 In that case you may call findPathFinish() again after making some memory available.
 
+If you do not worry about memory, treat JPS_OUT_OF_MEMORY as if JPS_NO_PATH was returned.
 
 You may pass JPS::PathVector, std::vector, or your own to findPathFinish().
 Note that if the path vector type you pass throws exceptions in case of allocation failures (std::vector does, for example),
@@ -179,25 +180,19 @@ You may abort a search anytime by starting a new one via findPathInit(), calling
 // If this is defined, disable the greedy direct-short-path check that avoids the large area scanning that JPS does.
 // This is just a performance tweak. May save a lot of CPU when constantly re-planning short paths without obstacles
 // (e.g. an entity follows close behind another).
-// Does not change optimality of results. You probably want this. Leave it enabled.
+// Does not change optimality of results. You probably want this. If you perform your own line-of-sight checks
+// before starting a pathfinding run you can disable greedy since checking twice isn't needed,
+// but otherwise it's better to leave it enabled.
 //#define JPS_DISABLE_GREEDY
 
+// If you want to avoid sqrt() or floats in general, define this.
+// Turns out in some testing this was ~12% faster, so it's the default.
+#define JPS_NO_FLOAT
 
-namespace JPS {
 
-// unsigned integer type wide enough to store a position on one grid axis.
-// Note that on x86, u32 is actually faster than u16.
-typedef unsigned PosType;
+// ------------------------------------------------
 
-// Result of heuristics. can also be (unsigned) int but using float here since that's what sqrtf() returns
-// and we don't need to cast between int <-> float that way. Change if you use integer-only heuristics.
-// (Euclidean heuristic using sqrt() works fine even if cast to int. Your choice really.)
-typedef float ScoreType;
-
-// Size type; used internally for vectors and the like. You can set this to size_t if you want, but 32 bits is more than enough.
-typedef unsigned SizeT;
-
-} // end namespace JPS
+#include <stddef.h> // for size_t (needed for operator new)
 
 // Assertions
 #ifndef JPS_ASSERT
@@ -210,7 +205,7 @@ typedef unsigned SizeT;
 #endif
 
 // The default allocator uses realloc(), free(). Change if necessary.
-// You will get the user pointer passed to findPath() or the Searcher ctor.
+// You will get the user pointer that you passed to findPath() or the Searcher ctor.
 #if !defined(JPS_realloc) || !defined(JPS_free)
 # include <stdlib.h> // for realloc, free
 # ifndef JPS_realloc
@@ -221,19 +216,52 @@ typedef unsigned SizeT;
 # endif
 #endif
 
+#ifdef JPS_NO_FLOAT
+#define JPS_HEURISTIC_ACCURATE(a, b) (Heuristic::Chebyshev(a, b))
+#else
+# ifndef JPS_sqrt
 // for Euclidean heuristic.
-#ifndef JPS_sqrt
-# include <math.h>
-# define JPS_sqrt(x) sqrtf(x)
+#  include <math.h>
+#  define JPS_sqrt(x) sqrtf(float(x)) // float cast here avoids a warning about implicit int->float cast
+# endif
 #endif
 
 // Which heuristics to use.
+// Basic property: Distance estimate, returns values >= 0. Smaller is better.
 // The accurate heuristic should always return guesses less or equal than the estimate heuristic,
 // otherwise the resulting paths may not be optimal.
 // (The rule of thumb is that the estimate is fast but can overestimate)
 // For the implementation of heuristics, scroll down.
+#ifndef JPS_HEURISTIC_ACCURATE
 #define JPS_HEURISTIC_ACCURATE(a, b) (Heuristic::Euclidean(a, b))
+#endif
+
+#ifndef JPS_HEURISTIC_ESTIMATE
 #define JPS_HEURISTIC_ESTIMATE(a, b) (Heuristic::Manhattan(a, b))
+#endif
+
+
+// --- Data types ---
+namespace JPS {
+
+// unsigned integer type wide enough to store a position on one grid axis.
+// Note that on x86, u32 is actually faster than u16.
+typedef unsigned PosType;
+
+// Result of heuristics. can also be (unsigned) int but using float by default since that's what sqrtf() returns
+// and we don't need to cast float->int that way. Change if you use integer-only heuristics.
+// (Euclidean heuristic using sqrt() works fine even if cast to int. Your choice really.)
+#ifdef JPS_NO_FLOAT
+typedef int ScoreType;
+#else
+typedef float ScoreType;
+#endif
+
+// Size type; used internally for vectors and the like. You can set this to size_t if you want, but 32 bits is more than enough.
+typedef unsigned SizeT;
+
+} // end namespace JPS
+
 
 // ================================
 // ====== COMPILE CONFIG END ======
@@ -250,8 +278,12 @@ enum JPS_Result
 };
 
 // operator new() without #include <new>
+// Onfortunately the standard mandates the use of size_t, so we need stddef.h the very least.
+// Trick via https://github.com/ocornut/imgui
+// "Defining a custom placement new() with a dummy parameter allows us to bypass including <new>
+// which on some platforms complains when user has disabled exceptions."
 struct JPS__NewDummy {};
-inline void* operator new(JPS::SizeT, JPS__NewDummy, void* ptr) { return ptr; }
+inline void* operator new(size_t, JPS__NewDummy, void* ptr) { return ptr; }
 inline void  operator delete(void*, JPS__NewDummy, void*)       {}
 #define JPS_PLACEMENT_NEW(p) new(JPS__NewDummy(), p)
 
@@ -276,6 +308,7 @@ struct Position
 
 // The invalid position. Used internally to mark non-walkable points.
 static const Position npos = {PosType(-1), PosType(-1)};
+static const SizeT noidx = SizeT(-1);
 
 // ctor function to keep Position a real POD struct.
 inline static Position Pos(PosType x, PosType y)
@@ -307,13 +340,14 @@ namespace Heuristic
         const int dy = Abs(int(a.y - b.y));
         return static_cast<ScoreType>(Max(dx, dy));
     }
-
+#ifdef JPS_sqrt
     inline ScoreType Euclidean(const Position& a, const Position& b)
     {
-        float fx = float(int(a.x - b.x));
-        float fy = float(int(a.y - b.y));
-        return static_cast<ScoreType>(JPS_sqrt(fx*fx + fy*fy));
+        const int dx = (int(a.x - b.x));
+        const int dy = (int(a.y - b.y));
+        return static_cast<ScoreType>(JPS_sqrt(dx*dx + dy*dy));
     }
+#endif
 } // end namespace heuristic
 
 
@@ -340,7 +374,7 @@ struct Node
     inline       Node& getParent()       { JPS_ASSERT(parentOffs); return this[parentOffs]; }
     inline const Node& getParent() const { JPS_ASSERT(parentOffs); return this[parentOffs]; }
     inline const Node *getParentOpt() const { return parentOffs ? this + parentOffs : 0; }
-    inline void setParent(const Node& p) { JPS_ASSERT(&p != this); parentOffs = &p - this; }
+    inline void setParent(const Node& p) { JPS_ASSERT(&p != this); parentOffs = static_cast<SizeT>(&p - this); }
 };
 
 template<typename T>
@@ -348,8 +382,7 @@ class PodVec
 {
 public:
     PodVec(void *user = 0)
-        : used(0), cap(0), _data(0)
-        , _user(user)
+        : _data(0), used(0), cap(0), _user(user)
     {}
     ~PodVec() { dealloc(); }
     inline void clear()
@@ -384,7 +417,7 @@ public:
     inline bool empty() const { return !used; }
     inline T *data() { return _data; }
     inline const T *data() const { return _data; }
-    inline T& operator[](SizeT idx) const { JPS_ASSERT(idx < used); return _data[idx]; }
+    inline T& operator[](size_t idx) const { JPS_ASSERT(idx < used); return _data[idx]; }
     inline SizeT getindex(const T *e) const
     {
         JPS_ASSERT(e && _data <= e && e < _data + used);
@@ -513,7 +546,7 @@ public:
         const unsigned h = Hash(x, y);
         const unsigned h2 = Hash2(x, y);
         const SizeT ksz = _buckets.size(); // known to be power-of-2
-        Bucket *b;
+        Bucket *b = 0; // MSVC /W4 complains that this was uninitialized and used, so we init it...
         if (ksz)
         {
             b = &_buckets[h & (ksz - 1)];
@@ -541,7 +574,8 @@ public:
             b = &_buckets[h & (newbsz - 1)];
         else if(newbsz == 1) // error case
             return 0;
-        HashLoc *loc = b->alloc();
+
+        HashLoc *loc = b->alloc(); // ... see above. b is always initialized here. when ksz==0, _enlarge() will do its initial allocation, so it can never return 0.
 
         if(!loc)
             return 0;
@@ -755,13 +789,13 @@ protected:
     Position endPos;
     SizeT endNodeIdx;
     int stepsRemain;
-    unsigned stepsDone;
+    SizeT stepsDone;
 
     SearcherBase(void *user)
         : storage(user)
         , open(storage)
         , nodemap(storage)
-        , endPos(npos), endNodeIdx(-1), stepsRemain(0), stepsDone(0)
+        , endPos(npos), endNodeIdx(noidx), stepsRemain(0), stepsDone(0)
     {}
 
     void clear()
@@ -769,7 +803,7 @@ protected:
         open.clear();
         nodemap.clear();
         storage.clear();
-        endNodeIdx = -1;
+        endNodeIdx = noidx;
         stepsDone = 0;
     }
 
@@ -795,16 +829,21 @@ protected:
 
 public:
 
-    inline unsigned getStepsDone() const { return stepsDone; }
-    inline SizeT getNodesExpanded() const { return storage.size(); }
+    template <typename PV>
+    JPS_Result generatePath(PV& path, unsigned step) const;
 
     void freeMemory()
     {
         open.dealloc();
         nodemap.dealloc();
         storage.dealloc();
-        endNodeIdx = -1;
+        endNodeIdx = noidx;
     }
+
+    // --- Statistics ---
+
+    inline SizeT getStepsDone() const { return stepsDone; }
+    inline SizeT getNodesExpanded() const { return storage.size(); }
 
     SizeT getTotalMemoryInUse() const
     {
@@ -812,9 +851,6 @@ public:
              + nodemap._getMemSize()
              + open._getMemSize();
     }
-
-    template <typename PV>
-    JPS_Result generatePath(PV& path, unsigned step) const;
 };
 
 template <typename GRID> class Searcher : public SearcherBase
@@ -866,7 +902,7 @@ private:
 
 template<typename PV> JPS_Result SearcherBase::generatePath(PV& path, unsigned step) const
 {
-    if(endNodeIdx == SizeT(-1))
+    if(endNodeIdx == noidx)
         return JPS_NO_PATH;
     const SizeT offset = path.size();
     SizeT added = 0;
@@ -965,7 +1001,7 @@ template <typename GRID> Position Searcher<GRID>::jumpD(Position p, int dx, int 
     JPS_ASSERT(dx && dy);
 
     const Position endpos = endPos;
-    int steps = 0;
+    unsigned steps = 0;
 
     while(true)
     {
@@ -973,14 +1009,14 @@ template <typename GRID> Position Searcher<GRID>::jumpD(Position p, int dx, int 
             break;
 
         ++steps;
-        const unsigned x = p.x;
-        const unsigned y = p.y;
+        const PosType x = p.x;
+        const PosType y = p.y;
 
         if( (grid(x-dx, y+dy) && !grid(x-dx, y)) || (grid(x+dx, y-dy) && !grid(x, y-dy)) )
             break;
 
-        const bool gdx = grid(x+dx, y);
-        const bool gdy = grid(x, y+dy);
+        const bool gdx = !!grid(x+dx, y);
+        const bool gdy = !!grid(x, y+dy);
 
         if(gdx && jumpX(Pos(x+dx, y), dx).isValid())
             break;
@@ -999,7 +1035,7 @@ template <typename GRID> Position Searcher<GRID>::jumpD(Position p, int dx, int 
             break;
         }
     }
-    stepsDone += (unsigned)steps;
+    stepsDone += steps;
     stepsRemain -= steps;
     return p;
 }
@@ -1009,9 +1045,9 @@ template <typename GRID> inline Position Searcher<GRID>::jumpX(Position p, int d
     JPS_ASSERT(dx);
     JPS_ASSERT(grid(p.x, p.y));
 
-    const unsigned y = p.y;
+    const PosType y = p.y;
     const Position endpos = endPos;
-    int steps = 0;
+    unsigned steps = 0;
 
     unsigned a = ~((!!grid(p.x, y+1)) | ((!!grid(p.x, y-1)) << 1));
 
@@ -1033,7 +1069,7 @@ template <typename GRID> inline Position Searcher<GRID>::jumpX(Position p, int d
         ++steps;
     }
 
-    stepsDone += (unsigned)steps;
+    stepsDone += steps;
     stepsRemain -= steps;
     return p;
 }
@@ -1043,9 +1079,9 @@ template <typename GRID> inline Position Searcher<GRID>::jumpY(Position p, int d
     JPS_ASSERT(dy);
     JPS_ASSERT(grid(p.x, p.y));
 
-    const unsigned x = p.x;
+    const PosType x = p.x;
     const Position endpos = endPos;
-    int steps = 0;
+    unsigned steps = 0;
 
     unsigned a = ~((!!grid(x+1, p.y)) | ((!!grid(x-1, p.y)) << 1));
 
@@ -1064,9 +1100,10 @@ template <typename GRID> inline Position Searcher<GRID>::jumpY(Position p, int d
 
         p.y += dy;
         a = ~b;
+        ++steps;
     }
 
-    stepsDone += (unsigned)steps;
+    stepsDone += steps;
     stepsRemain -= steps;
     return p;
 }
@@ -1102,20 +1139,20 @@ template <typename GRID> unsigned Searcher<GRID>::findNeighbors(const Node& n, P
     }
     const Node& p = n.getParent();
     // jump directions (both -1, 0, or 1)
-    int dx = int(x - p.pos.x);
+    int dx = x - p.pos.x;
     dx /= Max(Abs(dx), 1);
-    int dy = int(y - p.pos.y);
+    int dy = y - p.pos.y;
     dy /= Max(Abs(dy), 1);
 
     if(dx && dy)
     {
         // diagonal
         // natural neighbors
-        bool walkX = false;
-        bool walkY = false;
-        if((walkX = grid(x+dx, y)))
+        const bool walkX = !!grid(x+dx, y);
+        if(walkX)
             *w++ = Pos(x+dx, y);
-        if((walkY = grid(x, y+dy)))
+        const bool walkY = !!grid(x, y+dy);
+        if(walkY)
             *w++ = Pos(x, y+dy);
 
         if(walkX || walkY)
@@ -1197,7 +1234,6 @@ template <typename GRID> bool Searcher<GRID>::identifySuccessors(const Node& n_)
 #else
     const int num = findNeighbors(n_, &buf[0]);
 #endif
-    const Position endpos = endPos;
     for(int i = num-1; i >= 0; --i)
     {
         // Invariant: A node is only a valid neighbor if the corresponding grid position is walkable (asserted in jumpP)
@@ -1316,8 +1352,8 @@ template<typename GRID> template<typename PV> JPS_Result Searcher<GRID>::findPat
 template<typename GRID> bool Searcher<GRID>::findPathGreedy(Node *n, Node *endnode)
 {
     Position midpos = npos;
-    int x = n->pos.x;
-    int y = n->pos.y;
+    PosType x = n->pos.x;
+    PosType y = n->pos.y;
     const Position endpos = endnode->pos;
 
     JPS_ASSERT(x != endpos.x || y != endpos.y); // must not be called when start==end
@@ -1335,7 +1371,7 @@ template<typename GRID> bool Searcher<GRID>::findPathGreedy(Node *n, Node *endno
     {
         JPS_ASSERT(dx && dy);
         const int minlen = Min(adx, ady);
-        const int tx = x + dx * minlen;
+        const PosType tx = x + dx * minlen;
         while(x != tx)
         {
             if(grid(x, y) && (grid(x+dx, y) || grid(x, y+dy))) // prevent tunneling as well
@@ -1403,16 +1439,18 @@ using Internal::Searcher;
 
 typedef Internal::PodVec<Position> PathVector;
 
-// Single-call convenience function
+// Single-call convenience function. For efficiency, do NOT use this if you need to compute paths repeatedly.
 //
-// path: If the function returns true, the path is stored in this vector.
+// Returns: 0 if failed or no path could be found, otherwise number of steps taken.
+//
+// path: If the function returns success, the path is appended to this vector.
 //       The path does NOT contain the starting position, i.e. if start and end are the same,
 //       the resulting path has no elements.
 //       The vector does not have to be empty. The function does not clear it;
 //       instead, the new path positions are appended at the end.
 //       This allows building a path incrementally.
 //
-// grid: expected to overload operator()(x, y), return true if position is walkable, false if not.
+// grid: Functor, expected to overload operator()(x, y), return true if position is walkable, false if not.
 //
 // step: If 0, only return waypoints.
 //       If 1, create exhaustive step-by-step path.
@@ -1421,19 +1459,16 @@ typedef Internal::PodVec<Position> PathVector;
 //       and there is no obstruction between any two consecutive points.
 //       Note that this parameter does NOT influence the pathfinding in any way;
 //       it only controls the coarseness of the output path.
-template <typename GRID, typename PV> bool findPath(PV& path, const GRID& grid, unsigned startx, unsigned starty, unsigned endx, unsigned endy,
-                                       unsigned step = 0, // optional
-                                       SizeT *stepsDone = 0, SizeT *nodesExpanded = 0, // outputs; for your information
-                                       void *user = 0 // memory allocation userdata
-                                       )
+template <typename GRID, typename PV>
+SizeT findPath(PV& path, const GRID& grid, PosType startx, PosType starty, PosType endx, PosType endy,
+               unsigned step = 0, // optional
+               void *user = 0)    // memory allocation userdata
 {
     Searcher<GRID> search(grid, user);
-    bool found = search.findPath(path, Pos(startx, starty), Pos(endx, endy), step);
-    if(stepsDone)
-        *stepsDone = search.getStepsDone();
-    if(nodesExpanded)
-        *nodesExpanded = search.getNodesExpanded();
-    return found;
+    if(!search.findPath(path, Pos(startx, starty), Pos(endx, endy), step))
+        return 0;
+    const SizeT done = search.getStepsDone();
+    return done + !done; // report at least 1 step; as 0 would indicate failure
 }
 
 } // end namespace JPS
@@ -1448,6 +1483,9 @@ Changes compared to the older JPS.h at https://github.com/fgenesis/jps:
   Actually it'll be slightly slower if you free memory and pathfind again for the first time,
   as it has to re-allocate internal data structures.
 
+- Removed skip parameter. Imho that one just added confusion and no real benefit.
+  If you want it back for some reason: poke me, open an issue, whatever.
+
 - Renamed JPS::Result to JPS_Result. Enum values gained JPS_ prefix, so JPS::NO_PATH is now JPS_NO_PATH, and so on.
 
 - Added one more JPS_Result value: JPS_OUT_OF_MEMORY. See info block at the top how to handle this.
@@ -1455,8 +1493,8 @@ Changes compared to the older JPS.h at https://github.com/fgenesis/jps:
 - Changed signature of Searcher<>::findPathFinish() to return JPS_Result (was bool).
   This is more in line with the other 2 methods, as it can now return JPS_OUT_OF_MEMORY.
 
-- Removed skip parameter. Imho that one just added confusion and no real benefit.
-  If you want it back for some reason: poke me, open an issue, whatever.
+- Changed signature of JPS::findPath(). Nonzero return is still success. Pointers to output stats are gone.
+  Use a Searcher instance if you need the details.
 
 - This version no longer depends on the C++ STL: <algorithm>, <vector>, <map>, operator new(), all gone.
   Makes things more memory- and cache-friendly, and quite a bit faster, too.
@@ -1467,5 +1505,8 @@ Changes compared to the older JPS.h at https://github.com/fgenesis/jps:
 
 /*
 TODO:
+- make int -> DirType
+- make possible to call findPathStep()/findPathFinish() even when JPS_EMPTY_PATH was returned on init (simplifies switch-case)
+- make node know its heap index
 - optional diagonals (make runtime param)
 */
