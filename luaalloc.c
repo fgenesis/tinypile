@@ -193,13 +193,13 @@ inline static void *getdataend(Block *b)
     return ((char*)getdata(b)) + (b->elemSize * b->elemstotal);
 }
 
-inline unsigned sizeindex(u16 elemSize)
+inline static unsigned sizeindex(u16 elemSize)
 {
     LA_ASSERT(elemSize && elemSize <= LA_MAX_ALLOC);
     return (elemSize - 1) / LA_ALLOC_STEP;
 }
 
-inline unsigned bsizeindex(const Block *b)
+inline static unsigned bsizeindex(const Block *b)
 {
     return sizeindex(b->elemSize);
 }
