@@ -242,20 +242,13 @@ inline static u16 nextblockelems(Block *b)
 
 /* ---- System allocator interface ---- */
 
-typedef enum
-{
-    LA_TYPE_LARGELUA = 0,
-    LA_TYPE_BLOCK    = 1,
-    LA_TYPE_INTERNAL = 2
-} AllocType;
-
-inline static void *sysmalloc(LuaAlloc *LA, AllocType osize, size_t nsize)
+inline static void *sysmalloc(LuaAlloc *LA, size_t osize, size_t nsize)
 {
     LA_ASSERT(nsize);
     return LA->sysalloc(LA->user, NULL, osize, nsize);
 }
 
-inline static void sysfree(LuaAlloc * LA_RESTRICT LA, void * LA_RESTRICT p, size_t osize)
+inline static void sysfree(LuaAlloc * LA, void * p, size_t osize)
 {
     LA_ASSERT(p && osize);
     LA->sysalloc(LA->user, p, osize, 0); /* ignore return value */
@@ -275,7 +268,7 @@ static Block *_allocblock(LuaAlloc *LA, u16 nelems, u16 elemsz)
     nelems = roundToFullBitmap(nelems); /* The bitmap array must not have any unused bits */
     const u16 nbitmap = nelems / BITMAP_ELEM_SIZE;
 
-    void *ptr = sysmalloc(LA, LA_TYPE_BLOCK,
+    void *ptr = sysmalloc(LA, LUAALLOC_TYPE_BLOCK,
           (sizeof(Block) - sizeof(ubitmap)) /* block header without bitmap[1] */
         + (nbitmap * sizeof(ubitmap))       /* actual bitmap size */
         + (nelems * elemsz)                 /* data size */
@@ -325,7 +318,7 @@ static size_t enlarge(LuaAlloc *LA)
 {
     const size_t incr = (LA->allcap / 2) + 16;
     const size_t newcap = LA->allcap + incr; /* Rough guess */
-    Block **newall = (Block**)sysrealloc(LA, LA->all, LA->all ? LA->allcap : LA_TYPE_INTERNAL, sizeof(Block*) * newcap);
+    Block **newall = (Block**)sysrealloc(LA, LA->all, LA->all ? LA->allcap : LUAALLOC_TYPE_INTERNAL, sizeof(Block*) * newcap);
     if(newall)
     {
         LA->all = newall;
@@ -436,7 +429,7 @@ static void *_Balloc(Block *b)
     LA_ASSERT(b->elemsfree);
     ubitmap *bitmap = b->bitmap;
     unsigned i = 0, bm;
-    for( ; !(bm = bitmap[i]); ++i) {} /* as soon as one isn't all zero, there's a free slot */
+    for( ; !((bm = bitmap[i])); ++i) {} /* as soon as one isn't all zero, there's a free slot */
     LA_ASSERT(i < b->bitmapInts); /* And there must've been a free slot because b->elemsfree != 0 */
     ubitmap bitIdx = bitmap_CTZ(bm); /* Get exact location of free slot */
     LA_ASSERT(bm & ((ubitmap)1 << bitIdx)); // make sure this is '1' (= free)
@@ -510,7 +503,7 @@ static void *_Alloc(LuaAlloc *LA, size_t size)
         /* else try the alloc below */
     }
 
-    void *p = sysmalloc(LA, LA_TYPE_LARGELUA, size); /* large Lua allocation */
+    void *p = sysmalloc(LA, LUAALLOC_TYPE_LARGELUA, size); /* large Lua allocation */
 
 #ifdef LA_TRACK_STATS
     if(p)
@@ -584,6 +577,20 @@ static void *_Realloc(LuaAlloc * LA_RESTRICT LA, void * LA_RESTRICT p, size_t ne
     return newptr;
 }
 
+/* ---- Default system allocator ---- */
+
+#ifdef LA_ENABLE_DEFAULT_ALLOC
+static void *defaultalloc(void *user, void *ptr, size_t osize, size_t nsize)
+{
+    (void)user;
+    (void)osize;
+    if(nsize)
+        return realloc(ptr, nsize);
+    free(ptr);
+    return NULL;
+}
+#endif
+
 /* ---- Public API ---- */
 
 #ifdef __cplusplus
@@ -608,18 +615,6 @@ void *luaalloc(void * ud, void *ptr, size_t oldsize, size_t newsize)
     return NULL;
 }
 
-#ifdef LA_ENABLE_DEFAULT_ALLOC
-void *defaultalloc(void *user, void *ptr, size_t osize, size_t nsize)
-{
-    (void)user;
-    (void)osize;
-    if(nsize)
-        return realloc(ptr, nsize);
-    free(ptr);
-    return NULL;
-}
-#endif
-
 LuaAlloc * luaalloc_create(LuaSysAlloc sysalloc, void *user)
 {
     if(!sysalloc)
@@ -632,7 +627,7 @@ LuaAlloc * luaalloc_create(LuaSysAlloc sysalloc, void *user)
 #endif
     }
 
-    LuaAlloc *LA = (LuaAlloc*)sysalloc(user, NULL, LA_TYPE_INTERNAL, sizeof(LuaAlloc));
+    LuaAlloc *LA = (LuaAlloc*)sysalloc(user, NULL, LUAALLOC_TYPE_INTERNAL, sizeof(LuaAlloc));
     if(LA)
     {
         LA_MEMSET(LA, 0, sizeof(LuaAlloc));

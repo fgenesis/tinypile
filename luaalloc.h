@@ -60,6 +60,15 @@ void luaalloc_delete(LuaAlloc*);
 */
 unsigned luaalloc_getstats(const LuaAlloc*, const size_t **alive, const size_t **total, const size_t **blocks, unsigned *pbinstep);
 
+
+
+typedef enum
+{
+    LUAALLOC_TYPE_LARGELUA = 1,
+    LUAALLOC_TYPE_BLOCK    = 2,
+    LUAALLOC_TYPE_INTERNAL = 3
+} AllocType;
+
 #ifdef __cplusplus
 }
 #endif
@@ -87,9 +96,14 @@ You must handle the following cases:
 Types of allocations, in case (!ptr && nsize):
 switch(osize)
 {
-    case 0: passthrough/large Lua allocation (alloc'd/free'd/realloc'd incl. shrink requests)
-    case 1: block allocation (alloc'd/free'd, but never resized)
-    case 2: allocation of LuaAlloc-internal data (usually long-lived. alloc'd, realloc'd to enlarge, but never shrunk. free'd only in luaalloc_delete())
+    case LUAALLOC_TYPE_LARGELUA:
+        passthrough/large Lua allocation (alloc'd/free'd/realloc'd incl. shrink requests)
+    case LUAALLOC_TYPE_BLOCK:
+        block allocation (alloc'd/free'd, but never resized)
+    case LUAALLOC_TYPE_INTERNAL:
+        allocation of LuaAlloc-internal data (usually long-lived. alloc'd, realloc'd to enlarge, but never shrunk. free'd only in luaalloc_delete())
+    case 0: default:
+        some other allocation (not used by LuaAlloc. Maybe some other code uses this allocator as well?)
 }
 
 Lua allocations may fail and Lua usually handles this gracefully by running an emergency GC;
