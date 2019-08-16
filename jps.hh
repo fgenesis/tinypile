@@ -163,6 +163,7 @@ you'll get that exception, and the path vector will be in whatever state it was 
 If no exception is thrown (ie. you used JPS::PathVector) then the failure cases do not modify the path vector.
 
 You may abort a search anytime by starting a new one via findPathInit(), calling freeMemory(), or by destroying the searcher instance.
+Aborting or starting a search resets the values returned by .getStepsDone() and .getNodesExpanded() to 0.
 
 */
 
@@ -1482,6 +1483,8 @@ Changes compared to the older JPS.h at https://github.com/fgenesis/jps:
   Unlike the old version, there will be no performance degradation if you don't free memory every now and then.
   Actually it'll be slightly slower if you free memory and pathfind again for the first time,
   as it has to re-allocate internal data structures.
+
+- Searcher::getNodesExpanded() is now reset to 0 upon starting a search.
 
 - Removed skip parameter. Imho that one just added confusion and no real benefit.
   If you want it back for some reason: poke me, open an issue, whatever.
