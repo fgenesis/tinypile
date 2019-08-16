@@ -5,4 +5,5 @@ include_directories(..)
 
 add_subdirectory(luaalloc)
 add_subdirectory(jps)
-
+add_subdirectory(tbsp)
+add_subdirectory(tio)
