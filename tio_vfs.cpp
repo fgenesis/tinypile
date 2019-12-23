@@ -1,301 +1,355 @@
 #include "tio.h"
 #include "tio_vfs.h"
 
-/* Uncomment to drop all references to system functions (fopen() & friends, directory listing, etc).
-   If this is enabled, ONLY calls that use a VFS to access files will work, the rest is disabled.
-//#define TIO_NO_SYSTEM_API
 
 /* Uncomment to remove internal default allocator. Will assert that an external one is provided. */
-// //#define TIO_NO_MALLOC
-
-/* Uncomment to remove internal global allocator. Without the global allocator all functions
-   that create or allocate something but don't take an allocator parameter or have access to one will fail.
-   Example: tio_fopen() returns an internally allocated tio_FH but does not take an explicit allocator. */
-//#define TIO_NO_GLOBAL_ALLOCATOR
-
-/* Uncomment to disable all API functions that don't go through the VFS. Asserts or returns an error. */
-//#define TIO_FORCE_VFS
+//#define TIO_NO_MALLOC
 
 
-struct tio_Ctx
-{
-    tio_Alloc sysalloc;
-    void *sysallocdata;
-
-
-    inline void *sysmalloc(size_t nsize)
-    {
-        tio__ASSERT(nsize);
-        return this->sysalloc(this->sysallocdata, NULL, 0, nsize);
-    }
-
-    inline void sysfree(void * p, size_t osize)
-    {
-        tio__ASSERT(p && osize);
-        this->sysalloc(this->sysallocdata, p, osize, 0); /* ignore return value */
-    }
-
-    inline void *sysrealloc(void * tio__restrict p, size_t osize, size_t nsize)
-    {
-        tio__ASSERT(osize && nsize); /* This assert is correct even if an AllocType enum value is passed as osize. */
-        return this->sysalloc(this->sysallocdata, p, osize, nsize);
-    }
-
-
-};
-
-/* ---- System allocator interface ---- */
-
-inline static void *sysmalloc(tio_Ctx *tio, size_t nsize)
-{
-    tio__ASSERT(nsize);
-    return tio->sysalloc(tio->sysallocdata, NULL, 0, nsize);
-}
-
-inline static void sysfree(tio_Ctx * tio, void * p, size_t osize)
-{
-    tio__ASSERT(p && osize);
-    tio->sysalloc(tio->sysallocdata, p, osize, 0); /* ignore return value */
-}
-
-inline static void *sysrealloc(tio_Ctx * tio__restrict tio, void * tio__restrict p, size_t osize, size_t nsize)
-{
-    tio__ASSERT(osize && nsize); /* This assert is correct even if an AllocType enum value is passed as osize. */
-    return tio->sysalloc(tio->sysallocdata, p, osize, nsize);
-}
+// Used libc functions. Optionally replace with your own.
+#include <string.h> // memcpy, memset, strlen
+#ifndef tio__memzero
+#define tio__memzero(dst, n) memset(dst, 0, n)
+#endif
+#ifndef tio__memcpy
+#define tio__memcpy(dst, src, n) memcpy(dst, src, n)
+#endif
+#ifndef tio__strlen
+#define tio__strlen(s) strlen(s)
+#endif
 
 #ifndef TIO_NO_MALLOC
+#include <stdlib.h>
+#endif
+
+#if defined(_DEBUG) || defined(DEBUG) || !defined(NDEBUG)
+#  define TIO_DEBUG
+#endif
+
+#ifndef tio__ASSERT
+#  ifdef TIO_DEBUG
+#    include <assert.h>
+#    define tio__ASSERT(x) assert(x)
+#  else
+#    define tio__ASSERT(x)
+#  endif
+#endif
+
+#ifndef tio__TRACE
+#  if defined(TIO_DEBUG) && defined(TIO_ENABLE_DEBUG_TRACE)
+#    include <stdio.h>
+#    define tio__TRACE(fmt, ...) printf("tiov: " fmt "\n", __VA_ARGS__)
+#  else
+#    define tio__TRACE(fmt, ...)
+#  endif
+#endif
+
+
+static tio_error fail(tio_error err)
+{
+    // If this assert triggers, you're mis-using the API.
+    // (Maybe you tried writing to a read-only file or somesuch?)
+    // If you don't like this behavior, comment out the assert and you'll get
+    // an error code returned instead, risking that this goes undetected.
+    // You have been warned.
+    tio__ASSERT(false && "tiov: API misuse detected");
+
+    return err;
+}
+
 static void *defaultalloc(void *user, void *ptr, size_t osize, size_t nsize)
 {
-    (void)user;
-    (void)osize;
+    (void)user; (void)osize; (void)nsize; (void)ptr; // avoid unused params warnings
+#ifdef TIO_NO_MALLOC
+    tio__ASSERT(false && "You disabled the internal allocator but didn't pass an external one.");
+#else
     if(nsize)
         return realloc(ptr, nsize);
     free(ptr);
+#endif
     return NULL;
 }
-#endif
 
-
-/* ---- String / path handling stuff ---- */
-
-struct LongStr
+inline static void *fwdalloc(tio_Alloc alloc, void *ud, size_t nsize)
 {
-    char *ptr;
-    size_t sz;
-};
-
-struct ShortStrLayout
-{
-    // LITTLE ENDIAN
-    unsigned char meta;
-    char buf[sizeof(LongStr) - 1];
-    // BIG ENDIAN
-    /*    unsigned char meta;
-    char buf[sizeof(LongStr) - 1];*/
-};
-
-union ShortStr
-{
-    LongStr l;
-    ShortStrLayout s;
-
-    inline uintptr_t isShort() const { return uintptr_t(l.ptr) & 1; }
-    inline size_t size() const { return isShort() ? (s.meta >> 1) : l.sz; }
-    inline       char *ptr()       { return isShort() ? &s.buf[0] : l.ptr; }
-    inline const char *ptr() const { return isShort() ? &s.buf[0] : l.ptr; }
-};
-
-struct Pathbuf
-{
-    char *s; // start of string
-    char *send; // end of string (\0)
-    unsigned *p; // part sizes
-    unsigned scap; // string buffer capacity
-    unsigned pcap; // parts buffer capacity (number of entries)
-    unsigned pbuf[16]; // static part sizes mem
-    char sbuf[256]; // static string mem
-
-    const tio_Alloc _alloc;
-    void * const _ud;
-
-    Pathbuf(tio_Alloc alloc, void *ud)
-        : s(&sbuf[0]), send(s), p(&pbuf[0]), scap(sizeof(sbuf)), pcap(sizeof(pbuf)), _alloc(alloc), _ud(ud) {}
-
-    ~Pathbuf()
-    {
-        if(s != &sbuf[0])
-            _alloc(_ud, s, scap, 0);
-        if(p != &pbuf[0])
-            _alloc(_ud, s, pcap * sizeof(unsigned), 0);
-    }
-
-    inline size_t size() const { return send - s; }
-
-    char *enlargeStr(unsigned sz)
-    {
-        unsigned sz2 = scap * 2;
-        sz = tio__max(sz, sz2);
-        char *s2 = (char*)_alloc(_ud, s == &sbuf[0] ? NULL : s, s == &sbuf[0] ? 0 : scap, sz);
-        if(s2)
-        {
-            if(s == &sbuf[0])
-                tio__memcpy(s2, sbuf, sizeof(sbuf));
-            send = s2 + (send - s);
-            s = s2;
-            scap = sz;
-        }
-        return s2;
-    }
-
-    unsigned *enlargeParts(unsigned n)
-    {
-        unsigned n2 = pcap * 2;
-        n = tio__max(n, n2);
-        unsigned *p2 = (unsigned*)_alloc(_ud, p == &pbuf[0] ? NULL : p, p == &pbuf[0] ? 0 : pcap, n * sizeof(unsigned));
-        if(p2)
-        {
-            if(p == &pbuf[0])
-                tio__memcpy(p2, pbuf, sizeof(pbuf));
-            p = p2;
-            pcap = n;
-        }
-        return p2;
-    }
-
-    char *grow(unsigned extra)
-    {
-        unsigned newsz = size() + extra;
-        return newsz < scap ? s : enlargeStr(newsz);
-    }
-
-    char *push(const char *x)
-    {
-        return push(x, x + tio__strlen(x));
-    }
-
-    // return full path or NULL on error
-    char *push(const char *x, const char *xend)
-    {
-        size_t add = xend - x;
-        char * const dst = grow(add + 1); // guess (too large is ok, too small is not)
-        char *w = dst;
-
-        const char * const beg = x;
-        unsigned plen = 0;
-        for(char c = *x; x < xend; c = *x++)
-        {
-            if(isdirsep(c))
-            {
-                w = pushsep(plen);
-                plen = 0;
-            }
-            else
-                *w++ = c;
-        }
-
-        // TODO
-    }
-
-    // return full path or NULL on error
-    char *pop()
-    {
-
-    }
+    tio__ASSERT(nsize);
+    return alloc(ud, NULL, 0, nsize);
 }
+
+inline static void fwdfree(tio_Alloc alloc, void *ud, void *p, size_t osize)
+{
+    tio__ASSERT(p && osize);
+    alloc(ud, p, osize, 0); /* ignore return value */
+}
+
+inline static void *fwdrealloc(tio_Alloc alloc, void *ud, void *p, size_t osize, size_t nsize)
+{
+    tio__ASSERT(osize && nsize);
+    return alloc(ud, p, osize, nsize);
+}
+
+struct tio_VFS
+{
+    tio_Alloc alloc;
+    void *allocUD;
+};
+
+struct tio_FH
+{
+    tiov_Backend *backend;
+    tio_FOps op;
+
+    // Below here is opaque memory
+    union
+    {
+        tio_Handle h;
+        void *p;
+    } u;
+
+    // Unbounded struct; more memory may follow below
+};
 
 /* ---- Begin Init/Teardown ---- */
 
-static tio_Ctx *newctx(tio_Alloc sysalloc, void *allocdata)
+static tio_VFS *newvfs(tio_Alloc alloc, void *allocdata)
 {
-    if(!sysalloc)
-    {
-#ifndef TIO_NO_MALLOC
-        sysalloc = defaultalloc;
-#else
-        tio__ASSERT(sysalloc);
-        return NULL;
-#endif
-    }
+    if(!alloc)
+        alloc = defaultalloc;
 
-    tio_Ctx *tio = (tio_Ctx*)sysalloc(allocdata, NULL, 0, sizeof(tio_Ctx));
-    if(tio)
+    tio_VFS *vfs = (tio_VFS*)fwdalloc(alloc, allocdata, sizeof(tio_VFS));
+    if(vfs)
     {
-        tio__memset(tio, 0, sizeof(tio_Ctx));
-        tio->sysalloc = sysalloc;
-        tio->sysallocdata = allocdata;
+        tio__memzero(vfs, sizeof(tio_VFS));
+        vfs->alloc = alloc;
+        vfs->allocUD = allocdata;
     }
-    return tio;
+    return vfs;
 }
 
-static void freectx(tio_Ctx *tio)
+static void freevfs(tio_VFS *tio)
 {
-    sysfree(tio, tio, sizeof(tio_Ctx));
+    // TODO: clean up
+    fwdfree(tio->alloc, tio->allocUD, tio, sizeof(tio_VFS));
 }
 
 /* ---- End Init/Teardown ---- */
 
+/* ---- Begin native interface to tio ----*/
 
-/* ---- Begin funcationality emulation ---- */
+#define $H(fh) (fh->u.h)
 
-static void fake_mmio_munmap_RAM(tio_MMIO *mmio)
+
+static tio_error fs_fclose(tio_FH *fh)
 {
-    tio_Alloc alloc = (tio_Alloc)mmio->_internal[0];
-    void *user = mmio->_internal[1];
-    size_t bytes = mmio->end - mmio->begin;
-    alloc(user, mmio->begin, bytes, 0);
+    tio_Handle h = $H(fh);
+    tio__memzero(fh, sizeof(*fh));
+    tio_error err = tio_kclose(h);
+    fwdfree(fh->backend->alloc, fh->backend->allocUD, fh, sizeof(tio_FH));
+    return err;
 }
 
-// Wrap pointer into mmio interface
-static void *fake_mmio_mmap_RAM(tio_MMIO *mmio, void *p, size_t bytes, tio_Alloc alloc, void *user)
+static tiosize fs_fwrite(tio_FH *fh, const void *ptr, size_t bytes)
 {
-    tio__memset(mmio, 0, sizeof(*mmio));
-    if(p)
+    return tio_kwrite($H(fh), ptr, bytes);
+}
+
+static tiosize fs_fread(tio_FH *fh, void *ptr, size_t bytes)
+{
+    return tio_kread($H(fh), ptr, bytes);
+}
+
+static tio_error  fs_fseek(tio_FH *fh, tiosize offset, tio_Seek origin)
+{
+    return tio_kseek($H(fh), offset, origin);
+}
+
+static tio_error fs_ftell(tio_FH *fh, tiosize *poffset)
+{
+    return tio_ktell($H(fh), poffset);
+}
+
+static tio_error fs_fflush(tio_FH *fh)
+{
+    return tio_kflush($H(fh));
+}
+
+static int fs_feof(tio_FH *fh)
+{
+    return tio_keof($H(fh));
+}
+
+static tio_error fs_fgetsize(tio_FH *fh, tiosize *pbytes)
+{
+    return tio_kgetsize($H(fh), pbytes);
+}
+
+static tio_error fs_fsetsize(tio_FH *fh, tiosize bytes)
+{
+    return tio_ksetsize($H(fh), bytes);
+}
+
+static const tio_FOps fs_ops =
+{
+    fs_fclose,
+    fs_fread,
+    fs_fwrite,
+    fs_fseek,
+    fs_ftell,
+    fs_fflush,
+    fs_feof,
+    fs_fgetsize,
+    fs_fsetsize,
+};
+
+static tio_error fs_fopen(tiov_Backend *backend, tio_FH **hDst, const char *fn, tio_Mode mode, tio_Features features)
+{
+    tio_Handle h;
+    tio_error err = tio_kopen(&h, fn, mode, features);
+    if(err)
+        return err;
+
+    tio_FH *fh = (tio_FH*)fwdalloc(backend->alloc, backend->allocUD, sizeof(tio_FH));
+    if(!fh)
     {
-        mmio->begin = (char*)p;
-        mmio->end = ((char*)p) + bytes;
-        mmio->_unmap = fake_mmio_munmap_RAM;
-        mmio->_internal[0] = alloc;
-        mmio->_internal[1] = user;
+        tio_kclose(h);
+        return tio_Error_AllocationFail;
     }
-    return p;
+
+    fh->backend = backend;
+    fh->u.h = h;
+    fh->op = fs_ops; // makes a copy
+
+    *hDst = fh;
+    return 0;
 }
 
-static void *fake_mmio_malloc(tio_MMIO *mmio, size_t bytes, tio_Alloc alloc, void *user)
+#undef $H
+
+static tio_error fs_mopen(tiov_Backend *, tio_MMIO *mmio, const char *fn, tio_Mode mode, tio_Features features)
 {
-    void *p = alloc(user, NULL, 0, bytes);
-    return fake_mmio_mmap_RAM(mmio, p, bytes, alloc, user);
+    return tio_mopen(mmio, fn, mode, features);
 }
 
-static void *fake_mmio_mmap_FH(tio_MMIO *mmio, tio_FH *fh)
+static tio_error fs_sopen(tiov_Backend *, tio_Stream *sm, const char *fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize)
 {
+    return tio_sopen(sm, fn, mode, features, flags, blocksize);
 }
 
-static void closememstream(tio_Stream *sm)
+static tio_error fs_dirlist(tiov_Backend *, const char *path, tio_FileCallback callback, void *ud)
 {
-    tio_Alloc alloc = (tio_Alloc)sm->_private[0];
-    if(alloc)
+    return tio_dirlist(path, callback, ud);
+}
+
+static tio_FileType fs_fileinfo(tiov_Backend *, const char *path, tiosize *psz)
+{
+    return tio_fileinfo(path, psz);
+}
+
+
+static tio_error fs_backendDummy(tiov_Backend *)
+{
+    return 0;
+}
+
+static const tiov_Backend NativeBackend =
+{
+    NULL, NULL, // allocator
+    fs_backendDummy, // don't need init or shutdown
+    fs_backendDummy,
+    fs_fopen,
+    fs_mopen,
+    fs_sopen,
+    fs_dirlist,
+    fs_fileinfo
+};
+
+
+/* ---- End native interface ----*/
+
+static void adjustfop(tio_FH *fh, tio_Mode mode, tio_Features features)
+{
+    if(!(mode & (tio_W | tio_A)))
     {
-        void *p = sm->_private[1];
-        size_t bytes = (size_t)(uintptr_t)sm->_private[2];
-        void *user = sm->_private[3];
-        alloc(user, p, bytes, 0);
-        tio__memset(sm->_private, 0, sizeof(sm->_private));
+        fh->op.SetSize = NULL;
+        fh->op.Write = NULL;
     }
-    invalidate(sm);
+    if(!(mode & tio_R))
+        fh->op.Read = NULL;
+    if(features & tioF_NoResize)
+        fh->op.SetSize = NULL;
+    if(features & tioF_Sequential)
+        fh->op.Seek = NULL;
 }
 
-static tio_Stream *initmemstreamREAD(tio_Stream *sm, void *p, size_t bytes, tio_Alloc alloc, void *user)
+// The minimal set of functions that must be supported
+static bool checkfop(const tio_FOps *op)
 {
-    tio__memset(sm, 0, sizeof(tio_Stream));
-    sm->start = sm->cursor = p;
-    sm->end = ((char*)p) + bytes;
-    sm->Refill = streamfail;
-    sm->Close = closememstream;
-    sm->_private[0] = alloc;
-    sm->_private[1] = p;
-    sm->_private[2] = (void*)(uintptr_t)bytes;
-    sm->_private[3] = user;
-    return sm;
+    return op->Close
+        && (op->Read || op->Write)
+        && op->Eof;
+}
+
+
+
+/* ---- Begin public API ---- */
+
+TIO_EXPORT const tiov_Backend *tiov_getfs()
+{
+    return &NativeBackend;
+}
+
+TIO_EXPORT tio_error tiov_fclose(tio_FH *fh)
+{
+    return fh->op.Close(fh); // must exist
+}
+
+TIO_EXPORT tiosize tiov_fwrite(tio_FH *fh, const void *ptr, size_t bytes)
+{
+    return fh->op.Write ? fh->op.Write(fh, ptr, bytes) : fail(tio_Error_BadOp);
+}
+
+TIO_EXPORT tiosize tiov_fread(tio_FH *fh, void *ptr, size_t bytes)
+{
+    return  fh->op.Read ? fh->op.Read(fh, ptr, bytes) : fail(tio_Error_BadOp);
+}
+
+TIO_EXPORT tio_error tiov_fseek(tio_FH *fh, tiosize offset, tio_Seek origin)
+{
+    return fh->op.Seek ? fh->op.Seek(fh, offset, origin) : fail(tio_Error_BadOp);
+}
+
+TIO_EXPORT tio_error tiov_ftell(tio_FH *fh, tiosize *poffset)
+{
+    return fh->op.Tell ? fh->op.Tell(fh, poffset) : fail(tio_Error_BadOp);
+}
+
+TIO_EXPORT tio_error tiov_fflush (tio_FH *fh)
+{
+    return fh->op.Flush ? fh->op.Flush(fh) : fail(tio_Error_BadOp);
+}
+
+TIO_EXPORT int tiov_feof(tio_FH *fh)
+{
+    return fh->op.Eof(fh); // must exist
+}
+
+TIO_EXPORT tio_error tiov_fgetsize(tio_FH *fh, tiosize *pbytes)
+{
+    return fh->op.GetSize ? fh->op.GetSize(fh, pbytes) : fail(tio_Error_BadOp);
+}
+
+TIO_EXPORT tio_error tiov_fsetsize(tio_FH *fh, tiosize bytes)
+{
+    return fh->op.SetSize ? fh->op.SetSize(fh, bytes) : fail(tio_Error_BadOp);
+}
+
+TIO_EXPORT tiosize tiov_fsize(tio_FH *fh)
+{
+    tiosize sz = 0;
+    if(!fh->op.GetSize)
+        fail(tio_Error_BadOp);
+    else if(fh->op.GetSize(fh, &sz))
+        sz = 0;
+    return sz;
 }
 

@@ -1,16 +1,51 @@
-#include "tio.h"
+// TODO: prefetch block of visible memory for mmio streams if enabled. have 2 blocks in flight.
 
-/* ---- Begin compile config ---- */
 
-#define TIO_ENABLE_DEBUG_TRACE
+/* Tiny file I/O abstraction library.
 
-// Maximal path length that makes sense on this platform, autodetected below if not defined here
-//#define TIO_MAX_SANE_PATH 1024
+License:
+  Public domain, WTFPL, CC0 or your favorite permissive license; whatever is available in your country.
 
-// (See below for your own libc overrides) */
+Features:
+- Pure C API (The implementation uses some C++98 features)
+- File names and paths use UTF-8.
+- No heap allocations in the library (one exception on win32 where it makes sense. Ctrl+F VirtualAlloc)
+- Win32: Proper translation to wide UNC paths to avoid 260 chars PATH_MAX limit
+- 64 bit file sizes and offsets
 
-/* ---- End compile config ---- */
+Dependencies:
+- Optionally libc for memcpy, memset, strlen unless you use your own
+- On POSIX platforms: libc for some POSIX wrappers around syscalls (open, close, posix_fadvise, ...)
+- C++(98) for some convenience features, destructors, struct member autodetection, and type safety
+  (But no exceptions, STL, or the typical C++ bullshit)
 
+Thread safety:
+- There is no global state.
+  (Except a bunch of statics that are set on the first call to avoid further syscalls.)
+- The system wrapper APIs are as safe as guaranteed by the OS.
+  Usually you may open/close files, streams, mmio freely from multiple threads at once.
+- Individual tio_Stream, tio_MMIO need to be externally locked if used across multiple threads.
+
+Why not libc stdio?
+- libc has no concept of directories
+- libc has no memory-mapped IO
+- libc stdio does lots of small heap allocations internally
+- libc stdio can be problematic with files > 2 GB
+- libc stdio has no way of communicating access patterns
+- File names are char*, but which encoding?
+- Parameters to fread/fwrite() are a complete mess
+- Some functions like ungetc() should never have existed
+- Try to get the size of a file without seeking. Bonus points if the file is > 4 GB.
+- fopen() access modes are stringly typed and rather confusing. "r", "w", "r+", "w+"?
+- fopen() in "text mode" does magic escaping of \n to \r\n,
+  but only on windows, and may break when seeking
+
+Why not std::fstream + std::filesystem?
+- No.
+
+Origin:
+  https://github.com/fgenesis/tinypile/blob/master/tio.cpp
+*/
 
 // All the largefile defines for POSIX. Windows doesn't care so we'll just enable them unconditionally.
 // Needs to be defined before including any other headers.
@@ -27,83 +62,122 @@
 #  define _FILE_OFFSET_BITS 64
 #endif
 #ifndef _POSIX_C_SOURCE
-#  define _POSIX_C_SOURCE 1
+#  define _POSIX_C_SOURCE 200112L // Needed for posix_madvise and posix_fadvise
+#endif
+
+// Win32 defines, also putting them before any other headers just in case
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef VC_EXTRALEAN
+#  define VC_EXTRALEAN
+#endif
+
+#include "tio.h"
+
+/* ---- Begin compile config ---- */
+
+// This is a safe upper limit for stack allocations.
+// Especially on windows, UTF-8 to wchar_t conversion requires some temporary memory,
+// and that's best allocated from the stack to keep the code free of heap allocations.
+// This value limits the length of paths that can be processed by this library.
+#define TIO_MAX_STACK_ALLOC 0x8000
+
+// Print some things in debug mode. For debugging internals.
+#define TIO_ENABLE_DEBUG_TRACE
+
+/* ---- End compile config ---- */
+
+#define tio__static_assert(cond) switch(cond){case 0:;case(cond):;}
+
+// Used libc functions. Optionally replace with your own.
+#include <string.h> // memcpy, memset, strlen
+#ifndef tio__memzero
+#define tio__memzero(dst, n) memset(dst, 0, n)
+#endif
+#ifndef tio__memcpy
+#define tio__memcpy(dst, src, n) memcpy(dst, src, n)
+#endif
+#ifndef tio__strlen
+#define tio__strlen(s) strlen(s)
+#endif
+
+// short, temporary on-stack allocation. Used only via tio__checked_alloca(), see below
+#ifndef tio__alloca
+#define tio__alloca(n) alloca(n)
+#endif
+#ifndef tio__freea
+#define tio__freea(p) /* not necessary */
 #endif
 
 #ifdef _WIN32
-#  define WIN32_LEAN_AND_MEAN
-#  define WIN32_NOMINMAX
-#  define STRICT
-#  undef _WIN32_WINNT
-   // win32 API level -- Go as high as possible; newer APIs are pulled in dynamically so it'll run on older systems
+// win32 API level -- Go as high as possible; newer APIs are pulled in dynamically so it'll run on older systems
+#  ifdef _WIN32_WINNT
+#    undef _WIN32_WINNT
+#  endif
 #  define _WIN32_WINNT 0x0602 // _WIN32_WINNT_WIN8
-#  include <io.h>
-#  include <Windows.h>
+#  define UNICODE
+#  define STRICT
+#  define NOGDI // optional: exclude crap begin
+#  define NOMINMAX
+#  define NOSERVICE
+#  define NOMCX
+#  define NOIME // exclude crap end
+#  include <Windows.h> // the remaining crap
 #  include <malloc.h> // alloca
-#  define USE_WIN32_MMIO
 #  pragma warning(disable: 4127)
 #  pragma warning(disable: 4702) // unreachable code
-#  ifndef TIO_MAX_SANE_PATH
-#    define TIO_MAX_SANE_PATH MAX_PATH
-#  endif
    typedef DWORD IOSizeT;
 #  define OS_PATHSEP '\\'
 #else
 #  include <stdlib.h> // alloca
-#  include <sys/mman.h>
-#  include <sys/stat.h>
-#  include <fcntl.h>
+#  include <sys/mman.h> // mmap, munmap
+#  include <sys/stat.h> // fstat64
+#  include <fcntl.h> // O_* macros for open()
 #  include <unistd.h>
-#  include <limits.h> // PATH_MAX
-#  ifndef TIO_NO_MMIO
-#    define USE_POSIX_MMIO
-#    if _POSIX_C_SOURCE >= 200112L
-#      define _HAVE_POSIX_MADVISE
-#      define _HAVE_POSIX_FADVISE
-#    endif
-#  endif
-#  ifndef TIO_MAX_SANE_PATH
-#    define TIO_MAX_SANE_PATH PATH_MAX
-#  endif
+#  define _HAVE_POSIX_MADVISE
+#  define _HAVE_POSIX_FADVISE
    typedef size_t IOSizeT;
 #  define OS_PATHSEP '/'
 #endif
 
-#if TIO_MAX_SANE_PATH > 4096
-#  error TIO_MAX_SANE_PATH is super long, check this.
-   // This is a safe limit for tio__alloca(). If whatever you're using for tio__alloca() can safely cope with more, remove this check.
+// For making sure that functions that do heavy stack allocation are not inlined
+#if defined(_MSC_VER) && _MSC_VER >= 1300
+#  define TIO_NOINLINE __declspec(noinline)
+#elif (defined(__GNUC__) && (__GNUC__ >= 4)) || defined(__clang__)
+#  define TIO_NOINLINE __attribute__((noinline))
+#else // gotta trust the compiler to do the right thing
+#  define TIO_NOINLINE
 #endif
 
-#include <string.h> // memcpy, memset, strlen
+#if defined(_DEBUG) || defined(DEBUG) || !defined(NDEBUG)
+#  define TIO_DEBUG
+#endif
 
-
-#if defined(TIO_ENABLE_DEBUG_TRACE) && (defined(_DEBUG) || defined(DEBUG) || !defined(NDEBUG))
-#  include <stdio.h>
-#  define tio__TRACE(fmt, ...) printf("tio: " fmt "\n", __VA_ARGS__)
-#  ifndef tio__ASSERT
+#ifndef tio__ASSERT
+#  ifdef TIO_DEBUG
 #    include <assert.h>
 #    define tio__ASSERT(x) assert(x)
+#  else
+#    define tio__ASSERT(x)
 #  endif
-#else
-#  undef tio__ASSERT
-#  define tio__ASSERT(x)
+#endif
+
+#ifndef tio__TRACE
+#  if defined(TIO_DEBUG) && defined(TIO_ENABLE_DEBUG_TRACE)
+#    include <stdio.h>
+#    define tio__TRACE(fmt, ...) printf("tio: " fmt "\n", __VA_ARGS__)
+#  else
+#    define tio__TRACE(fmt, ...)
+#  endif
 #endif
 
 
-// Used libc functions. Optionally replace with your own.
-#define tio__memzero(dst, n) memset(dst, 0, n)
-#define tio__memcpy(dst, src, n) memcpy(dst, src, n)
-#define tio__strlen(s) strlen(s)
-
-// short, temporary on-stack allocation. Bounded by TIO_MAX_SANE_PATH.
-#define tio__alloca(n) alloca(n)
-#define tio__freea(p) /* not necessary */
+// bounded, non-zero stack allocation
+#define tio__checked_alloca(n) (((n) && (n) <= TIO_MAX_STACK_ALLOC) ? tio__alloca(n) : NULL)
 
 
-#define tio__restrict __restrict
-
-#define tio__min(a, b) ((a) < (b) ? (a) : (b))
-#define tio__max(a, b) ((b) < (a) ? (a) : (b))
+template<typename T> inline T tio_min(T a, T b) { return (a) < (b) ? (a) : (b); }
 
 
 typedef unsigned char tio_byte;
@@ -127,7 +201,7 @@ template<typename T, T x> struct _MaxIOBlockSize
 };
 template<typename T> struct MaxIOBlockSize
 {
-    enum {value = _MaxIOBlockSize<T, 1>::value };
+    enum { value = _MaxIOBlockSize<T, 1>::value };
 };
 
 
@@ -135,17 +209,15 @@ enum
 {
 #ifdef _WIN32
     tio_Win32SafeWriteSize = 1024*1024*16, // MSDN is a bit unclear, something about 31.97 MB, so 16MB should be safe in all cases
-    tio_PathExtraSpace = 4, // for optional UNC prefix: "\\?\"
-#else // POSIX
+    tio_PathExtraSpace = 4, // for UNC prefix: "\\?\"
+#else // no UNC path madness
     tio_PathExtraSpace = 0,
 #endif
-    //tio_MinSizeBytes = tio__min(sizeof(tiosize), sizeof(void*)),
-    //tio_MaxSizeBytes = tio__max(sizeof(tiosize), sizeof(void*)),
-    tio_MaxArchMask = (tiosize)(uintptr_t)(void*)(intptr_t)(-1), // cast away as many high bits as possible on this little round-trip
+    tio_MaxArchMask = (size_t)(tiosize)(uintptr_t)(void*)(intptr_t)(-1), // cast away as many high bits as possible on this little round-trip
     tio_MaxIOBlockSize = MaxIOBlockSize<IOSizeT>::value // max. power-of-2 size that can be safely used by the OS native read/write calls
-
 };
 
+/*
 template<typename T> // Aln must be power of 2
 inline static T AlignUp(T p, intptr_t Aln)
 {
@@ -161,6 +233,14 @@ inline static T AlignDown(T p, intptr_t Aln)
     value &= ~(Aln - 1);
     return static_cast<T>(value);
 }
+*/
+
+struct AutoFreea
+{
+    inline AutoFreea(void *p) : _p(p) {}
+    inline ~AutoFreea() { tio__freea(_p); }
+    void * const _p;
+};
 
 
 struct OpenMode
@@ -171,17 +251,28 @@ struct OpenMode
     tio_byte fileidx;
 };
 
-static OpenMode checkmode(unsigned& mode)
+static OpenMode checkmode(unsigned& mode, tio_Features& features)
 {
     if(mode & tio_A)
+    {
         mode |= tio_W;
+        tio__ASSERT(!(features & tioF_NoResize) && "Append mode and tioF_NoResize together makes no sense");
+        features &= ~tioF_NoResize;
+    }
+    tio__ASSERT(mode & tio_RW);
 
-    OpenMode om 
+    if(!(mode & tio_R))
+    {
+        tio__ASSERT(!(features & tioF_Preload) && "tioF_Preload and write-only makes no sense");
+        features &= ~tioF_Preload;
+    }
+
+    OpenMode om =
     {
         tio_byte(0),
         tio_byte(mode & tio_RW),
         tio_byte((mode & (tioM_Truncate | tioM_Keep)) >> 2),
-        tio_byte((mode & tioM_MustNotExist) >> 4)
+        tio_byte((mode & tioM_MustNotExist) >> 4),
     };
 
     if(om.accessidx)
@@ -215,7 +306,6 @@ struct Win32MemRangeEntry // same as PWIN32_MEMORY_RANGE_ENTRY for systems that 
     uintptr_t sz;
 };
 
-static HMODULE hKernel32 = NULL;
 typedef BOOL (*WIN_PrefetchVirtualMemory_func)( // Available on Win8 and up
   HANDLE                    hProcess,
   ULONG_PTR                 NumberOfEntries,
@@ -228,336 +318,483 @@ static WIN_PrefetchVirtualMemory_func WIN_PrefetchVirtualMemory = NULL;
 static void WIN_InitOptionalFuncs()
 {
     tio__TRACE("WIN_LoadOptionalFuncs");
-    hKernel32 = LoadLibraryA("Kernel32.dll");
+    HMODULE hKernel32 = LoadLibraryA("Kernel32.dll");
     tio__TRACE("hKernel32 = %p", hKernel32);
     if(hKernel32)
     {
-        WIN_PrefetchVirtualMemory = (WIN_PrefetchVirtualMemory_func)GetProcAddress(hKernel32, "PrefetchVirtualMemory");
+        WIN_PrefetchVirtualMemory = (WIN_PrefetchVirtualMemory_func)::GetProcAddress(hKernel32, "PrefetchVirtualMemory");
         tio__TRACE("PrefetchVirtualMemory = %p", WIN_PrefetchVirtualMemory);
     }
 }
-#endif // _WIN32
 
-// true if file was opened; out is always written but the value is OS-specific (NULL may be valid on some systems)
-static bool sysopen(void **out, const char *fn, const OpenMode om, unsigned features)
+#define WIN_ToWCHAR(wc, len, str, extrasize) \
+    len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, str, -1, NULL, 0); \
+    wc = (LPWSTR)tio__checked_alloca((len + (extrasize)) * sizeof(WCHAR)); \
+    AutoFreea _afw(wc); \
+    if(wc) MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, str, -1, wc, len);
+
+
+
+#elif defined(_POSIX_VERSION)
+
+static inline int h2fd(tio_Handle h) { return (int)(intptr_t)h; }
+static inline tio_Handle fd2h(int fd) { return (tio_Handle)(intptr_t)fd; }
+
+#endif
+
+static inline tio_Handle getInvalidHandle()
+{
+#ifdef _WIN32
+    return (tio_Handle)INVALID_HANDLE_VALUE;
+#elif(_POSIX_VERSION)
+    tio__static_assert(sizeof(int) <= sizeof(tio_Handle));
+    return fd2h(-1);
+#endif
+}
+
+static inline bool isvalidhandle(tio_Handle h)
+{
+    return h != getInvalidHandle();
+}
+
+static tio_error os_stdhandle(tio_Handle *hDst, tio_StdHandle id)
+{
+    if(id > tio_stderr)
+    {
+        *hDst = getInvalidHandle();
+        return -1;
+    }
+#ifdef _WIN32
+    static const DWORD _wstd[] = { STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE };
+    HANDLE h = GetStdHandle(_wstd[id]);
+    *hDst = (tio_Handle)h;
+    return h != INVALID_HANDLE_VALUE;
+
+#elif defined(_POSIX_VERSION)
+#error WRITE ME
+#endif
+}
+
+// true if file was opened; out is always written but the value is OS-specific (NULL may be valid on some systems?)
+static TIO_NOINLINE bool sysopen(tio_Handle *out, const char *fn, const OpenMode om, tio_Features features, unsigned osflags)
 {
     tio__ASSERT(om.good);
 
 #ifdef _WIN32
-    static const DWORD _access[] = { GENERIC_READ, GENERIC_WRITE, GENERIC_READ | GENERIC_WRITE }; // FIXME: append mode
-    static const DWORD _share[] = { FILE_SHARE_READ, 0, FILE_SHARE_READ | FILE_SHARE_WRITE };
+    // FIXME: append mode + TRUNCATE_EXISTING (may have to retry with CREATE_ALWAYS)
+    static const DWORD _access[] = { GENERIC_READ, GENERIC_WRITE, GENERIC_READ | GENERIC_WRITE };
     static const DWORD _dispo[] = { CREATE_ALWAYS, OPEN_EXISTING, CREATE_NEW };
-    DWORD attr = FILE_ATTRIBUTE_NORMAL;
+    const DWORD access = _access[om.accessidx];
+    DWORD attr = osflags | FILE_ATTRIBUTE_NORMAL;
     if(features & tioF_Sequential)
         attr |= FILE_FLAG_SEQUENTIAL_SCAN;
-    HANDLE hFile = CreateFileA(fn, _access[om.accessidx], _share[om.accessidx], NULL, _dispo[om.fileidx], attr, NULL); // INVALID_HANDLE_VALUE on failure
-    *out = hFile;
+    if((features & tioF_NoBuffer) && !(access & GENERIC_READ))
+        attr |= FILE_FLAG_WRITE_THROUGH;
+
+    LPWSTR wfn;
+    int wlen;
+    WIN_ToWCHAR(wfn, wlen, fn, 0);
+    if(!wfn)
+        return false;
+
+    HANDLE hFile = ::CreateFileW(wfn, access, FILE_SHARE_READ, NULL, _dispo[om.fileidx], attr, NULL); // INVALID_HANDLE_VALUE on failure
+    
+    //if(hFile == INVALID_HANDLE_VALUE) // retry if truncating didn't work
+    
+    *out = (tio_Handle)hFile;
     return hFile != INVALID_HANDLE_VALUE;
 #else // POSIX
     static const int _openflag[] = { O_RDONLY, O_WRONLY, O_RDWR }; // FIXME: append mode
-    const int fd = open(fn, _openflag[mode] | O_LARGEFILE);
-    #ifdef _HAVE_POSIX_FADVISE
-        if(fd != -1)
-        {
-            if(features & tioF_Sequential)
-                posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
-            if(features & tioF_Preload)
-                posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED);
-        }
-    #endif
-    *out = (void*)(intptr_t)fd;
-    return fd != -1;
+    const int flag = osflags | _openflag[mode] | O_LARGEFILE;
+    if(features & tioF_NoBuffer)
+        flag |= O_DSYNC; // could also be O_SYNC if O_DSYNC doesn't exist
+    const int fd = open(fn, flag);
+    *out = fd2h(fd);
+    if(fd != -1)
+    {
+#ifdef _HAVE_POSIX_FADVISE
+        if(features & tioF_Sequential)
+            posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+        if(features & tioF_Preload)
+            posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED);
+#endif
+        return true;
+    }
 #endif
 
     return false;
 }
 
+static size_t _os_pagesize()
+{
+#ifdef _WIN32
+    SYSTEM_INFO sys;
+    ::GetSystemInfo(&sys);
+    return sys.dwPageSize;
+#elif defined(_POSIX_VERSION)
+    return ::sysconf(_SC_PAGE_SIZE);
+#else
+#  error unknown backend
+#endif
+}
 
-
-static void syspreload(void *p, size_t sz)
+static void os_preloadmem(void *p, size_t sz)
 {
 #ifdef _WIN32
     if(WIN_PrefetchVirtualMemory)
     {
-        Win32MemRangeEntry e { p, sz };
+        Win32MemRangeEntry e = { p, sz };
         WIN_PrefetchVirtualMemory(GetCurrentProcess(), 1, &e, 0);
     }
-#else // POSIX
-    // handled via mmap() MAP_POPULATE flag, nothing to do here
+#elif defined(_HAVE_POSIX_MADVISE)
+    posix_madvise(p, sz, POSIX_MADV_WILLNEED);
 #endif
 }
 
-static tio_error os_fclose(void *h)
+static tio_error os_open(tio_Handle *hOut, OpenMode& om, const char *fn, tio_Mode mode, tio_Features& features)
+{
+    om = checkmode(mode, features);
+    if(!om.good)
+        return -1;
+    return !sysopen(hOut, fn, om, features, 0);
+}
+
+static tio_error os_close(tio_Handle h)
 {
 #ifdef _WIN32
-    if(CloseHandle(h))
-        return 0;
-#else // POSIX
-    return close((int)(intptr_t)h);
+    return !::CloseHandle((HANDLE)h);
+#elif defined(_POSIX_VERSION)
+    return ::close(h2fd(h));
+#else
+#error unknown platform
 #endif
-    return -1;
 }
 
-static tio_error os_fgetsize(void *h, tiosize *psize)
+static tio_error os_getsize(tio_Handle h, tiosize *psz)
 {
+    int err = -1;
 #ifdef _WIN32
-    LARGE_INTEGER avail;
-    if(GetFileSizeEx(h, &avail))
-    {
-        *psize = (tiosize)avail.QuadPart;
-        return 0;
-    }
-#else // POSIX
-    struct stat64 st;
-    if(!fstat64(fh->os.fd, &st))
-    {
-        *psize = (tiosize)st.st_size;
-        return 0;
-    }
+    LARGE_INTEGER sz;
+    err = !::GetFileSizeEx(h, &sz);
+    *psz = err ? 0 : sz.QuadPart;
+#elif defined(_POSIX_VERSION)
+    struct stat st;
+    int err = !!::fstat(fd, &st);
+    *psz = err ? 0 : st.st_size;
 #endif
-
-    *psize = 0;
-    return -1;
+    return err;
 }
 
-static tiosize os_read(void *hFile, void *dst, tiosize n)
+
+static tiosize os_read(tio_Handle hFile, void *dst, tiosize n)
 {
+    tio__ASSERT(isvalidhandle(hFile));
+
     if(!n)
         return 0;
    tiosize done = 0;
 
-#ifdef _WIN32 
+#ifdef _WIN32
     BOOL ok;
     do
     {
-        DWORD rd = 0, remain = (DWORD)tio__min(n, tio_MaxIOBlockSize);
-        ok = ::ReadFile(hFile, dst, remain, &rd, NULL);
+        DWORD rd = 0, remain = (DWORD)tio_min<tiosize>(n, tio_MaxIOBlockSize);
+        ok = ::ReadFile((HANDLE)hFile, dst, remain, &rd, NULL);
         done += rd;
         n -= rd;
     }
-    while(n && ok);
-#else
+    while(ok && n);
+#elif defined(_POSIX_VERSION)
 #error write me
 #endif
 
    return 0;
 }
 
-static tiosize os_write(void *hFile, const void *src, tiosize n)
+static tiosize os_write(tio_Handle hFile, const void *src, tiosize n)
 {
+    tio__ASSERT(isvalidhandle(hFile));
+
     if(!n)
         return 0;
     tiosize done = 0;
 
 #ifdef _WIN32
-    DWORD remain = (DWORD)tio__min(n, tio_MaxIOBlockSize);
+    DWORD remain = (DWORD)tio_min<tiosize>(n, tio_MaxIOBlockSize);
     unsigned fail = 0;
     do // First time try to write the entire thing in one go, if that fails, switch to smaller blocks
     {
         DWORD written = 0;
-        fail += !!::WriteFile(hFile, src, remain, &written, NULL);
+        fail += !!::WriteFile((HANDLE)hFile, src, remain, &written, NULL);
         done += written;
         n -= written;
-        remain = (DWORD)tio__min(n, tio_Win32SafeWriteSize); // MSDN is a bit unclear, something about 31.97 MB, so 16MB should be safe in all cases
+        remain = (DWORD)tio_min<tiosize>(n, fail ? tio_Win32SafeWriteSize : tio_MaxIOBlockSize);
     }
     while(n && fail < 2);
-#else
+#elif defined(_POSIX_VERSION)
 #error write me
 #endif
     return done;
+}
+
+static tio_error os_seek(tio_Handle hFile, tiosize offset, tio_Seek origin)
+{
+    tio__ASSERT(isvalidhandle(hFile));
+
+#ifdef _WIN32
+    LARGE_INTEGER offs;
+    offs.QuadPart = offset;
+    return !::SetFilePointerEx((HANDLE)hFile, offs, NULL, origin); // tio_Seek is compatible with win32 FILE_BEGIN etc values
+#elif defined(_POSIX_VERSION)
+#error write me
+#endif
+}
+
+static tiosize os_tell(tio_Handle hFile, tiosize *poffset)
+{
+    tio__ASSERT(isvalidhandle(hFile));
+
+#ifdef _WIN32
+    LARGE_INTEGER zero, dst;
+    zero.QuadPart = 0;
+    BOOL ok = ::SetFilePointerEx((HANDLE)hFile, zero, &dst, FILE_CURRENT);
+    *poffset = dst.QuadPart;
+    return !ok;
+#elif defined(_POSIX_VERSION)
+#error write me
+#endif
+}
+
+static tio_error os_flush(tio_Handle hFile)
+{
+    tio__ASSERT(isvalidhandle(hFile));
+
+#ifdef _WIN32
+    return !::FlushFileBuffers((HANDLE)hFile);
+#elif defined(_POSIX_VERSION)
+    return ::fsync(h2fd(hFile));
+#endif
 }
 
 /* ---- Begin MMIO ---- */
 
 static void os_munmap(tio_MMIO *mmio)
 {
-#ifdef USE_WIN32_MMIO
-
-    UnmapViewOfFile(mmio->begin);
-    CloseHandle((HANDLE)mmio->_internal[1]);
-    CloseHandle((HANDLE)mmio->_internal[0]);
-
-#elif defined(USE_POSIX_MMIO)
-
-    munmap(mmio->_internal[1], mmio->_internal[2] - mmio->_internal[1]);
-    int fd = (int)(intptr_t)mmio->_internal[0];
-    close(fd);
-
+    mmio->begin = NULL;
+    mmio->end = NULL;
+    if(!mmio->priv.base)
+        return;
+#ifdef _WIN32
+    ::UnmapViewOfFile(mmio->priv.base);
+#elif defined(_POSIX_VERSION)
+    size_t sz = mmio->end - (char*)mmio->priv.base;
+    ::munmap(mmio->priv.base, sz); // base must be page-aligned, size not
 #endif
+    mmio->priv.base = NULL;
+}
+
+
+static void os_mclose(tio_MMIO *mmio)
+{
+    os_munmap(mmio);
+    if(isvalidhandle(mmio->priv.hFile))
+    {
+#ifdef _WIN32
+        ::CloseHandle((HANDLE)mmio->priv.aux1);
+#endif
+        os_close(mmio->priv.hFile);
+    }
+
+    tio__memzero(mmio, sizeof(*mmio));
+    mmio->priv.hFile = getInvalidHandle();
+}
+
+static void os_munmapOrClose(tio_MMIO *mmio, int close)
+{
+    if(close)
+        os_mclose(mmio);
+    else
+        os_munmap(mmio);
 }
 
 static tio_error os_mflush(tio_MMIO *mmio, tio_FlushMode flush)
 {
-#ifdef USE_WIN32_MMIO
-    if(!::FlushViewOfFile(mmio->begin, 0))
+#ifdef _WIN32
+    if(!::FlushViewOfFile(mmio->priv.base, 0))
         return -1;
     if(flush & tio_FlushToDisk)
-        if(!::FlushFileBuffers(mmio->_internal[0]))
+        if(!::FlushFileBuffers(mmio->priv.base))
             return -2;
     return 0;
-#elif defined(USE_POSIX_MMIO)
-    return msync(mmio->_internal[1], 0, (flush & tio_FlushToDisk) ? MS_SYNC : MS_ASYNC);
+#elif defined(_POSIX_VERSION)
+    return msync(mmio->priv.base, 0, (flush & tio_FlushToDisk) ? MS_SYNC : MS_ASYNC);
+#else
+#error unknown platform
 #endif
-    return -1;
 }
 
-// assumes hFile is opened and valid
-static void *os_mmapH(tio_MMIO *mmio, void *hFile, const OpenMode om, tiosize offset, tiosize size, unsigned features)
+static size_t _os_mmioAlignment()
 {
-    char *ret = NULL;
-    void *hMap;
+#ifdef _WIN32
+    // On windows, page size and allocation granularity may differ
+    SYSTEM_INFO sys;
+    GetSystemInfo(&sys);
+    return sys.dwAllocationGranularity;
+#else
+    return os_pagesize();
+#endif
+}
 
-#ifdef USE_WIN32_MMIO
+static size_t os_mmioAlignment()
+{
+    static size_t aln = _os_mmioAlignment();
+    return aln;
+}
 
-    hMap = NULL;
-    LARGE_INTEGER avail;
-    if(::GetFileSizeEx(hFile, &avail) && avail.QuadPart)
+inline static void *mfail(tio_MMIO *mmio)
+{
+    mmio->begin = NULL;
+    mmio->end = NULL;
+    return NULL;
+}
+
+static void *os_mremap(tio_MMIO *mmio, tiosize offset, size_t size, tio_Features features)
+{
+    // precond: os_minit() was successful
+    tio__ASSERT(isvalidhandle(mmio->priv.hFile));
+
+    if(offset >= mmio->priv.totalsize)
+        return mfail(mmio);
+
+    char *base = NULL;
+    const size_t alignment = os_mmioAlignment();
+    const tiosize mapOffs = (offset / alignment) * alignment; // mmap offset must be page-aligned
+    const tiosize ptrOffs = size_t(offset - mapOffs); // offset for the user-facing ptr
+
+    // Prereqisites for POSIX & win32: Offset must be properly aligned, size doesn't matter
+    tio__ASSERT(mapOffs <= offset);
+    tio__ASSERT(mapOffs % alignment == 0);
+    tio__ASSERT(ptrOffs < alignment);
+
+    // Win32 would accept size == 0 to map the entire file, but then we wouldn't know the actual size without calling VirtualQuery().
+    // And for POSIX we need the correct size. So let's calculate this regardless of OS.
+    const tiosize availsize = mmio->priv.totalsize - offset;
+
+    tiosize mapsize;
+    if(size)
     {
-        const tiosize total = avail.QuadPart;
-        if(!size)
-            size = total;
-        size = tio__min(size, total - offset);
-
-        // Can't mmap the file if it's too large to fit into the address space
-        if(size <= tio_MaxArchMask) 
-        {
-            static const DWORD _protect[] = { PAGE_READONLY, PAGE_READWRITE, PAGE_READWRITE };
-            hMap = ::CreateFileMappingA(hFile, NULL, _protect[om.accessidx], 0, 0, NULL); // NULL on failure
-            if(hMap)
-            {
-                LARGE_INTEGER qOffs;
-                qOffs.QuadPart = offset;
-                static const DWORD _mapaccess[] = { FILE_MAP_READ, FILE_MAP_WRITE, FILE_MAP_READ | FILE_MAP_WRITE };
-                ret = (char*)::MapViewOfFile(hMap, _mapaccess[om.accessidx], qOffs.HighPart, qOffs.LowPart, size);
-
-            }
-
-        }
-    }
-
-    if(ret)
-    {
-        mmio->_internal[0] = hFile;
-        mmio->_internal[1] = hMap;
-        mmio->_unmap = os_munmap;
-        mmio->_flush = os_mflush;
-        if(features & tioF_Preload)
-            syspreload(ret, size);
+        if(size > availsize)
+            size = (size_t)availsize;
+        mapsize = size + ptrOffs;
+        if(mapsize > availsize)
+            mapsize = availsize;
     }
     else
     {
-        size = 0;
-        if(hMap)
-            ::CloseHandle(hMap);
-        if(hFile != INVALID_HANDLE_VALUE)
-            ::CloseHandle(hFile);
+        mapsize = mmio->priv.totalsize - mapOffs;
+        size = (size_t)availsize;
     }
+    tio__ASSERT(size <= mapsize);
+    if(mapsize >= tio_MaxArchMask) // overflow or file won't fit into address space?
+        return mfail(mmio);
 
-#elif defined(USE_POSIX_MMIO)
+#ifdef _WIN32
+    LARGE_INTEGER qOffs;
+    qOffs.QuadPart = mapOffs;
+    static const DWORD _mapaccess[] = { FILE_MAP_READ, FILE_MAP_WRITE, FILE_MAP_READ | FILE_MAP_WRITE };
+    base = (char*)::MapViewOfFile(mmio->priv.aux1, _mapaccess[mmio->priv.access], qOffs.HighPart, qOffs.LowPart, (SIZE_T)mapsize);
+    if(!base)
+        return mfail(mmio);
 
-    hMap = MAP_FAILED;
-    const int fd = (int)(uinptr_t)hFile;
+#elif defined(_POSIX_VERSION)
+    static const int _prot[] = { PROT_READ, PROT_WRITE, PROT_READ | PROT_WRITE };
+    static const int _mapflags[] = { MAP_NORESERVE, 0, 0 };
+    const int prot = _prot[mmio->priv.access];
+    int flags = MAP_SHARED | _mapflags[mmio->priv.access];
+    //if((features & tio_Preload) && prot != PROT_WRITE)
+    //    flags |= MAP_POPULATE;
+    //features &= ~tio_Preload; // We're using MAP_POPULATE already, no need for another madvise call further down
+    const int fd = h2fd(mmio->priv.hFile);
+    p = (char*)::mmap(NULL, alnSize, prot, flags, fd, alnOffs);
+    if(p == MAP_FAILED)
+        return mfail(mmio);
 
-    struct stat64 st;
-    if(!::fstat64(fd, &st) && st.st_size)
-    {
-        const tiosize total = st.st_size;
-
-        if(!size)
-            size = total;
-
-        static long align = ::sysconf(_SC_PAGE_SIZE); // need to query this only once
-        const tiosize alnOffs = AlignDown(offset, align); // mmap offset must be page-aligned
-        const tiosize offdiff = offset - alnOffs; // offset for the user-facing ptr
-
-        size = tio__min(size, total - offset);
-        const tiosize alnSize = size + offdiff;
-
-        // Can't mmap the file if it's too large to fit into the address space
-        if(alnSize < tio_MaxArchMask)
-        {
-            static const int _prot[] = { PROT_READ, PROT_WRITE, PROT_READ | PROT_WRITE };
-            static const int _mapflags[] = { MAP_NORESERVE, 0, 0 };
-            int flags = _mapflags[om.accessidx];
-            if(features & tio_Preload)
-                flags |= MAP_POPULATE;
-            p = ::mmap(NULL, alnSize, _prot[om.accessidx], MAP_SHARED | flags, fd, alnOffs);
-            if(p != MAP_FAILED)
-            {
-                ret = ((char*)p) + offdiff;
-                mmio->_internal[0] = (void*)(intptr_t)fd;
-                mmio->_internal[1] = p;
-                mmio->_internal[2] = p + alnSize;
-                mmio->_flush = os_mflush;
-                mmio->_unmap = os_munmap;
-
-#ifdef _HAVE_POSIX_MADVISE
-                if(features & tio_Sequential)
-                    ::posix_madvise(p, alnSize, POSIX_MADV_SEQUENTIAL);
-#endif
-            }
-        }
-    }
-
-    if(!ret)
-    {
-        size = 0;
-        if(fd != -1)
-            ::close(fd);
-    }
-
-#else // Not supported
-
-    return NULL;
-
+#else
+#error WRITE ME
 #endif
 
-    tio__ASSERT(!ret == !size);
+    tio__ASSERT(base);
+    char * const p = base + ptrOffs;
 
-    mmio->begin = ret;
-    mmio->end = ret + size;
+    if(features & tioF_Preload)
+        os_preloadmem(p, size);
 
-    return ret;
+    mmio->begin = p;
+    mmio->end = p + size;
+    mmio->priv.base = base;
+    return p;
 }
 
-static void *os_mmap(tio_MMIO *mmio, const char *fn, tio_Mode mode, tiosize offset, tiosize size, unsigned features)
+
+// takes uninited mmio
+static tio_error os_minitFromHandle(tio_MMIO *mmio, tio_Handle hFile, const OpenMode& om)
 {
-    tio__memzero(mmio, sizeof(*mmio));
-    if(mode & tio_A)
-        return NULL;
+    tio__ASSERT(isvalidhandle(hFile));
+    if(!isvalidhandle(hFile))
+        return -3;
 
-    const OpenMode om = checkmode(mode);
-    if(!om.good)
-        return NULL;
+    tiosize totalsize;
+    if(os_getsize(hFile, &totalsize) || !totalsize)
+        return 1;
 
-    void *hFile;
-    if(!sysopen(&hFile, fn, om, features))
-        return NULL;
+    void *aux1 = NULL, *aux2 = NULL;
+#ifdef _WIN32
+    static const DWORD _protect[] = { PAGE_READONLY, PAGE_READWRITE, PAGE_READWRITE };
+    aux1 = ::CreateFileMappingA((HANDLE)hFile, NULL, _protect[om.accessidx], 0, 0, NULL); // NULL on failure
+    if(!aux1)
+        return 2;
+#endif
 
-    return os_mmapH(mmio, hFile, om, offset, size, features);
+    mmio->_unmap = os_munmapOrClose;
+    mmio->_flush = os_mflush;
+    mmio->_remap = os_mremap;
+
+    mmio->begin = NULL;
+    mmio->end = NULL;
+    mmio->priv.base = NULL;
+    mmio->priv.hFile = hFile;
+    mmio->priv.totalsize = totalsize;
+    mmio->priv.aux1 = aux1;
+    mmio->priv.aux2 = aux2;
+    mmio->priv.access = om.accessidx;
+    mmio->priv.reserved = 0;
+
+    return 0;
 }
 
+static tio_error os_minit(tio_MMIO *mmio, const char *fn, tio_Mode mode, tio_Features features)
+{
+    tio__ASSERT(!(mode & tio_A)); // passing this just makes no sense
+    if(mode & tio_A)
+        return -2;
+
+    features |= tioF_NoResize; // as per spec
+
+    tio_Handle h;
+    OpenMode om;
+    tio_error err = os_open(&h, om, fn, mode, features);
+    if(err)
+        return err;
+
+    err = os_minitFromHandle(mmio, h, om);
+    if(err)
+        os_close(h);
+    return err;
+}
 
 /* ---- End MMIO ---- */
 
 /* ---- Begin stream ---- */
-
-static void streamRefillZeros(tio_Stream *sm)
-{
-    char *begin = (char*)&sm->_private[0];
-    char *end = begin + sizeof(sm->_private);
-    sm->cursor = begin;
-    // User is not supposed to modify those...
-    tio__ASSERT(sm->begin == begin);
-    tio__ASSERT(sm->end == end);
-    // ... but make it fail-safe
-    sm->begin = begin;
-    sm->end = end;
-}
-
-static void streamRefillNop(tio_Stream *sm)
-{
-}
 
 static void invalidate(tio_Stream *sm)
 {
@@ -566,198 +803,535 @@ static void invalidate(tio_Stream *sm)
     sm->Refill = NULL;
 }
 
-void tio_nomoredata(tio_Stream *sm)
+static size_t streamRefillNop(tio_Stream *sm)
+{
+    return 0;
+}
+
+static void streamInitNop(tio_Stream *sm)
+{
+    sm->Refill = streamRefillNop;
+    sm->Close = invalidate;
+    // Some pointer that isn't NULL to help ensure the caller's logic is correct.
+    sm->cursor = sm->begin = sm->end = (char*)&sm->priv;
+}
+
+// -- Empty stream --
+
+static size_t streamRefillEmpty(tio_Stream *sm)
+{
+    // Some pointer that isn't NULL to help ensure the caller's logic is correct.
+    char *p = (char*)&sm->priv;
+    // User is not supposed to modify those...
+    tio__ASSERT(sm->begin == p);
+    tio__ASSERT(sm->end == p);
+    // ... but make it fail-safe
+    sm->cursor = sm->begin = sm->end = p;
+    return 0;
+}
+
+static void streamInitEmpty(tio_Stream *sm)
+{
+    sm->Close = invalidate;
+    sm->Refill = streamRefillEmpty;
+    sm->begin = sm->cursor = sm->end = (char*)&sm->priv;
+}
+
+// -- Infinite zeros stream --
+
+static size_t streamRefillZeros(tio_Stream *sm)
+{
+    char *begin = (char*)&sm->priv;
+    char *end = begin + sizeof(sm->priv);
+    sm->cursor = begin;
+    // User is not supposed to modify those...
+    tio__ASSERT(sm->begin == begin);
+    tio__ASSERT(sm->end == end);
+    // ... but make it fail-safe
+    sm->begin = begin;
+    sm->end = end;
+    return sizeof(sm->priv);
+}
+
+static void streamInitInfiniteZeros(tio_Stream *sm)
+{
+    tio__memzero(&sm->priv, sizeof(sm->priv));
+    sm->Close = invalidate;
+    sm->Refill = streamRefillZeros;
+    sm->begin = sm->cursor = (char*)&sm->priv;
+    sm->end = sm->begin + sizeof(sm->priv);
+}
+
+void streamInitFail(tio_Stream *sm, tio_StreamFlags flags, int write)
+{
+    if(write)
+        streamInitNop(sm);
+    else if(flags & tioS_Infinite)
+        streamInitInfiniteZeros(sm);
+    else
+        streamInitEmpty(sm);
+}
+
+// close valid stream and transition to failure state
+// should be called during or instead of Refill()
+size_t streamfail(tio_Stream *sm)
 {
     sm->Close(sm); // Whatever the old stream was, dispose it cleanly
-    sm->Close = invalidate;
-    if(!sm->err)
+    if(!sm->err)   // Keep existing error, if any
         sm->err = -1;
-    if(sm->write)
-        sm->Refill = streamRefillNop;
+    streamInitFail(sm, sm->flags, sm->write);
+    return sm->Refill(sm);
+}
+
+// -- MMIO-based stream, for reading --
+
+static void streamMMIOClose(tio_Stream *sm)
+{
+    os_mclose(&sm->priv.u.mmio);
+    invalidate(sm);
+}
+
+static size_t streamMMIOReadRefill(tio_Stream *sm)
+{
+    tio_MMIO *mmio = &sm->priv.u.mmio;
+    const size_t blk = sm->priv.blockSize;
+    void *p = os_mremap(mmio, sm->priv.offs, blk, tioF_Preload);
+    if(!p)
+        return streamfail(sm);
+
+    size_t sz = tio_msize(mmio);
+    sm->priv.offs += sz;
+    sm->begin = sm->cursor = (char*)p;
+    sm->end = (char*)p + sz;
+    return sz;
+}
+
+// FIXME: uuhhh not sure
+/* Tests:
+    - Win8.1 x64: aln = 65536 -> 64 MB
+*/
+inline static size_t autoblocksize(size_t mult, size_t aln)
+{
+    const size_t N = mult << sizeof(void*);
+    return N * aln;
+}
+
+// stream's mmio is already initialized, set missing pointers
+void streamMMIOReadInit(tio_Stream *sm, size_t blocksize)
+{
+    tio__ASSERT(isvalidhandle(sm->priv.u.mmio.priv.hFile));
+
+    const size_t aln = os_mmioAlignment();
+
+    tio__TRACE("streamMMIOReadInit: Requested blocksize %u, alignment is %u",
+        unsigned(blocksize), unsigned(aln));
+
+    if(!blocksize)
+        blocksize = autoblocksize(4, aln);
     else
-    {
-        tio__memzero(sm->_private, sizeof(sm->_private)); // Use private pointer area as zero-byte buffer
-        sm->Refill = streamRefillZeros;
-        char *begin = (char*)&sm->_private[0];
-        char *end = begin + sizeof(sm->_private);
-        sm->cursor = begin;
-        sm->begin = begin;
-        sm->end = end;
-    }
+        blocksize = ((blocksize + (aln-1)) / aln) * aln;
+
+    tio__TRACE("streamMMIOReadInit: Using blocksize %u", unsigned(blocksize));
+
+    sm->priv.blockSize = blocksize;
+    sm->priv.offs = 0;
+
+    sm->Close = streamMMIOClose;
+    sm->Refill = streamMMIOReadRefill;
+    sm->begin = sm->cursor = sm->end = NULL;
+    sm->write = sm->err = 0;
 }
 
-static void closemmiostream(tio_Stream *sm)
+// -- Handle-based stream, for writing --
+
+static void streamHandleClose(tio_Stream *sm)
 {
-    typedef void (*Unmap)(tio_MMIO*);
-
-    Unmap unmap = (Unmap)sm->_private[4];
-    if(unmap)
-    {
-        tio_MMIO mmio;
-        mmio.begin        = sm->begin;
-        mmio.end          = sm->end;
-        mmio._unmap       = unmap;
-        for(unsigned i = 0; i < 4; ++i)
-            mmio._internal[i] = sm->_private[i];
-        unmap(&mmio);
-    }
-
+    os_close(sm->priv.u.handle);
     invalidate(sm);
 }
 
-void initmmiostreamREAD(tio_Stream *sm, tio_MMIO *mmio, bool unmapOnClose)
-{
-    sm->begin = sm->cursor = mmio->begin;
-    sm->end = mmio->end;
-    sm->err = 0;
-    sm->Refill = tio_nomoredata;
-    sm->Close = closemmiostream;
-    for(unsigned i = 0; i < 4; ++i)
-        sm->_private[i] = mmio->_internal[i];
-    sm->_private[4] = unmapOnClose ? mmio->_unmap : NULL;
-    sm->_private[5] = NULL; // don't need flushing when reading
-}
-
-static void closehandlestream(tio_Stream *sm)
-{
-    os_fclose(sm->_private[0]);
-    invalidate(sm);
-}
-
-static void refillhandlestreamREAD_Tiny(tio_Stream *sm)
-{
-    void *p = &sm->_private[1]; // use remaining, unused space at end of struct
-    const size_t n = sizeof(sm->_private) - sizeof(sm->_private[0]);
-    if(os_read(sm->_private[0], p, n) != n)
-        sm->Refill = tio_nomoredata; // next time is an error
-}
-
-static void refillhandlestreamWRITE(tio_Stream *sm)
+static size_t streamHandleWriteRefill(tio_Stream *sm)
 {
     tio__ASSERT(sm->begin <= sm->end);
-    ptrdiff_t n = sm->end - sm->begin;
-    if(os_write(sm->_private[0], sm->begin, n) != n)
-        tio_nomoredata(sm); // not enough bytes written, that's an error right away
+    tio__static_assert(sizeof(ptrdiff_t) <= sizeof(size_t));
+    size_t todo = sm->end - sm->begin;
+    size_t done = (size_t)os_write(sm->priv.u.handle, sm->begin, todo);
+    if(todo != done)
+        tio_streamfail(sm); // not enough bytes written, that's an error right away
+    return done;
 }
 
-tio_Stream *tio_sinit(tio_Stream *sm, const char *fn, tio_Mode mode, unsigned features)
+void streamHandleWriteInit(tio_Stream *sm, tio_Handle h)
 {
-    tio__memzero(sm, sizeof(*sm));
+    tio__ASSERT(isvalidhandle(h));
 
-    OpenMode om = checkmode(mode); // modifies mode
-    if(!om.good)
-        return NULL;
-    if((mode & tio_RW) == tio_RW) // either R or W, not both
-        return NULL;
+    sm->priv.u.handle = h;
+    sm->Close = streamHandleClose;
+    sm->Refill = streamHandleWriteRefill;
+    sm->begin = sm->cursor = sm->end = NULL;
+    sm->write = 1;
+    sm->err = 0;
+}
 
-    features |= tioF_Sequential; // streams are sequential by nature
-    void *hFile;
-    if(!sysopen(&hFile, fn, om, features))
-        return NULL;
 
-    // For reading the best possible option is MMIO
-    if(mode & tio_R)
+#ifdef _WIN32
+
+// returns result or 0 if overflowed
+static size_t mulCheckOverflow0(size_t a, size_t b)
+{
+    size_t res;
+#ifdef __builtin_mul_overflow
+    if(__builtin_mul_overflow(a, b, &res))
+        return 0;
+#else
+    res = a * b;
+    if (a && res / a != b)
+        return 0;
+#endif
+    return res;
+}
+
+// Used in place of tio_Stream::priv::u
+struct OverlappedStreamOverlay
+{
+    enum 
     {
-        tio_MMIO mmio;
-        if(os_mmapH(&mmio, hFile, om, 0, 0, features))
-        {
-            initmmiostreamREAD(sm, &mmio, true);
-            return sm;
-        }
+        _SzPtrs = sizeof(((tio_Stream*)NULL)->priv.u),
+        _SzHFile = sizeof(((tio_Stream*)NULL)->priv.u.handle),
+        // first pointer will store the handle so we need to leave that one alone
+        NumEvents = (_SzPtrs - _SzHFile) / sizeof(void*)
+    };
+    tio_Handle hFile;
+    HANDLE events[NumEvents];
+};
+
+struct OverlappedMemOverlay
+{
+    enum { N = OverlappedStreamOverlay::NumEvents };
+    size_t nextToRequest;
+    size_t blocksInUse;
+    unsigned err;
+    tio_Features features;
+    void *ptrs[N];
+    OVERLAPPED ovs[N];
+};
+
+inline OverlappedStreamOverlay *_streamoverlay(tio_Stream *sm)
+{
+    return (OverlappedStreamOverlay*)&sm->priv.u;
+}
+
+inline OverlappedMemOverlay *_memoverlay(tio_Stream *sm)
+{
+    return (OverlappedMemOverlay*)sm->priv.aux;
+}
+
+static unsigned overlappedInflight(tio_Stream *sm)
+{
+    unsigned n = 0;
+    OverlappedMemOverlay *mo = _memoverlay(sm);
+    for(size_t i = 0; i < mo->blocksInUse; ++i)
+        if(mo->ptrs[i])
+            n += !HasOverlappedIoCompleted(&mo->ovs[i]);
+    return n;
+}
+
+static void streamWin32OverlappedClose(tio_Stream *sm)
+{
+    tio__static_assert(sizeof(OverlappedStreamOverlay) <= sizeof(sm->priv.u));
+
+    tio_Handle hFile = sm->priv.u.handle;
+    sm->priv.u.handle = getInvalidHandle();
+    os_close(hFile); // this also cancels all in-flight overlapped IO
+    enum { N = OverlappedStreamOverlay::NumEvents };
+    OverlappedStreamOverlay *so = _streamoverlay(sm);
+    OverlappedMemOverlay *mo = _memoverlay(sm);
+    for(size_t i = 0; i < N; ++i)
+        if(HANDLE ev = so->events[i])
+            ::CloseHandle(ev);
+    ::VirtualFree(sm->priv.aux, 0, MEM_RELEASE);
+}
+
+static void _streamWin32OverlappedRequestNextChunk(tio_Stream *sm)
+{
+    OverlappedMemOverlay *mo = _memoverlay(sm);
+    if(mo->err)
+        return;
+    OverlappedStreamOverlay *so = _streamoverlay(sm);
+
+    size_t chunk = mo->nextToRequest++;
+    size_t chunkidx = chunk % mo->blocksInUse;
+
+    void *dst = mo->ptrs[chunkidx];
+    tio__ASSERT(dst);
+    LPOVERLAPPED ov = &mo->ovs[chunkidx];
+
+    // Don't clear the OVERLAPPED::hEvent field so we can reuse it, and the offset is overwritten below
+    // The rest must be cleared as mandated by MSDN
+    ov->Internal = 0;
+    ov->InternalHigh = 0;
+    ov->Pointer = NULL;
+    tio__ASSERT(ov->hEvent);
+
+    const size_t blocksize = sm->priv.blockSize;
+    LARGE_INTEGER offset;
+    offset.QuadPart = chunk * blocksize;
+    ov->Offset = offset.LowPart;
+    ov->OffsetHigh = offset.HighPart;
+
+    // fail/EOF will be recorded in OVERLAPPED so we can ignore the return value here
+    BOOL ok = ::ReadFile((HANDLE)sm->priv.u.handle, dst, (DWORD)blocksize, NULL, ov);
+    tio__TRACE("[% 2u] Overlapped ReadFile(%p) chunk %u -> ok = %u",
+        overlappedInflight(sm), dst, unsigned(chunk), ok);
+    if(ok)
+        return;
+
+    DWORD err = ::GetLastError();
+    if(err != ERROR_IO_PENDING)
+    {
+        mo->err = err;
+        mo->ptrs[chunkidx] = NULL;
+        tio__TRACE("... failed with error %u", err);
+    }
+}
+
+static size_t streamWin32OverlappedRefill(tio_Stream *sm)
+{
+    OverlappedStreamOverlay *so = _streamoverlay(sm);
+    OverlappedMemOverlay *mo = _memoverlay(sm);
+
+    size_t chunk = (size_t)sm->priv.offs;
+    size_t chunkidx = chunk % mo->blocksInUse;
+
+    char *p = (char*)mo->ptrs[chunkidx];
+    if(!p)
+    {
+        tio__TRACE("streamWin32OverlappedRefill hit end at chunk %u, err = %u",
+            unsigned(chunk), mo->err);
+        return tio_streamfail(sm);
     }
 
-    // mmio isn't applicable or failed, use file handle
-    sm->Close = closehandlestream;
-    sm->_private[0] = hFile;
-    if(mode & tio_R)
+    tio_Handle hFile = sm->priv.u.handle;
+    tio__ASSERT(isvalidhandle(hFile));
+
+    LPOVERLAPPED ov = &mo->ovs[chunkidx];
+    DWORD done = 0;
+    BOOL wait = (mo->features & tioF_Nonblock) ? FALSE : TRUE; // don't wait in async mode
+    BOOL ok = ::GetOverlappedResult(hFile, ov, &done, wait);
+    tio__TRACE("[% 2u] GetOverlappedResult(%p) chunk %u -> read %u, ok = %u",
+        overlappedInflight(sm), p, unsigned(chunk), done, ok);
+    if(ok)
     {
-        sm->Refill = refillhandlestreamREAD_Tiny;
-        tio__TRACE("sinit: failed to mmap for reading, using slower file handle");
+        sm->priv.offs++;
+        _streamWin32OverlappedRequestNextChunk(sm);
     }
     else
     {
-        sm->write = 1;
-        sm->Refill = refillhandlestreamWRITE;
-    }
-    sm->Refill(sm);
-    return sm;
-}
-
-size_t tio_swrite(const void * ptr, size_t size, size_t count, tio_Stream * sm)
-{
-    // FIXME: possible overflow
-    tiosize n = tiosize(size) * tiosize(count);
-    tiosize done = tio_swritex(sm, ptr, n);
-    return done / size;
-}
-
-tiosize tio_swritex(tio_Stream *sm, const void *ptr, tiosize bytes)
-{
-    tio__ASSERT(sm->write);
-    if(!sm->write)
-        return 0;
-    sm->begin = (char*)ptr;
-    sm->cursor = (char*)ptr;
-    sm->end = (char*)ptr + bytes;
-    return !tio_srefill(sm) ? bytes : 0; // Chunk was either completely written, or it failed and we can't know how much was actually written
-}
-
-tiosize tio_sreadx(tio_Stream *sm, void *ptr, tiosize bytes)
-{
-    tio__ASSERT(!sm->write);
-    if(sm->write || sm->err || !bytes)
-        return 0;
-
-    tiosize done = 0;
-    goto loopstart;
-    do
-    {
-        if(tio_srefill(sm))
-            break;
-        tio__ASSERT(sm->cursor == sm->begin);
-loopstart:
-        if(tiosize avail = tio_savail(sm))
+        switch(DWORD err = ::GetLastError())
         {
-            size_t cp = tio__min(avail, bytes); // FIXME: if size_t is 32 bit, is this truncation a problem?
-            tio__ASSERT(cp);
-            tio__memcpy(ptr, sm->cursor, cp); // Can't feed a memcpy a tiosize.
-            sm->cursor += cp;
-            done += cp;
-            bytes -= cp;
+            default:
+                tio__TRACE("GetOverlappedResult(): unhandled return %u, done = %u", err, done);
+                /* fall through */
+            case ERROR_HANDLE_EOF:
+                sm->Refill = streamfail; // Use the current buffer, but fail next time
+                break;
+            case ERROR_IO_INCOMPLETE:
+                sm->cursor = sm->begin = sm->end = p;
+                return 0;
         }
+
+        if(!done)
+            return tio_streamfail(sm);
     }
-    while(bytes);
+    sm->cursor = p;
+    sm->begin = p;
+    sm->end = p + done;
     return done;
+}
+
+template<typename T> static inline T alignedRound(T val, T aln)
+{
+    return ((val + (aln - 1)) / aln) * aln;
+}
+
+tio_error streamWin32OverlappedInit(tio_Stream *sm, tio_Handle hFile, const OpenMode& om, size_t blocksize, tio_Features features)
+{
+    tio__ASSERT(isvalidhandle(hFile));
+
+    tiosize fullsize;
+    if(os_getsize(hFile, &fullsize))
+        return 2;
+
+    enum { N = OverlappedStreamOverlay::NumEvents };
+
+    const size_t aln = os_mmioAlignment();
+    if(!blocksize)
+        blocksize = (1 << 4) * aln; //4 * aln; //autoblocksize(1, aln);
+    else if(blocksize > tio_MaxIOBlockSize / N)
+        blocksize = tio_MaxIOBlockSize / N;
+
+    if(blocksize > fullsize)
+        blocksize = (size_t)fullsize;
+    const size_t alignedBlocksize = alignedRound(blocksize, aln);
+
+    const tiosize reqblocks = (fullsize + (alignedBlocksize - 1)) / alignedBlocksize;
+    const size_t useblocks = (size_t)tio_min<tiosize>(N, reqblocks);
+    const size_t reqbufmem = (size_t)tio_min<tiosize>(mulCheckOverflow0(useblocks, alignedBlocksize), fullsize);
+    if(!reqbufmem) // Zero size is useless, and overflow is dangerous
+        return -2;
+    const size_t usebufmem = alignedRound(reqbufmem, aln);
+
+    // Allocate at least one entire io-page for bookkeeping at the front.
+    const size_t reqauxmem = sizeof(OverlappedMemOverlay);
+    const size_t useauxmem = alignedRound(reqauxmem, aln);
+
+    const size_t allocsize = usebufmem + useauxmem;
+    tio__ASSERT(allocsize % aln == 0);
+    tio__TRACE("streamWin32OverlappedInit: %u/%u blocks of size %u, total %u",
+        unsigned(useblocks), unsigned(reqblocks), unsigned(blocksize), unsigned(allocsize));
+    if(!allocsize)
+        return -2;
+    
+    void * const mem = ::VirtualAlloc(NULL, allocsize, MEM_COMMIT, PAGE_READWRITE);
+    tio__TRACE("VirtualAlloc() %p - %p", mem, (char*)mem + allocsize);
+    if(!mem)
+        return 3;
+
+    OverlappedStreamOverlay *so = _streamoverlay(sm);
+    OverlappedMemOverlay *mo = (OverlappedMemOverlay*)mem;
+
+    tio__memzero(so, sizeof(*so));
+    tio__memzero(mo, sizeof(*mo));
+
+    mo->blocksInUse = useblocks;
+    mo->features = features;
+
+    char *pdata = ((char*)mem) + useauxmem; // skip overlay page
+    tio__ASSERT((uintptr_t)pdata % aln == 0);
+    HANDLE *evs = &so->events[0];
+    size_t i = 0;
+    for( ; i < useblocks; ++i)
+    {
+        HANDLE e = ::CreateEventA(NULL, TRUE, FALSE, NULL);
+        if(!e)
+        {
+            tio__TRACE("CreateEventA failed");
+            while(i)
+              ::CloseHandle(evs[--i]);
+            ::VirtualFree(mem, 0, MEM_RELEASE);
+            return 4;
+        }
+        evs[i] = e;
+        mo->ovs[i].hEvent = e;
+        mo->ptrs[i] = pdata;
+        pdata += alignedBlocksize; 
+    }
+
+    sm->priv.u.handle = hFile;
+    sm->priv.aux = mem;
+    sm->priv.blockSize = alignedBlocksize;
+    sm->priv.offs = 0; // next chunk to read
+    sm->priv.size = fullsize;
+    sm->err = 0;
+    sm->write = 0;
+
+    sm->Refill = streamWin32OverlappedRefill;
+    sm->Close = streamWin32OverlappedClose;
+
+    // Keep one block free -- external code will be working on that one block
+    // while the OS processes the others in the background.
+    const size_t run = tio_min<size_t>(1, useblocks - 1);
+    for(i = 0; i < run; ++i)
+        _streamWin32OverlappedRequestNextChunk(sm);
+
+    return 0;
+}
+
+
+#endif // _WIN32
+
+
+// -- Stream init --
+
+static tio_error initstream(tio_Stream *sm, const char *fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize)
+{
+    OpenMode om = checkmode(mode, features);
+    if(!om.good)
+        return -1;
+    if((mode & tio_RW) == tio_RW) // either R or W, not both
+        return -2;
+
+    features |= tioF_Sequential; // streams are sequential by nature
+
+    tio_Handle hFile;
+#ifdef _WIN32
+    if(features & tioF_Preload)
+    {
+        DWORD wflags = FILE_FLAG_OVERLAPPED;
+        if(features & tioF_NoBuffer)
+            wflags |= FILE_FLAG_NO_BUFFERING;
+        if(!sysopen(&hFile, fn, om, features, wflags))
+            return 1; // couldn't open it without the extra flags either; don't even have to check
+        if(!streamWin32OverlappedInit(sm, hFile, om, blocksize, features))
+            return 0; // all good
+        else
+            os_close(hFile); // and continue normally. need to re-open the file though because the extra flags are incompatible
+    }
+#endif
+
+    if(!sysopen(&hFile, fn, om, features, 0))
+        return 1;
+
+    sm->flags = flags;
+
+    if(mode & tio_R)
+    {
+        tio_error err = os_minitFromHandle(&sm->priv.u.mmio, hFile, om);
+        if(!err)
+            streamMMIOReadInit(sm, blocksize);
+        else
+            os_close(hFile);
+        return err;
+    }
+
+    // -- write mode --
+
+    if(!(mode & tio_A) && (features & tioF_NoResize))
+    {
+        // TODO: mmio write
+    }
+
+    streamHandleWriteInit(sm, hFile);
+    return 0;
 }
 
 /* ---- End stream ---- */
 
-static tio_FileType getPathFileType(const char *path, const char *fn, tiosize *psz)
+static TIO_NOINLINE tio_FileType getPathFileType(const char *path, const char *fn, tiosize *psz)
 {
     size_t sp = tio__strlen(path);
     size_t sf = tio__strlen(fn);
     size_t total = sp + sf + 1; // plus /
-    if(total > TIO_MAX_SANE_PATH)
+    char * const buf = (char*)tio__checked_alloca(total + 1); // plus \0
+    AutoFreea _af(buf);
+    if(!buf)
     {
         tio__TRACE("ERROR getPathFileType(): path too long (%u) [%s] + [%s]", unsigned(total), path, fn);
         return tioT_Nothing;
     }
-    char * const buf = (char*)tio__alloca(total + 1); // plus \0
     char *p = buf;
     tio__memcpy(p, path, sp); p += sp;
     *p++ = OS_PATHSEP;
     tio__memcpy(p, fn, sf); p += sf;
     *p++ = 0;
 
-    tio_FileType t = tio_fileinfo(buf, psz);
-    tio__freea(buf);
-    return t;
+    return tio_fileinfo(buf, psz);
 }
 
 #ifdef _WIN32
 static tio_FileType win32_getFileType(const DWORD attr)
 {
-    unsigned t = tioT_Nothing;
+    tio_FileType t = tioT_Nothing;
     if(attr & FILE_ATTRIBUTE_DIRECTORY)
         t = tioT_Dir;
     else if(attr & FILE_ATTRIBUTE_DEVICE)
@@ -766,14 +1340,14 @@ static tio_FileType win32_getFileType(const DWORD attr)
         t = tioT_File;
     if(attr & FILE_ATTRIBUTE_REPARSE_POINT)
         t |= tioT_Link;
-    return tio_FileType(t);
+    return t;
 }
 
-#else // POSIX
+#elif defined(_POSIX_VERSION)
 
 static tio_FileType posix_getStatFileType(struct stat64 *st)
 {
-    unsigned t = tioT_Nothing;
+    tio_FileType t = tioT_Nothing;
     mode_t m = st->st_mode;
     if(S_ISDIR(m))
         t = tioT_Dir;
@@ -783,7 +1357,7 @@ static tio_FileType posix_getStatFileType(struct stat64 *st)
         t = tioT_Special;
     if(S_ISLNK(m))
         t |= tioT_Link;
-    return tio_FileType(t);
+    return t;
 }
 
 template<typename T> struct Has_d_type
@@ -816,8 +1390,10 @@ struct Posix_DirentFileType<true>
             case DT_DIR: return tioT_Dir;
             case DT_REG: return tioT_File;
             case DT_LNK: // dirent doesn't resolve links, gotta do this manually
+                t = tioT_Link;
+                /* fall through */
             case DT_UNKNOWN: // file system isn't sure or doesn't support d_type, try this the hard way
-                return getPathFileType(path, dp->d_name, NULL);
+                return t | getPathFileType(path, dp->d_name, NULL);
             default: ; // avoid warnings
         }
         return tioT_Special;
@@ -835,23 +1411,51 @@ static inline tio_FileType posix_getDirentFileType(const char *path, struct dire
 // skip if "." or ".."
 static inline int dirlistSkip(const char *fn)
 {
-    return fn[0] == '.' && (fn[1] == 0 || (fn[1] == '.' && fn[2] == 0));
+    return fn[0] == '.' && (!fn[1] || (fn[1] == '.' && !fn[2]));
 }
 
-tio_error tio_dirlist(const char * path, tio_FileCallback callback, void * ud)
+#ifdef _WIN32
+// Intentionally its own function -- this clears the wchar conversion stuff off the stack before we continue
+static TIO_NOINLINE HANDLE WIN_FindFirstFile(const char *path, WIN32_FIND_DATAW *pfd)
+{
+    LPWSTR wpath;
+    int wlen; // includes terminating 0
+    WIN_ToWCHAR(wpath, wlen, path, 1);
+    if(!wpath)
+        return INVALID_HANDLE_VALUE;
+
+    wpath[wlen-1] = L'*';
+    wpath[wlen] = 0;
+
+    return ::FindFirstFileW(wpath, pfd);
+}
+#endif
+
+static tio_error os_dirlist(const char * path, tio_FileCallback callback, void * ud)
 {
 #ifdef _WIN32
-    WIN32_FIND_DATA fil;
-    HANDLE h = ::FindFirstFileExA(path, FindExInfoBasic, &fil, FindExSearchLimitToDirectories, NULL, 0);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = WIN_FindFirstFile(path, &fd);
     if(h == INVALID_HANDLE_VALUE)
         return -1;
     do
-        if(!dirlistSkip(fil.cFileName))
-            callback(path, fil.cFileName, win32_getFileType(fil.dwFileAttributes), ud);
-    while(::FindNextFileA(h, &fil));
+    {
+        char fbuf[4*MAX_PATH + 1]; // UTF-8 is max. 4 bytes per char, and cFileName is an array of MAX_PATH elements
+        if(WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, fd.cFileName, -1, fbuf, sizeof(fbuf), 0, NULL))
+        {
+            if(!dirlistSkip(fbuf))
+                callback(path, fbuf, win32_getFileType(fd.dwFileAttributes), ud);
+        }
+        else
+        {
+            tio__TRACE("dirlist: Failed UTF-8 conversion");
+        }
+    }
+    while(::FindNextFileW(h, &fd));
     ::FindClose(h);
 
-#else // POSIX
+#elif defined(_POSIX_VERSION)
+
     struct dirent * dp;
     DIR *dirp = ::opendir(path);
     if(!dirp)
@@ -865,13 +1469,19 @@ tio_error tio_dirlist(const char * path, tio_FileCallback callback, void * ud)
     return 0;
 }
 
-tio_FileType tio_fileinfo(const char *path, tiosize *psz)
+static tio_FileType os_fileinfo(const char *path, tiosize *psz)
 {
     tiosize sz = 0;
-    unsigned t = tioT_Nothing;
+    tio_FileType t = tioT_Nothing;
 #ifdef _WIN32
+    LPWSTR wpath;
+    int wlen; // includes terminating 0
+    WIN_ToWCHAR(wpath, wlen, path, 1);
+    if(!wpath)
+        return tioT_Nothing;
+
     WIN32_FILE_ATTRIBUTE_DATA attr;
-    if(::GetFileAttributesExA(path, GetFileExInfoStandard, &attr))
+    if(::GetFileAttributesExW(wpath, GetFileExInfoStandard, &attr))
     {
         LARGE_INTEGER s;
         s.LowPart = attr.nFileSizeLow;
@@ -879,7 +1489,7 @@ tio_FileType tio_fileinfo(const char *path, tiosize *psz)
         sz = s.QuadPart;
         t = win32_getFileType(attr.dwFileAttributes);
     }
-#else
+#elif defined(_POSIX_VERSION)
     struct stat64 st;
     if(!::stat64(path, &st))
     {
@@ -892,7 +1502,7 @@ tio_FileType tio_fileinfo(const char *path, tiosize *psz)
     return tio_FileType(t);
 }
 
-// note that an existing file will be considered success, even though that means the directory wasn't created.
+// note that an existing (regular) file will be considered success, even though that means the directory wasn't created.
 // this must be caught by the caller!
 static bool createsubdir(const char *path)
 {
@@ -900,12 +1510,21 @@ static bool createsubdir(const char *path)
     if(::CreateDirectoryA(path, NULL))
         return true;
     return ::GetLastError() == ERROR_ALREADY_EXISTS; // anything but already exists is an error
-#else
+#elif defined(_POSIX_VERSION)
     if(!::mkdir(path, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH))
         return true;
     return ::errno == EEXIST;
 #endif
 }
+
+static bool createdirs(const char *path)
+{
+    // TODO WRITE ME
+    return false;
+}
+
+
+/* ---- Path sanitization ---- */
 
 static inline bool issep(const char c)
 {
@@ -917,7 +1536,7 @@ static inline bool isbad(const char x)
         return true;
     static const char * const badchars = "<>:|?*"; // problematic on windows
     const char *p = badchars;
-    for(char c; (c = *p++); ) // FIXME: handle C:\...
+    for(char c; (c = *p++); )
         if(c == x)
             return true;
     return false;
@@ -934,6 +1553,7 @@ static inline bool hasdriveletter(const char *path)
 // This works for:
 // POSIX paths: /path/to/thing...
 // win32 UNC paths: \\?\...
+// win32 drive: C:\...
 static inline bool isabspath(const char *path)
 {
     if(issep(*path))
@@ -943,13 +1563,14 @@ static inline bool isabspath(const char *path)
     return false;
 }
 
-// transform a "typical" path into an OS-specific path.
 static tio_error _sanitizePath(char *dst, const char *src, size_t space, size_t srcsize, int forcetrail)
 {
+    char * const originaldst = dst;
     const char * const dstend = dst + space;
     const bool abs = isabspath(src);
     const bool hadtrail = srcsize && issep(src[srcsize - 1]);
 #ifdef _WIN32
+    // For details, see: https://docs.microsoft.com/en-us/windows/win32/fileio/naming-a-file#maximum-path-length-limitation
     if(abs)
     {
         if(dst + 4 >= dstend)
@@ -959,7 +1580,7 @@ static tio_error _sanitizePath(char *dst, const char *src, size_t space, size_t 
         *dst++ = OS_PATHSEP;
         *dst++ = '?';
         *dst++ = OS_PATHSEP;
-        if(hasdriveletter(src))
+        if(hasdriveletter(src)) // same thing goes for the drive letter
         {
             if(dst + 2 >= dstend)
                 return -101;
@@ -970,12 +1591,9 @@ static tio_error _sanitizePath(char *dst, const char *src, size_t space, size_t 
         }
     }
 #endif
-    //tio__ASSERT(space+1 > tio__strlen(src)); // make sure we'll fit the terminating \0
     char *w = dst;
-    char *lastsep = NULL;
     unsigned dots = 0; // number of magic dots (those directly sandwiched between path separators: "/./" and "/../", or at the start: "./" and "../")
     unsigned wassep = 1; // 1 if last char was a path separator, optionally followed by some magic '.'
-    unsigned debt = 0; // don't add dirs while debt > 0
     unsigned part = 0; // length of current part
     for(size_t i = 0; ; ++i)
     {
@@ -989,154 +1607,310 @@ static tio_error _sanitizePath(char *dst, const char *src, size_t space, size_t 
         {
             const unsigned frag = part - 1; // don't count the '/'
             part = 0;
-            if(wassep)
+            if(!wassep) // Logic looks a bit weird, but...
+                wassep = 1;
+            else // ... enter switch only if wassep was already set, but make sure it's already set in all cases
                 switch(dots) // exactly how many magic dots?
                 {
-                    case 0: if(frag) debt -= !!debt; // had some trailing ".." earlier and now got a path fragment -> cancels each other out
+                    case 0: if(frag || !c) break; // all ok, wrote part, now write dirsep
                             else if(i) continue; // "//" -> already added prev '/' -> don't add more '/'
-                    case 1: *--w = 0; continue; // "./" -> erase the '.', don't add the '/'
-                    case 2: if(w == dst)
-                                ++debt; // can't go back further; keep debt for later
-                            else // go back one dir, until we hit a dirsep or start of string
+                    case 1: dots = 0; --w; continue; // "./" -> erase the '.', don't add the '/'
+                    case 2: dots = 0; // go back one dir, until we hit a dirsep or start of string
+                            w -= 4; // go back 1 to hit the last '.', 2 more to skip the "..", and 1 more to go past the '/'
+                            if(w < dst) // too far? then there was no more '/' in the path
                             {
-                                w -= 4; // go back 1 to hit the last '.', 2 more to skip the "..", and 1 more to go past the '/'
-                                if(abs && w < dst)
-                                    return -200; // can't navigate above root
-                                while(dst < w)
-                                    if(issep(*w))
-                                        break;
-                                    else
-                                        *--w = 0;
-                            } 
+                                if(abs) // Can't go beyond an absolute path
+                                    return -2; // FIXME: see https://golang.org/pkg/path/#Clean rule 4
+                                w = dst; // we went beyond, fix that
+                                *w++ = '.';
+                                *w++ = '.';
+                                dst = w + 1; // we went up, from here anything goes, so don't touch this part anymore
+                                // closing '/' will be written below
+                            }
+                            else
+                            {
+                                while(dst < w && !issep(*w)) { --w; } // go backwards until we hit start or a '/'
+                                if(dst == w) // don't write '/' when we're at the start
+                                    continue;
+                            }
                 }
-            wassep = 1;
             if(c)
-            {
                 c = OS_PATHSEP;
-            }
         }
-        if(!debt)
-        {
-            if(w == dstend)
-                return -1;
-            *w++ = c;
-        }
+        *w = c;
         if(!c)
             break;
+        ++w;
     }
-    tio__ASSERT(!debt || w == dst);
-    if(debt && abs) // can't go behind root in an absolute path
-        return -10;
-    if(dst + debt * 3 >= dstend)
-        return -2;
-    for(unsigned i = 0; i < debt; ++i)
+
+    // Expand to "." if empty string
+    if(!*originaldst)
     {
+        w = dst = originaldst;
         *w++ = '.';
-        *w++ = '.';
-        *w++ = OS_PATHSEP;
     }
+
     const bool hastrail = dst < w && issep(w[-1]);
-    if((forcetrail || hadtrail) && !hastrail)
+    if((forcetrail > 0 || hadtrail) && !hastrail)
     {
         if(w >= dstend)
             return -3;
         *w++ = OS_PATHSEP;
     }
-    else if(hastrail && !hadtrail)
+    else if((forcetrail < 0 || !hadtrail) && hastrail)
+    {
+        tio__ASSERT(*w == OS_PATHSEP);
         --w;
+    }
     if(w >= dstend)
         return -4;
     *w = 0;
 
-    tio__ASSERT(tio__strlen(dst) <= tio__strlen(src)); // if this fails we've fucked up
-
     return 0;
-}
-
-#define SANITIZE_PATH(dst, src, forcetrail, extraspace) do { \
-    size_t _len = tio__strlen(src); \
-    size_t _space = tio_PathExtraSpace+(extraspace)+_len+1; \
-    dst = (char*)tio__alloca(_space); \
-    _sanitizePath(dst, src, _space, _len, forcetrail); \
-} while(0)
-
-tio_error tio_createdir(const char * path)
-{
-    char *s;
-    SANITIZE_PATH(s, path, 0, 0);
-
-    // check that it actually created the entire chain of subdirs
-    return tio_fileinfo(path, NULL) == tioT_Dir ? 0 : -2;
-}
-
-tio_error tio_sanitizePath(char * dst, const char * path, size_t dstsize, int trail)
-{
-    return _sanitizePath(dst, path, dstsize, tio__strlen(path), trail);
 }
 
 
 /* ---- Begin public API ---- */
 
-tio_error tio_init_version(unsigned version)
+
+// Path/file names passed to the public API must be cleaned using this macro.
+#define SANITIZE_PATH(dst, src, forcetrail, extraspace) \
+    size_t _len = tio__strlen(src); \
+    size_t _space = tio_PathExtraSpace+(extraspace)+_len+1; \
+    dst = (char*)tio__alloca(_space); \
+    AutoFreea _af(dst); \
+    _sanitizePath(dst, src, _space, _len, forcetrail);
+
+
+TIO_EXPORT tio_error tio_init_version(unsigned version)
 {
+    tio__TRACE("sizeof(tiosize)    == %u", unsigned(sizeof(tiosize)));
+    tio__TRACE("sizeof(tio_Handle) == %u", unsigned(sizeof(tio_Handle)));
+    tio__TRACE("sizeof(tio_MMIO)   == %u", unsigned(sizeof(tio_MMIO)));
+    tio__TRACE("sizeof(tio_Stream) == %u", unsigned(sizeof(tio_Stream)));
+
     tio__TRACE("version check: got %x, want %x", version, tio_headerversion());
     if(version != tio_headerversion())
         return -1;
     
 #ifdef _WIN32
     WIN_InitOptionalFuncs();
+#else // POSIX
+    tio__TRACE("POSIX dirent has d_type member: %d", int(Has_d_type<dirent>::value));
 #endif
+
+    tio__TRACE("MMIO alignment     == %u", unsigned(os_mmioAlignment()));
+    tio__TRACE("page size          == %u", unsigned(tio_pagesize()));
+
     return 0;
 }
 
-void *tio_mmap(tio_MMIO *mmio, const char *fn, tio_Mode mode, tiosize offset, tiosize size, unsigned features)
+TIO_EXPORT tio_error tio_dirlist(const char * path, tio_FileCallback callback, void * ud)
 {
-    tio__ASSERT(mmio && fn && (mode & tio_RW));
-    return os_mmap(mmio, fn, mode, offset, size, features);
+    char *s;
+    SANITIZE_PATH(s, path, 1, 0);
+
+    return os_dirlist(s, callback, ud);
 }
 
-void tio_munmap(tio_MMIO *mmio)
+TIO_EXPORT tio_error tio_createdir(const char * path)
+{
+    char *s;
+    SANITIZE_PATH(s, path, 0, 0);
+
+    if(!createdirs(s))
+        return -1;
+
+    // check that it actually created the entire chain of subdirs
+    return (os_fileinfo(s, NULL) & tioT_Dir) ? 0 : -2;
+}
+
+TIO_EXPORT tio_error tio_cleanpath(char * dst, const char * path, size_t dstsize, int trail)
+{
+    tio_error err = _sanitizePath(dst, path, dstsize, tio__strlen(path), trail);
+    if(err)
+        *dst = 0;
+    return err;
+}
+
+TIO_EXPORT size_t tio_pagesize()
+{
+    const static size_t sz = _os_pagesize(); // query this only once
+    return sz;
+}
+
+TIO_EXPORT void *tio_mopenmap(tio_MMIO *mmio, const char *fn, tio_Mode mode, tiosize offset, size_t size, tio_Features features)
+{
+    tio__memzero(mmio, sizeof(mmio));
+
+    char *s;
+    SANITIZE_PATH(s, fn, 0, 0);
+
+    return !os_minit(mmio, s, mode, features)
+        ? os_mremap(mmio, offset, size, features)
+        : NULL;
+}
+
+TIO_EXPORT tio_error tio_mopen(tio_MMIO *mmio, const char *fn, tio_Mode mode, tio_Features features)
+{
+    tio__memzero(mmio, sizeof(mmio));
+
+    char *s;
+    SANITIZE_PATH(s, fn, 0, 0);
+
+    return os_minit(mmio, s, mode, features);
+}
+
+/*
+// hmmm.. option to transfer handle ownership?
+TIO_EXPORT tio_error tio_mopenHandle(tio_MMIO *mmio, tio_Handle hFile, tio_Mode mode)
+{
+    tio__memzero(mmio, sizeof(mmio));
+
+    OpenMode om = checkmode(mode, 0);
+    if(!om.good)
+        return -1;
+
+    return os_minitFromHandle(mmio, hFile, om);
+}
+*/
+
+TIO_EXPORT void *tio_mremap(tio_MMIO *mmio, tiosize offset, size_t size, tio_Features features)
+{
+    tio__ASSERT(mmio && mmio->_remap);
+    void *p = mmio->_remap(mmio, offset, size, features);
+    tio__ASSERT(p == mmio->begin);
+    return p;
+}
+
+TIO_EXPORT void tio_munmap(tio_MMIO *mmio)
 {
     tio__ASSERT(mmio && mmio->_unmap);
-    mmio->_unmap(mmio);
+    mmio->_unmap(mmio, 0);
     tio__memzero(mmio, sizeof(tio_MMIO));
 }
 
-tio_error tio_mflush(tio_MMIO *mmio, tio_FlushMode flush)
+TIO_EXPORT void tio_mclose(tio_MMIO *mmio)
 {
-    tio__ASSERT(mmio && mmio->begin);
-    return mmio->_flush ? mmio->_flush(mmio, flush) : 0;
+    tio__ASSERT(mmio && mmio->_unmap);
+    mmio->_unmap(mmio, 1);
+    tio__memzero(mmio, sizeof(tio_MMIO));
 }
 
-tio_Handle *tio_fopenx(const char *fn, tio_Mode mode, unsigned features)
+TIO_EXPORT tio_error tio_mflush(tio_MMIO *mmio, tio_FlushMode flush)
 {
-    OpenMode om = checkmode(mode);
-    if(!om.good)
-        return NULL;
-    void *hFile;
-    if(!sysopen(&hFile, fn, om, features))
-        return NULL;
-
-    tio__ASSERT(hFile); // FIXME: is there really an OS where NULL is a valid handle?
-    return (tio_Handle*)hFile;
+    return mmio->begin ? mmio->_flush(mmio, flush) : 0;
 }
 
-tio_error tio_fclose(tio_Handle *h)
+TIO_EXPORT tio_FileType tio_fileinfo(const char *fn, tiosize *psz)
 {
-    return os_fclose(h);
+    char *s;
+    SANITIZE_PATH(s, fn, 0, 0);
+    return os_fileinfo(s, psz);
 }
 
-tio_error tio_fgetsize(tio_Handle *h, tiosize *psize)
+TIO_EXPORT tio_error tio_kopen(tio_Handle *hDst, const char *fn, tio_Mode mode, unsigned features)
 {
-    return os_fgetsize(h, psize);
+    char *s;
+    SANITIZE_PATH(s, fn, 0, 0);
+
+    tio_Handle h;
+    OpenMode om;
+    if(tio_error err = os_open(&h, om, s, mode, features))
+        return err;
+
+    *hDst = (tio_Handle)h;
+    return 0;
 }
 
-tiosize tio_fsize(tio_Handle *fh)
+TIO_EXPORT tio_error tio_kclose(tio_Handle h)
+{
+    return os_close(h);
+}
+
+TIO_EXPORT tio_error tio_kgetsize(tio_Handle h, tiosize *psize)
+{
+    return os_getsize(h, psize);
+}
+
+TIO_EXPORT tiosize tio_ksize(tio_Handle h)
 {
     tiosize sz;
-    if(os_fgetsize(fh, &sz))
+    if(os_getsize(h, &sz))
         sz = 0;
     return sz;
+}
+
+TIO_EXPORT tio_error tio_stdhandle(tio_Handle *hDst, tio_StdHandle id)
+{
+    return os_stdhandle(hDst, id);
+}
+
+
+
+TIO_EXPORT tio_error tio_sopen(tio_Stream *sm, const char *fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize)
+{
+    char *s;
+    SANITIZE_PATH(s, fn, 0, 0);
+    return initstream(sm, s, mode, features, flags, blocksize);
+}
+
+TIO_EXPORT tiosize tio_swrite(tio_Stream *sm, const void *ptr, size_t bytes)
+{
+    tio__ASSERT(sm->write); // Can't write to a read-only stream
+    if(!sm->write || sm->err)
+        return 0;
+
+    char * const oldcur = sm->cursor;
+    char * const oldbegin = sm->begin;
+    char * const oldend = sm->end;
+
+    sm->cursor = NULL; // To make sure Refill() doesn't rely on it
+    sm->begin = (char*)ptr;
+    sm->end = (char*)ptr + bytes;
+
+    const size_t done = sm->Refill(sm);
+    tio__ASSERT((done == bytes) || sm->err); // err must be set if we didn't write enough bytes
+
+    sm->cursor = oldcur;
+    sm->begin = oldbegin;
+    sm->end = oldend;
+
+    return done;
+}
+
+TIO_EXPORT tiosize tio_sread(tio_Stream *sm, void *ptr, size_t bytes)
+{
+    tio__ASSERT(!sm->write); // Can't read from a write-only stream
+    if(sm->write || sm->err || !bytes)
+        return 0;
+
+    size_t done = 0;
+    goto loopstart;
+    do
+    {
+        tio__ASSERT(sm->cursor == sm->end); // Otherwise we'd miss bytes
+        if(!sm->Refill(sm) || sm->err)
+            break;
+        tio__ASSERT(sm->cursor && sm->cursor == sm->begin); // As mandated for Refill()
+loopstart:
+        if(size_t avail = tio_savail(sm))
+        {
+            size_t n = tio_min(avail, bytes);
+            tio__ASSERT(n);
+            tio__memcpy(ptr, sm->cursor, n);
+            sm->cursor += n;
+            done += n;
+            bytes -= n;
+        }
+    }
+    while(bytes);
+    return done;
+}
+
+TIO_EXPORT size_t tio_streamfail(tio_Stream *sm)
+{
+    return streamfail(sm);
 }
 
 /* ---- End public API ---- */

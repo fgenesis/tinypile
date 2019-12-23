@@ -1,116 +1,97 @@
 #pragma once
 
-#define TIO_NO_API_FUNCTIONS_DECL
 #include "tio.h"
-#undef TIO_NO_API_FUNCTIONS_DECL
 
-enum tioV_Features_
-{
-    tioF_NoEmulation = 0x100, /* Don't attempt to emulate functionality if not directly supported.
-                                Do exactly as requested and fail if that doesn't work.
-                                (This is mainly for backends that don't expose certain functionality) */
+struct tio_FOps;
+struct tiov_Backend;
 
-};
+/* Only ever pass this as an opaque pointer, like FILE*. */
+struct tio_FH;
 
-struct tio_FH
+struct tio_FOps
 {
     tio_error (*Close)(tio_FH*);
     tiosize (*Read)(tio_FH*, void*, tiosize);
     tiosize (*Write)(tio_FH*, const void*, tiosize);
-    tio_error (*Seek)(tio_FH*, tiosize);
-    tiosize (*Tell)(tio_FH*);
-    tio_error (*Flush)(tio_FH*, tio_FlushMode);
-    tio_error (*Eof)(tio_FH*);
-    tio_error (*SetSize)(tio_FH*, tiosize);
+    tio_error (*Seek)(tio_FH*, tiosize, tio_Seek);
+    tio_error (*Tell)(tio_FH*, tiosize*);
+    tio_error (*Flush)(tio_FH*);
+    int (*Eof)(tio_FH*); /* Return 1 on eof, negative value on error, 0 otherwise */
     tio_error (*GetSize)(tio_FH*, tiosize*);
-
-    union
-    {
-        void *handle;
-        int fd;
-    } os;
+    tio_error (*SetSize)(tio_FH*, tiosize);
 };
 
 
-static inline char isdirsep(char c)
-{
-    return c == '/' || c == '\\';
-}
-
-// Universal allocator interface.
-// tio is likely to make many small allocations and may benefit from a custom allocator.
-// Hint: This is compatible with LuaAlloc, if you need a fast block allocator.
+/* Universal allocator interface.
+   Hint: This is compatible with LuaAlloc, if you need a fast block allocator. */
 typedef void *(*tio_Alloc)(void *ud, void *ptr, size_t osize, size_t nsize);
 
+struct tio_OpaqueMount;
+typedef tio_OpaqueMount *tio_Mount;
 
-typedef unsigned tio_Mount;
+struct tio_VFS;       /* tio VFS context */
 
-struct tio_Loader;    /* Searches for files by name and manages IO */
-struct tio_Ctx;       /* tio VFS context */
+/* --- VFS init/teardown --- */
 
+/* Create new instance. Pass (NULL, NULL) to use a default allocator based on realloc(). */
+TIO_EXPORT tio_VFS *tio_vfs_new(tio_Alloc *alloc, void *allocdata); 
 
-/* ---- Virtual file system ---- */
-/* All file accesses are routed through an internal VFS. Use the returned I/O handles as normal. */
+/* Teardown. Afterwards, accessing any files previously opened via this instance
+   is undefined behavior. That means you can't close files anymore at this point. */
+TIO_EXPORT  void tio_vfs_delete(tio_VFS *vfs);
 
-/* Init/teardown */
-inline static tio_Ctx *tio_vfs_new(tio_Alloc *alloc, void *allocdata); /* Create new instance. Implementation is inlined at end of file */
-void tio_vfs_free(tio_Ctx *tio); /* Teardown. Afterwards, accessing any files previously opened via this instance is undefined behavior. */
+typedef void (*tiov_ResolveCallback)(tiov_Backend *impl, const char *original, const char *virt, void *ud);
+TIO_EXPORT  tio_error tiov_resolvepath(tio_VFS *vfs, const char *path, tiov_ResolveCallback cb);
 
 /* File access */
-void       * tio_vfs_mmap  (tio_Ctx *vfs, tio_MMIO *mmio, const char *fn, tio_Mode mode, tiosize offset, tiosize size, tio_Features features);
-tio_Stream * tio_vfs_sinit (tio_Ctx *vfs, tio_Stream *sm, const char *fn, tio_Mode mode, tio_Features features);
-tio_FH     * tio_vfs_fopen (tio_Ctx *vfs, const char *fn, const char *mode); /*AVOID*/
-tio_FH     * tio_vfs_fopenx(tio_Ctx *vfs, const char *fn, tio_Mode mode, tio_Features features); /* mode enum instead of string */
+TIO_EXPORT tio_error tiov_mopen(tio_VFS *vfs, tio_MMIO *mmio, const char *fn, tio_Mode mode, tiosize offset, tiosize size, tio_Features features);
+TIO_EXPORT tio_error tiov_sinit(tio_VFS *vfs, tio_Stream *sm, const char *fn, tio_Mode mode, tio_Features features);
+TIO_EXPORT tio_error tiov_fopen(tio_VFS *vfs, tio_FH **hDst, const char *fn, tio_Mode mode, tio_Features features); /* mode enum instead of string */
 
-/* Mounting */
-tio_Mount tio_vfs_mount(tio_Ctx *vfs, const char *dst, const char *src);
-tio_error tio_vfs_unmount(tio_Ctx *vfs, tio_Mount handle);
-void tio_vfs_mountlist(tio_FileCallback, void *ud); /* Call with (name = mount point), (path = physical path), (type = handle) */
+/* File handle functions. Similar API as fopen() & friends.
+   None of the pointers passed may be NULL. */
+TIO_EXPORT tio_error  tiov_fclose  (tio_FH *fh); /* Closing a file will not flush it immediately. */
+TIO_EXPORT tiosize    tiov_fwrite  (tio_FH *fh, const void *ptr, size_t bytes);
+TIO_EXPORT tiosize    tiov_fread   (tio_FH *fh, void *ptr, size_t bytes);
+TIO_EXPORT tio_error  tiov_fseek   (tio_FH *fh, tiosize offset, tio_Seek origin);
+TIO_EXPORT tio_error  tiov_ftell   (tio_FH *fh, tiosize *poffset); /* Write position offset location */
+TIO_EXPORT tio_error  tiov_fflush  (tio_FH *fh); /* block until write to disk is complete */
+TIO_EXPORT int        tiov_feof    (tio_FH *fh);
+TIO_EXPORT tio_error  tiov_fgetsize(tio_FH *fh, tiosize *pbytes); /* Get total file size */
+TIO_EXPORT tio_error  tiov_fsetsize(tio_FH *fh, tiosize bytes); /* Change file size on disk, truncate or enlarge. New areas' content is undefined. */
+TIO_EXPORT tiosize    tiov_fsize   (tio_FH *fh); /* Shortcut for tio_kgetsize(), returns size of file or 0 on error */
 
-/* Loaders */
-tio_error tio_vfs_attachDefaultAPI(tio_Ctx *tio);  /* Default OS interface. Fails when this was compiled out or we're on a system that isn't supported. */
-tio_error tio_vfs_attachAPI(tio_Ctx *tio, tio_Loader *loader, void *lddata);  /* Add custom loader. Fails when loader struct is incomplete. Copies contents of loader struct. */
+
 
 /* Utility */
-void tio_vfs_dirlist(const char *path, tio_FileCallback callback, void *ud);
+TIO_EXPORT tio_error tiov_dirlist(tio_VFS *vfs, const char *path, tio_FileCallback callback, void *ud);
+TIO_EXPORT tio_FileType tiov_fileinfo(tio_VFS *vfs, const char *path, tiosize *psz);
+TIO_EXPORT tio_error tiov_createdir(tio_VFS *vfs, const char *path);
+
+/* Mounting */
+TIO_EXPORT tio_Mount tiov_mount(tio_VFS *vfs, const char *dst, const char *src);
+TIO_EXPORT tio_error tiov_unmount(tio_VFS *vfs, tio_Mount handle);
+TIO_EXPORT void tiov_mountlist(tio_FileCallback, void *ud); /* Call with (name = mount point), (path = physical path), (type = handle) */
+
+/* Loaders */
+TIO_EXPORT tio_error tio_vfs_attachAPI(tio_VFS *tio, tiov_Backend *loader, void *lddata);  /* Add custom loader. Fails when loader struct is incomplete. Copies contents of loader struct. */
 
 
-
-
-
-
-/* ---- Loader interface, for adding custom loaders ---- */
-
-/* Rules:
-tio_FH can be anything. Treat like void*. The loader defines its tio_FH as it likes.
-
-An I/O backend may implement any of the 3 I/O methods, unimplemented ones can be (partially) emulated:
-- MMIO: load entire file into a block of memory, optionally write back when it's closed.
-- Stream: one-block stream containing the mmap'd pointer, or a blockwise read using a file handle.
-- File handle: * via MMIO: ok, except that writes beyond the original size will fail
-               * via Stream: ok, except that seek will fail.
-*/
-
-typedef tio_FH (*tio_LOpen)(const char *path, tio_Mode mode, void *lddata);
-typedef tio_error (*tio_LClose)(tio_FH *fh); // fh knows ud
-
-typedef tio_error (*tio_LStreamOpen)(tio_Stream *stream, const char *path, tio_Mode mode, void *lddata); /* Must init passed stream */
-typedef tio_error (*tio_LStreamClose)(tio_Stream *strm);
-
-typedef tio_error (*tio_LListDir)(const char *path, tio_FileCallback callback, void *lddata);
-
-
-struct tio_Loader
+/* A backend provides file I/O functionality. */
+struct tiov_Backend
 {
-    tio_Alloc alloc;                /* Uses internal fallback allocator if not provided */
-    void *allocuser;
+    /* Allocator for this backend. If alloc is NULL, the allocator from the
+       containing VFS will be used. */
+    tio_Alloc alloc;
+    void *allocUD;
 
-    tio_LOpen open;                 /* Required */
-    tio_LClose close;               /* Required */
-    tio_LStreamOpen openStream;     /* Optional. Will use stream emulation if not provided. */
-    tio_LStreamClose closeStream;   /* Optional. Will use stream emulation if not provided. */
-    tio_LListDir listdir;           /* Optional. Can't see directory contents if not provided. */
-
-    // TODO: read, write, tell, seek, etc
+    /* File & Path functions */
+    tio_error (*InitBackend)(tiov_Backend *impl);
+    tio_error (*CloseBackend)(tiov_Backend *impl);
+    tio_error (*Fopen)(tiov_Backend *impl, tio_FH **hDst, const char *fn, tio_Mode mode, tio_Features features);
+    tio_error (*Mopen)(tiov_Backend *impl, tio_MMIO *mmio, const char *fn, tio_Mode mode, tio_Features features);
+    tio_error (*Sopen)(tiov_Backend *impl, tio_Stream *sm, const char *fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize);
+    tio_error (*DirList)(tiov_Backend *impl, const char *path, tio_FileCallback callback, void *ud);
+    tio_FileType (*FileInfo)(tiov_Backend *impl, const char *path, tiosize *psz);
 };
 

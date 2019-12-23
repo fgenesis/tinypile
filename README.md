@@ -12,6 +12,7 @@ Pile of various tiny (single- or two-file) libs.
 |:------|:-------|:-----|:-----|:-----|
 |LuaAlloc|[.c](luaalloc.c) + [.h](luaalloc.h)|C99|Lua small block allocator| Stable.
 |JPS v2|[.hh](jps.hh)|C++98|2D Pathfinding: A*, Jump Point Search| Experimental, needs testing.
+|tio|     |C++98, C-only .h|File/Path-I/O|WIP, don't use!
 
 My other tiny libs that reside in their own repos for historical reasons:
 

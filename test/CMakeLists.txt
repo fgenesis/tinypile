@@ -1,7 +1,21 @@
 cmake_minimum_required(VERSION 2.6)
 project(tinypiletest)
 
+add_library(tinypile
+    ../luaalloc.c
+    ../luaalloc.h
+    ../jps.hh
+    ../tio.cpp
+    ../tio.h
+    ../tio_vfs.cpp
+    ../tio_vfs.h
+    ../ustrpool.cpp
+    ../ustrpool.h
+)
+
 include_directories(..)
+include_directories(testdep)
+add_subdirectory(testdep)
 
 add_subdirectory(luaalloc)
 add_subdirectory(jps)
