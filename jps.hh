@@ -163,6 +163,7 @@ you'll get that exception, and the path vector will be in whatever state it was 
 If no exception is thrown (ie. you used JPS::PathVector) then the failure cases do not modify the path vector.
 
 You may abort a search anytime by starting a new one via findPathInit(), calling freeMemory(), or by destroying the searcher instance.
+Aborting or starting a search resets the values returned by .getStepsDone() and .getNodesExpanded() to 0.
 
 */
 
