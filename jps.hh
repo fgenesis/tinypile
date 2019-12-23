@@ -172,20 +172,6 @@ Aborting or starting a search resets the values returned by .getStepsDone() and 
 // ============================
 
 
-// If this is defined, use standard A* instead of JPS (e.g. if you want to compare performance in your scenario)
-// This might be beneficial if your grid lookup is slow (aka worse than O(1) or more than a few inlined instructions),
-// as it avoids the large area scans that the JPS algorithm does.
-// (Also increases memory usage as each checked position is expanded into a node.)
-//#define JPS_ASTAR_ONLY
-
-// If this is defined, disable the greedy direct-short-path check that avoids the large area scanning that JPS does.
-// This is just a performance tweak. May save a lot of CPU when constantly re-planning short paths without obstacles
-// (e.g. an entity follows close behind another).
-// Does not change optimality of results. You probably want this. If you perform your own line-of-sight checks
-// before starting a pathfinding run you can disable greedy since checking twice isn't needed,
-// but otherwise it's better to leave it enabled.
-//#define JPS_DISABLE_GREEDY
-
 // If you want to avoid sqrt() or floats in general, define this.
 // Turns out in some testing this was ~12% faster, so it's the default.
 #define JPS_NO_FLOAT
@@ -269,6 +255,35 @@ typedef unsigned SizeT;
 // ================================
 // ----------------------------------------------------------------------------------------
 
+typedef unsigned JPS_Flags;
+enum JPS_Flags_
+{
+    // No special behavior
+    JPS_Flag_Default       = 0x00,
+
+    // If this is defined, disable the greedy direct-short-path check that avoids the large area scanning that JPS does.
+    // This is just a performance tweak. May save a lot of CPU when constantly re-planning short paths without obstacles
+    // (e.g. an entity follows close behind another).
+    // Does not change optimality of results. If you perform your own line-of-sight checks
+    // before starting a pathfinding run you can disable greedy since checking twice isn't needed,
+    // but otherwise it's better to leave it enabled.
+    JPS_Flag_NoGreedy      = 0x01,
+
+    // If this is set, use standard A* instead of JPS (e.g. if you want to compare performance in your scenario).
+    // In most cases this will be MUCH slower, but might be beneficial if your grid lookup
+    // is slow (aka worse than O(1) or more than a few inlined instructions),
+    // as it avoids the large area scans that the JPS algorithm does.
+    // (Also increases memory usage as each checked position is expanded into a node.)
+    JPS_Flag_AStarOnly     = 0x02,
+
+    // Don't check whether start position is walkable.
+    // This makes the start position always walkable, even if the map data say otherwise.
+    JPS_Flag_NoStartCheck  = 0x04,
+
+    // Don't check whether end position is walkable.
+    JPS_Flag_NoEndCheck    = 0x08,
+};
+
 enum JPS_Result
 {
     JPS_NO_PATH,
@@ -279,7 +294,7 @@ enum JPS_Result
 };
 
 // operator new() without #include <new>
-// Onfortunately the standard mandates the use of size_t, so we need stddef.h the very least.
+// Unfortunately the standard mandates the use of size_t, so we need stddef.h the very least.
 // Trick via https://github.com/ocornut/imgui
 // "Defining a custom placement new() with a dummy parameter allows us to bypass including <new>
 // which on some platforms complains when user has disabled exceptions."
@@ -375,7 +390,7 @@ struct Node
     inline       Node& getParent()       { JPS_ASSERT(parentOffs); return this[parentOffs]; }
     inline const Node& getParent() const { JPS_ASSERT(parentOffs); return this[parentOffs]; }
     inline const Node *getParentOpt() const { return parentOffs ? this + parentOffs : 0; }
-    inline void setParent(const Node& p) { JPS_ASSERT(&p != this); parentOffs = static_cast<SizeT>(&p - this); }
+    inline void setParent(const Node& p) { JPS_ASSERT(&p != this); parentOffs = static_cast<int>(&p - this); }
 };
 
 template<typename T>
@@ -422,7 +437,7 @@ public:
     inline SizeT getindex(const T *e) const
     {
         JPS_ASSERT(e && _data <= e && e < _data + used);
-        return SizeT(e - _data);
+        return static_cast<SizeT>(e - _data);
     }
 
     void *_reserve(SizeT newcap) // for internal use
@@ -789,14 +804,18 @@ protected:
 
     Position endPos;
     SizeT endNodeIdx;
+    JPS_Flags flags;
     int stepsRemain;
     SizeT stepsDone;
+
 
     SearcherBase(void *user)
         : storage(user)
         , open(storage)
         , nodemap(storage)
-        , endPos(npos), endNodeIdx(noidx), stepsRemain(0), stepsDone(0)
+        , endPos(npos), endNodeIdx(noidx)
+        , flags(0)
+        , stepsRemain(0), stepsDone(0)
     {}
 
     void clear()
@@ -863,10 +882,10 @@ public:
 
     // single-call
     template<typename PV>
-    bool findPath(PV& path, Position start, Position end, unsigned step);
+    bool findPath(PV& path, Position start, Position end, unsigned step, JPS_Flags flags = JPS_Flag_Default);
 
     // incremental pathfinding
-    JPS_Result findPathInit(Position start, Position end);
+    JPS_Result findPathInit(Position start, Position end, JPS_Flags flags = JPS_Flag_Default);
     JPS_Result findPathStep(int limit);
     // generate path after one was found
     template<typename PV>
@@ -879,19 +898,15 @@ private:
     Node *getNode(const Position& pos);
     bool identifySuccessors(const Node& n);
 
-#ifndef JPS_DISABLE_GREEDY
     bool findPathGreedy(Node *start, Node *end);
-#endif
     
-#ifdef JPS_ASTAR_ONLY
     unsigned findNeighborsAStar(const Node& n, Position *wptr);
-#else
-    unsigned findNeighbors(const Node& n, Position *wptr) const;
+
+    unsigned findNeighborsJPS(const Node& n, Position *wptr) const;
     Position jumpP(const Position& p, const Position& src);
     Position jumpD(Position p, int dx, int dy);
     Position jumpX(Position p, int dx);
     Position jumpY(Position p, int dy);
-#endif
 
     // forbid any ops
     Searcher& operator=(const Searcher<GRID>&);
@@ -975,7 +990,6 @@ template <typename GRID> inline Node *Searcher<GRID>::getNode(const Position& po
     return nodemap(pos.x, pos.y);
 }
 
-#ifndef JPS_ASTAR_ONLY
 template <typename GRID> Position Searcher<GRID>::jumpP(const Position &p, const Position& src)
 {
     JPS_ASSERT(grid(p.x, p.y));
@@ -1108,15 +1122,13 @@ template <typename GRID> inline Position Searcher<GRID>::jumpY(Position p, int d
     stepsRemain -= steps;
     return p;
 }
-#endif // JPS_ASTAR_ONLY
 
 #define JPS_CHECKGRID(dx, dy) (grid(x+(dx), y+(dy)))
 #define JPS_ADDPOS(dx, dy)     do { *w++ = Pos(x+(dx), y+(dy)); } while(0)
 #define JPS_ADDPOS_CHECK(dx, dy) do { if(JPS_CHECKGRID(dx, dy)) JPS_ADDPOS(dx, dy); } while(0)
 #define JPS_ADDPOS_NO_TUNNEL(dx, dy) do { if(grid(x+(dx),y) || grid(x,y+(dy))) JPS_ADDPOS_CHECK(dx, dy); } while(0)
 
-#ifndef JPS_ASTAR_ONLY
-template <typename GRID> unsigned Searcher<GRID>::findNeighbors(const Node& n, Position *wptr) const
+template <typename GRID> unsigned Searcher<GRID>::findNeighborsJPS(const Node& n, Position *wptr) const
 {
     Position *w = wptr;
     const unsigned x = n.pos.x;
@@ -1198,7 +1210,6 @@ template <typename GRID> unsigned Searcher<GRID>::findNeighbors(const Node& n, P
     return unsigned(w - wptr);
 }
 
-#else
 //-------------- Plain old A* search ----------------
 template <typename GRID> unsigned Searcher<GRID>::findNeighborsAStar(const Node& n, Position *wptr)
 {
@@ -1217,7 +1228,7 @@ template <typename GRID> unsigned Searcher<GRID>::findNeighborsAStar(const Node&
     stepsDone += 8;
     return unsigned(w - wptr);
 }
-#endif // JPS_ASTAR_ONLY
+
 //-------------------------------------------------
 #undef JPS_ADDPOS
 #undef JPS_ADDPOS_CHECK
@@ -1230,21 +1241,23 @@ template <typename GRID> bool Searcher<GRID>::identifySuccessors(const Node& n_)
     const SizeT nidx = storage.getindex(&n_);
     const Position np = n_.pos;
     Position buf[8];
-#ifdef JPS_ASTAR_ONLY
-    const int num = findNeighborsAStar(n_, &buf[0]);
-#else
-    const int num = findNeighbors(n_, &buf[0]);
-#endif
+
+    const int num = (flags & JPS_Flag_AStarOnly)
+        ? findNeighborsAStar(n_, &buf[0])
+        : findNeighborsJPS(n_, &buf[0]);
+
     for(int i = num-1; i >= 0; --i)
     {
         // Invariant: A node is only a valid neighbor if the corresponding grid position is walkable (asserted in jumpP)
-#ifdef JPS_ASTAR_ONLY
-        Position jp = buf[i];
-#else
-        Position jp = jumpP(buf[i], np);
-        if(!jp.isValid())
-            continue;
-#endif
+        Position jp;
+        if(flags & JPS_Flag_AStarOnly)
+            jp = buf[i];
+        else
+        {
+            jp = jumpP(buf[i], np);
+            if(!jp.isValid())
+                continue;
+        }
         // Now that the grid position is definitely a valid jump point, we have to create the actual node.
         Node *jn = getNode(jp); // this might realloc the storage
         if(!jn)
@@ -1258,9 +1271,9 @@ template <typename GRID> bool Searcher<GRID>::identifySuccessors(const Node& n_)
     return true;
 }
 
-template <typename GRID> template<typename PV> bool Searcher<GRID>::findPath(PV& path, Position start, Position end, unsigned step)
+template <typename GRID> template<typename PV> bool Searcher<GRID>::findPath(PV& path, Position start, Position end, unsigned step, JPS_Flags flags)
 {
-    JPS_Result res = findPathInit(start, end);
+    JPS_Result res = findPathInit(start, end, flags);
 
     // If this is true, the resulting path is empty (findPathFinish() would fail, so this needs to be checked before)
     if(res == JPS_EMPTY_PATH)
@@ -1287,23 +1300,29 @@ template <typename GRID> template<typename PV> bool Searcher<GRID>::findPath(PV&
     }
 }
 
-template <typename GRID> JPS_Result Searcher<GRID>::findPathInit(Position start, Position end)
+template <typename GRID> JPS_Result Searcher<GRID>::findPathInit(Position start, Position end, JPS_Flags flags)
 {
     // This just resets a few counters; container memory isn't touched
     this->clear();
 
+    this->flags = flags;
     endPos = end;
 
-    if(start == end)
+    // FIXME: check this
+    if(start == end && !(flags & (JPS_Flag_NoStartCheck|JPS_Flag_NoEndCheck)))
     {
         // There is only a path if this single position is walkable.
         // But since the starting position is omitted in the output, there is nothing to do here.
         return grid(end.x, end.y) ? JPS_EMPTY_PATH : JPS_NO_PATH;
     }
 
-    // If start or end point are obstructed, don't even start
-    if(!grid(start.x, start.y) || !grid(end.x, end.y))
-        return JPS_NO_PATH;
+    if(!(flags & JPS_Flag_NoStartCheck))
+        if(!grid(start.x, start.y))
+            return JPS_NO_PATH;
+
+    if(!(flags & JPS_Flag_NoEndCheck))
+        if(!grid(end.x, end.y))
+            return JPS_NO_PATH;
 
     Node *endNode = getNode(end); // this might realloc the internal storage...
     if(!endNode)
@@ -1315,11 +1334,12 @@ template <typename GRID> JPS_Result Searcher<GRID>::findPathInit(Position start,
         return JPS_OUT_OF_MEMORY;
     endNode = &storage[endNodeIdx]; // startNode is valid, make sure that endNode is valid too in case we reallocated
 
-#ifndef JPS_DISABLE_GREEDY
-    // Try the quick way out first
-    if(findPathGreedy(startNode, endNode))
-        return JPS_FOUND_PATH;
-#endif
+    if(!(flags & JPS_Flag_NoGreedy))
+    {
+        // Try the quick way out first
+        if(findPathGreedy(startNode, endNode))
+            return JPS_FOUND_PATH;
+    }
 
     open.pushNode(startNode);
 
@@ -1349,7 +1369,6 @@ template<typename GRID> template<typename PV> JPS_Result Searcher<GRID>::findPat
     return this->generatePath(path, step);
 }
 
-#ifndef JPS_DISABLE_GREEDY
 template<typename GRID> bool Searcher<GRID>::findPathGreedy(Node *n, Node *endnode)
 {
     Position midpos = npos;
@@ -1424,7 +1443,6 @@ template<typename GRID> bool Searcher<GRID>::findPathGreedy(Node *n, Node *endno
 
     return true;
 }
-#endif
 
 #undef JPS_ASSERT
 #undef JPS_realloc
@@ -1463,6 +1481,7 @@ typedef Internal::PodVec<Position> PathVector;
 template <typename GRID, typename PV>
 SizeT findPath(PV& path, const GRID& grid, PosType startx, PosType starty, PosType endx, PosType endy,
                unsigned step = 0, // optional
+               JPS_Flags flags = JPS_Flag_Default,
                void *user = 0)    // memory allocation userdata
 {
     Searcher<GRID> search(grid, user);
@@ -1485,6 +1504,9 @@ Changes compared to the older JPS.h at https://github.com/fgenesis/jps:
   as it has to re-allocate internal data structures.
 
 - Searcher::getNodesExpanded() is now reset to 0 upon starting a search.
+
+- Added optional JPS_Flags parameter to pathfind (-init) functions to control search
+  behavior. Compile-time #defines are gone.
 
 - Removed skip parameter. Imho that one just added confusion and no real benefit.
   If you want it back for some reason: poke me, open an issue, whatever.
