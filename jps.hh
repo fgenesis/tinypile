@@ -1482,7 +1482,7 @@ SizeT findPath(PV& path, const GRID& grid, PosType startx, PosType starty, PosTy
                void *user = 0)    // memory allocation userdata
 {
     Searcher<GRID> search(grid, user);
-    if(!search.findPath(path, Pos(startx, starty), Pos(endx, endy), step))
+    if(!search.findPath(path, Pos(startx, starty), Pos(endx, endy), step, flags))
         return 0;
     const SizeT done = search.getStepsDone();
     return done + !done; // report at least 1 step; as 0 would indicate failure
