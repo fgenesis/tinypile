@@ -190,7 +190,7 @@ inline static void *getdata(Block *b)
 
 inline static void *getdataend(Block *b)
 {
-    return ((char*)getdata(b)) + (b->elemSize * b->elemstotal);
+    return ((char*)getdata(b)) + ((size_t)b->elemSize * b->elemstotal);
 }
 
 inline static unsigned sizeindex(u16 elemSize)
@@ -278,7 +278,7 @@ static Block *_allocblock(LuaAlloc *LA, u16 nelems, u16 elemsz)
     void *ptr = sysmalloc(LA, LA_TYPE_BLOCK,
           (sizeof(Block) - sizeof(ubitmap)) /* block header without bitmap[1] */
         + (nbitmap * sizeof(ubitmap))       /* actual bitmap size */
-        + (nelems * elemsz)                 /* data size */
+        + (nelems * (size_t)elemsz)         /* data size */
     );
 
     if(!ptr)
@@ -309,10 +309,9 @@ static Block **findspot(LuaAlloc * LA_RESTRICT LA, void * LA_RESTRICT p)
     /* Binary search to find leftmost element */
     size_t L = 0;
     size_t R = LA->allnum;
-    size_t m;
     while(L < R)
     {
-        m = (L + R) / 2u;
+        size_t m = (L + R) / 2u;
         if((void*)all[m] < p)
             L = m + 1;
         else
@@ -439,11 +438,11 @@ static void *_Balloc(Block *b)
     for( ; !(bm = bitmap[i]); ++i) {} /* as soon as one isn't all zero, there's a free slot */
     LA_ASSERT(i < b->bitmapInts); /* And there must've been a free slot because b->elemsfree != 0 */
     ubitmap bitIdx = bitmap_CTZ(bm); /* Get exact location of free slot */
-    LA_ASSERT(bm & ((ubitmap)1 << bitIdx)); // make sure this is '1' (= free)
+    LA_ASSERT(bm & ((ubitmap)1 << bitIdx)); /* make sure this is '1' (= free) */
     bm &= ~((ubitmap)1 << bitIdx); /* put '0' where '1' was (-> mark as non-free) */
     bitmap[i] = bm;
     --b->elemsfree;
-    const unsigned where = (i * BITMAP_ELEM_SIZE) + bitIdx;
+    const size_t where = (i * (size_t)BITMAP_ELEM_SIZE) + bitIdx;
     void *ret = ((char*)getdata(b)) + (where * b->elemSize);
     LA_ASSERT(contains(b, ret));
     return ret;

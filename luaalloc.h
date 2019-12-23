@@ -73,23 +73,28 @@ Details about the system allocator:
 Block requests and large Lua allocations will be forwarded to the system allocator.
 The function signature is (intentionally) the same as luaalloc() and the semantics are very similar.
 The caller knows the size of each allocation so you do not have to track this yourself.
-As required by Lua, the system allocator must not fail shrink requests.
+The system allocator must not fail shrink requests (same requirement as Lua).
 
 You must handle the following cases:
     if(!ptr && nsize)
-        return nsize bytes; (osize encodes the type of allocation, see below)
+        return malloc(nsize); (osize encodes the type of allocation, see below)
     else if(ptr && !nsize)
-        free ptr; (osize is the previously allocated size; the return value is ignored)
+        free(ptr); (osize is the previously allocated size; the return value is ignored)
     else if(ptr && nsize)
-        return realloc ptr from osize to nsize bytes (must not fail shrink requests. osize != nsize guaranteed)
+        return realloc(ptr, nsize); (must not fail shrink requests. osize is the previously allocated size; osize != nsize guaranteed)
     // never called with (!ptr && !nsize), can ignore this case
 
 Types of allocations, in case (!ptr && nsize):
 switch(osize)
 {
-    case 0: passthrough/large Lua allocation (alloc'd/free'd/realloc'd incl. shrink requests)
-    case 1: block allocation (alloc'd/free'd, but never resized)
-    case 2: allocation of LuaAlloc-internal data (usually long-lived. alloc'd, realloc'd to enlarge, but never shrunk. free'd only in luaalloc_delete())
+    case LUAALLOC_TYPE_LARGELUA:
+        passthrough/large Lua allocation (alloc'd/free'd/realloc'd incl. shrink requests)
+    case LUAALLOC_TYPE_BLOCK:
+        block allocation (alloc'd/free'd, but never realloc'd)
+    case LUAALLOC_TYPE_INTERNAL:
+        allocation of LuaAlloc-internal data (usually long-lived. alloc'd, realloc'd to enlarge, but never shrunk. free'd only in luaalloc_delete())
+    case 0: default:
+        some other allocation (not used by LuaAlloc. Maybe some other code uses this allocator as well?)
 }
 
 Lua allocations may fail and Lua usually handles this gracefully by running an emergency GC;
