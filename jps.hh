@@ -338,6 +338,7 @@ inline static Position Pos(PosType x, PosType y)
 template<typename T> inline static T Max(T a, T b) { return a < b ? b : a; }
 template<typename T> inline static T Min(T a, T b) { return a < b ? a : b; }
 template<typename T> inline static T Abs(T a)      { return a < T(0) ? -a : a; }
+template<typename T> inline static int Sgn(T val)  { return (T(0) < val) - (val < T(0)); }
 
 
 // Heuristics. Add new ones if you need them.
@@ -940,10 +941,8 @@ template<typename PV> JPS_Result SearcherBase::generatePath(PV& path, unsigned s
             const int ady = Abs(dy);
             JPS_ASSERT(!dx || !dy || adx == ady); // known to be straight, if diagonal
             const int steps = Max(adx, ady);
-            dx /= Max(adx, 1);
-            dy /= Max(ady, 1);
-            dx *= int(step);
-            dy *= int(step);
+            dx = int(step) * int(!!adx);
+            dy = int(step) * int(!!ady);
             int dxa = 0, dya = 0;
             for(int i = 0; i < steps; i += step)
             {
@@ -1152,10 +1151,8 @@ template <typename GRID> unsigned Searcher<GRID>::findNeighborsJPS(const Node& n
     }
     const Node& p = n.getParent();
     // jump directions (both -1, 0, or 1)
-    int dx = x - p.pos.x;
-    dx /= Max(Abs(dx), 1);
-    int dy = y - p.pos.y;
-    dy /= Max(Abs(dy), 1);
+    const int dx = Sgn<int>(x - p.pos.x);
+    const int dy = Sgn<int>(y - p.pos.y);
 
     if(dx && dy)
     {
@@ -1383,8 +1380,8 @@ template<typename GRID> bool Searcher<GRID>::findPathGreedy(Node *n, Node *endno
     int dy = int(endpos.y - y);
     const int adx = Abs(dx);
     const int ady = Abs(dy);
-    dx /= Max(adx, 1);
-    dy /= Max(ady, 1);
+    dx = Sgn(dx);
+    dy = Sgn(dy);
 
     // go diagonally first
     if(x != endpos.x && y != endpos.y)
@@ -1485,7 +1482,7 @@ SizeT findPath(PV& path, const GRID& grid, PosType startx, PosType starty, PosTy
                void *user = 0)    // memory allocation userdata
 {
     Searcher<GRID> search(grid, user);
-    if(!search.findPath(path, Pos(startx, starty), Pos(endx, endy), step))
+    if(!search.findPath(path, Pos(startx, starty), Pos(endx, endy), step, flags))
         return 0;
     const SizeT done = search.getStepsDone();
     return done + !done; // report at least 1 step; as 0 would indicate failure
