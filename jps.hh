@@ -941,8 +941,8 @@ template<typename PV> JPS_Result SearcherBase::generatePath(PV& path, unsigned s
             const int ady = Abs(dy);
             JPS_ASSERT(!dx || !dy || adx == ady); // known to be straight, if diagonal
             const int steps = Max(adx, ady);
-            dx = int(step) * int(!!adx);
-            dy = int(step) * int(!!ady);
+            dx = int(step) * Sgn(dx);
+            dy = int(step) * Sgn(dy);
             int dxa = 0, dya = 0;
             for(int i = 0; i < steps; i += step)
             {
