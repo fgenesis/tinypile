@@ -77,6 +77,10 @@ static double pathcost(unsigned startx, unsigned starty, const JPS::PathVector& 
 
 		int dx = int(x - lastx);
 		int dy = int(y - lasty);
+		JPS::ScoreType dmh = JPS::Heuristic::Manhattan(path[i], JPS::Pos(lastx, lasty));
+		int maxdmh = !!dx + !!dy;
+		if(dmh > maxdmh)
+			die("incoherent path!");
 
 		accu += sqrt(double(dx*dx + dy*dy));
 		
@@ -89,13 +93,14 @@ static double pathcost(unsigned startx, unsigned starty, const JPS::PathVector& 
 double runScenario(const char *file)
 {
 	ScenarioLoader loader(file);
-	if(!loader.GetNumExperiments())
+	const unsigned N = loader.GetNumExperiments();
+	if(!N)
 		die(file);
 	MapGrid grid(loader.GetNthExperiment(0).GetMapName());
-	double sum = 0;
+	double sum = 0, diffsum = 0;
 	JPS::PathVector path;
 	JPS::Searcher<MapGrid> search(grid);
-	for(unsigned i = 0; i < loader.GetNumExperiments(); ++i)
+	for(unsigned i = 0; i < N; ++i)
 	{
 		const Experiment& ex = loader.GetNthExperiment(i);
 		path.clear();
@@ -108,7 +113,7 @@ double runScenario(const char *file)
 		bool found = false;
 		const JPS::Position startpos = JPS::Pos(ex.GetStartX(), ex.GetStartY());
 		const JPS::Position endpos = JPS::Pos(ex.GetGoalX(), ex.GetGoalY());
-		JPS_Result res = search.findPathInit(startpos, endpos);
+		JPS_Result res = search.findPathInit(startpos, endpos/*, JPS_Flag_AStarOnly*/);
 		if(res == JPS_EMPTY_PATH)
 			found = true;
 		else
@@ -118,7 +123,7 @@ double runScenario(const char *file)
 				++runs;
 				res = search.findPathStep(10000);
 			}
-			found = (res == JPS_FOUND_PATH) && search.findPathFinish(path, 0);
+			found = (res == JPS_FOUND_PATH) && search.findPathFinish(path, 1);
 		}
 
 		if(!found)
@@ -133,18 +138,19 @@ double runScenario(const char *file)
 
 		// Starting position is NOT included in vector
 		double cost = pathcost(ex.GetStartX(), ex.GetStartY(), path);
-#if 0
-		//if(cost > ex.GetDistance()+0.5f)
-			printf("[%s] [%s:%d] Path len: %.3f (%.3f); Diff: %.3f; Steps: %u; Nodes: %u; Runs: %u\n",
-				(cost > ex.GetDistance()+0.5f ? "##" : "  "), file, i, cost, ex.GetDistance(),
-				fabs(cost - ex.GetDistance()), (unsigned)search.getStepsDone(), (unsigned)search.getNodesExpanded(), runs);
+		double diff = fabs(cost - ex.GetDistance());
+#ifdef _DEBUG
+		printf("[%s] [%s:%d] Path len: %.3f (%.3f); Diff: %.3f; Steps: %u; Nodes: %u; Runs: %u\n",
+			(cost > ex.GetDistance()+0.5f ? "##" : "  "), file, i, cost, ex.GetDistance(),
+			diff, (unsigned)search.getStepsDone(), (unsigned)search.getNodesExpanded(), runs);
 #else
         (void)runs;
 #endif
 
 		sum += cost;
+		diffsum += diff;
 	}
-    printf("Done. Req. memory: %u KB\n", (unsigned)search.getTotalMemoryInUse() / 1024);
+    printf("%u runs done. Req. memory: %u KB.\nDiffsum = %f (smaller is better)\n", N, (unsigned)search.getTotalMemoryInUse() / 1024, diffsum);
 	return sum;
 }
 

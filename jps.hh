@@ -274,6 +274,7 @@ enum JPS_Flags_
     // is slow (aka worse than O(1) or more than a few inlined instructions),
     // as it avoids the large area scans that the JPS algorithm does.
     // (Also increases memory usage as each checked position is expanded into a node.)
+    // TL;DR: If in doubt, do NOT set this flag!
     JPS_Flag_AStarOnly     = 0x02,
 
     // Don't check whether start position is walkable.
@@ -1239,11 +1240,11 @@ template <typename GRID> bool Searcher<GRID>::identifySuccessors(const Node& n_)
     const Position np = n_.pos;
     Position buf[8];
 
-    const int num = (flags & JPS_Flag_AStarOnly)
+    const unsigned num = (flags & JPS_Flag_AStarOnly)
         ? findNeighborsAStar(n_, &buf[0])
         : findNeighborsJPS(n_, &buf[0]);
 
-    for(int i = num-1; i >= 0; --i)
+    for(unsigned i = 0; i < num; ++i)
     {
         // Invariant: A node is only a valid neighbor if the corresponding grid position is walkable (asserted in jumpP)
         Position jp;
@@ -1256,7 +1257,7 @@ template <typename GRID> bool Searcher<GRID>::identifySuccessors(const Node& n_)
                 continue;
         }
         // Now that the grid position is definitely a valid jump point, we have to create the actual node.
-        Node *jn = getNode(jp); // this might realloc the storage
+        Node *jn = getNode(jp); // this might realloc the storage and invalidate n_
         if(!jn)
             return false; // out of memory
 
