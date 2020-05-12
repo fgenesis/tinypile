@@ -11,6 +11,10 @@ add_library(tinypile
     ../tio_vfs.h
     ../ustrpool.cpp
     ../ustrpool.h
+    ../tws.c
+    ../tws.h
+    ../tws_backend.c
+    ../tws_backend.h
 )
 
 include_directories(..)
@@ -21,3 +25,4 @@ add_subdirectory(luaalloc)
 add_subdirectory(jps)
 add_subdirectory(tbsp)
 add_subdirectory(tio)
+add_subdirectory(tws)
