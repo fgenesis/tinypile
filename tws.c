@@ -7,7 +7,7 @@ License:
 
 Dependencies:
   Compiles as C99 or oldschool C++ code, but can benefit from C11 or if compiled as C++11
-  Requires libc for memcpy() & memset() but you can use your own by replacing tws_memcpy() & tws_memzero()
+  Requires libc for memcpy() & memset() but you can use your own by replacing tws_memcpy() & tws_memzero() defines
   Optionally requires libc for realloc()/free()
   Requires 64bit atomics support
 
@@ -35,7 +35,7 @@ Some notes:
 //#define TWS_NO_DEFAULT_ALLOC
 
 // Define this to not wrap the system semaphore
-// (The wrapper reduces API calls a lot and potentionally speeds things up)
+// (The wrapper reduces API calls a lot and potentionally speeds things up. Go and benchmark if in doubt.)
 //#define TWS_NO_SEMAPHORE_WRAPPER
 
 // ---------------------------------------
@@ -133,9 +133,7 @@ Some notes:
 #  define TWS_THEADLOCAL thread_local
 #  define TWS_DECL_ATOMIC(x) std::atomic<x>
 #else
-#  error Unsupported compiler
-// Huh.. turns out that cases that have threadlocal also have atomic intrinsics.
-// So no case of user atomics for now
+#  error Unsupported compiler; missing support for atomic instrinsics
 #endif
 
 #ifndef TWS_UNLIKELY
@@ -978,12 +976,17 @@ static tws_Job *AllocJob()
     return job;
 }
 
-static tws_Job *NewJob(tws_JobFunc f, void *data, unsigned size, tws_Job *parent, tws_WorkType type)
+static tws_Job *NewJob(tws_JobFunc f, const void *data, unsigned size, tws_Job *parent, tws_WorkType type)
 {
-    TWS_ASSERT(f && ((data && size) || !size), "bad job params");
-    TWS_ASSERT(s_pool->forType[type].numThreads, "no thread exists that can run this job type");
+    TWS_ASSERT(!size || data, "RTFM: data == NULL with non-zero size");
+    TWS_ASSERT(!size || f, "Warning: You're submitting data but no job func; looks fishy from here");
+    const size_t space = s_pool->meminfo.jobSpace;
+    TWS_ASSERT(size < space, "RTFM: userdata size exceeds storage space in job, increase tws_Setup::jobSpace");
+    if(TWS_UNLIKELY(size >= space))
+        return NULL;
+
     tws_Job *job = AllocJob();
-    if(job)
+    if(TWS_LIKELY(job))
     {
         TWS_ASSERT((job->status & ~JB_GLOBALMEM), "allocated job still in use");
         job->status |= JB_INITED;
@@ -992,6 +995,10 @@ static tws_Job *NewJob(tws_JobFunc f, void *data, unsigned size, tws_Job *parent
         job->parent = parent;
         job->f = f;
         job->type = type;
+
+        void *dst = job + 1; // this includes compiler padding
+        TWS_ASSERT(IsAligned((uintptr_t)dst, TWS_MIN_ALIGN), "internal error: job userdata space is not aligned");
+        tws_memcpy(dst, data, size);
     }
     return job;
 }
@@ -1127,8 +1134,11 @@ static void Execute(tws_Job *job)
     TWS_ASSERT(!(job->status & JB_WORKING), "internal error: Job is already being worked on");
     job->status |= JB_WORKING;
 
-    void *data = job + 1; // data start right after the struct ends
-    job->f(data, job->datasize, (tws_Job*)job, job->event, s_pool->threadUser);
+    if(job->f)
+    {
+        void *data = job + 1; // data start right after the struct ends
+        job->f(data, job->datasize, (tws_Job*)job, job->event, s_pool->threadUser);
+    }
 
    TWS_ASSERT(!HasJobCompleted(job), "internal error: Job completed before Finish()");
    Finish(job);
@@ -1161,7 +1171,7 @@ static int Submit(tws_Job *job)
     {
         poke = mytls->pwaiter;
         spill = mytls->pspillQ;
-        if(mytls->worktype == type)
+        if(areWorkTypesCompatible(mytls->worktype, type))
         {
             // easy case -- this thread can take the job;
             // other threads will steal it if they run dry
@@ -1176,7 +1186,7 @@ static int Submit(tws_Job *job)
     }
 
     // This thread couldn't take the job.
-    // Since we're not allowed to push into other threads' lockfree queues,
+    // Since we're not allowed to push into other threads' queues,
     // we need to hit the spillover queue.
     if(TWS_LIKELY(lq_push(spill, job)))
         goto success;
@@ -1217,6 +1227,10 @@ int tws_addCont(tws_Job *ancestor, tws_Job *continuation)
     size_t maxsize = s_pool->meminfo.jobTotalSize;
     tws_Job **end = (tws_Job**)((char*)anc + maxsize); // one past last
     int ok = slot < end;
+
+    // make extra sure this doesn't get lost
+    TWS_ASSERT(ok, "tws_addCont: Job space exhausted; can't add continuation. If you diligently check EVERY return value of tws_addCont(), feel free to comment out this assert");
+    
     if(TWS_LIKELY(ok))
         *slot = (tws_Job*)continuation;
     return ok;
@@ -1304,17 +1318,21 @@ static void *_HelpWithWork(tws_WorkType type)
     return job;
 }
 
-void tws_wait(tws_Event *ev, tws_WorkType help)
+void tws_wait(tws_Event *ev, tws_WorkType *help, size_t n)
 {
     TWS_ASSERT(!tls, "RTFM: Don't call tws_wait() from within worker threads. It might work but if it does it's not efficient. I'm not even sure. Feel free to comment out this assert and hope for the best.");
-    if(help == (tws_WorkType)tws_TINY)
-        help = 0;
     while(!tws_isDone(ev))
     {
-        if(help)
-            while(_HelpWithWork(help))
-                if(tws_isDone(ev))
-                    break;
+        if(n)
+            for(size_t i = 0; i < n; ++i)
+            {
+                tws_WorkType h = help[i];
+                if(h == (tws_WorkType)tws_TINY) // TODO: check that this is ok
+                    h = tws_DEFAULT;
+                while(_HelpWithWork(help))
+                    if(tws_isDone(ev))
+                        return;
+            }
         _EnterSem(ev->sem);
     }
 }
@@ -1336,11 +1354,11 @@ static tws_Error checksetup(const tws_Setup *cfg)
     if(!(cfg->semFn->create && cfg->semFn->destroy && cfg->semFn->enter && cfg->semFn->leave))
         return tws_ERR_FUNCPTRS_INCOMPLETE;
 
-    if(cfg->numThreadsSize == 0
-    || (cfg->threadQueueSize == 0)
+    if(cfg->threadsPerTypeSize == 0
+    || (cfg->jobsPerThread == 0)
     || (cfg->jobSpace == 0)
-    || !IsPowerOfTwo(cfg->jobAlignment)
-    || (cfg->jobAlignment < TWS_MIN_ALIGN)
+    || !IsPowerOfTwo(cfg->cacheLineSize)
+    || (cfg->cacheLineSize < TWS_MIN_ALIGN)
         )
         return tws_ERR_PARAM_ERROR;
 
@@ -1350,16 +1368,16 @@ static tws_Error checksetup(const tws_Setup *cfg)
 static void fillmeminfo(const tws_Setup *cfg, tws_MemInfo *mem)
 {
     const size_t myJobSize = sizeof(tws_Job) + cfg->jobSpace;
-    const uintptr_t jobAlnSize = AlignUp(myJobSize, cfg->jobAlignment);
+    const uintptr_t jobAlnSize = AlignUp(myJobSize, cfg->cacheLineSize);
     mem->jobTotalSize = (size_t)jobAlnSize;
     mem->jobUnusedBytes = (size_t)(jobAlnSize - myJobSize);
-    mem->bytesPerThread = (size_t)(jobAlnSize * RoundUpToPowerOfTwo(cfg->threadQueueSize));
-    //mem->totalMemory = mem->bytesPerThread * cfg->numThreads;
+    mem->bytesPerThread = (size_t)(jobAlnSize * RoundUpToPowerOfTwo(cfg->jobsPerThread));
+    mem->jobSpace = cfg->jobSpace;
 
     // Make sure there's only one tws_Event per cache line
     unsigned evsz = sizeof(tws_Event);
-    if(evsz < cfg->jobAlignment)
-        evsz = cfg->jobAlignment;
+    if(evsz < cfg->cacheLineSize)
+        evsz = cfg->cacheLineSize;
     mem->eventAllocSize = RoundUpToPowerOfTwo(evsz);
 }
 
@@ -1379,6 +1397,13 @@ static void *defaultalloc(void *user, void *ptr, size_t osize, size_t nsize)
     free(ptr);
 #endif
     return NULL;
+}
+
+tws_Job *tws_newJob(tws_JobFunc f, const void *data, unsigned size, tws_Job *parent, tws_WorkType type, tws_Event *ev)
+{
+    if(!f) // empty jobs are always tiny
+        type = tws_TINY;
+    return NewJob(f, data, size, parent, type);
 }
 
 static void _tws_mainloop()
@@ -1492,15 +1517,15 @@ tws_Error _tws_init(const tws_Setup *cfg)
     // global job reserve pool
     if(!mtx_init(&pool->jobStoreLock))
         return tws_ERR_ALLOC_FAIL;
-    pool->jobStore = fl_new(pool->meminfo.bytesPerThread, jobStride, cfg->jobAlignment);
+    pool->jobStore = fl_new(pool->meminfo.bytesPerThread, jobStride, cfg->cacheLineSize);
     if(!pool->jobStore)
         return tws_ERR_ALLOC_FAIL;
 
     // per-work-type setup
     unsigned nth = 0;
-    for(tws_WorkType type = 0; type < cfg->numThreadsSize; ++type)
+    for(tws_WorkType type = 0; type < cfg->threadsPerTypeSize; ++type)
     {
-        unsigned n = cfg->numThreads[type];
+        unsigned n = cfg->threadsPerType[type];
         pool->forType[type].firstThread = nth;
         pool->forType[type].numThreads = n;
 
@@ -1522,11 +1547,11 @@ tws_Error _tws_init(const tws_Setup *cfg)
     if(!allthreads || !alltls)
         return tws_ERR_ALLOC_FAIL;
 
-    const size_t qsz = RoundUpToPowerOfTwo(cfg->threadQueueSize);
+    const size_t qsz = RoundUpToPowerOfTwo(cfg->jobsPerThread);
     unsigned tid = 0;
-    for(tws_WorkType type = 0; type < cfg->numThreadsSize; ++type)
+    for(tws_WorkType type = 0; type < cfg->threadsPerTypeSize; ++type)
     {
-        const unsigned n = cfg->numThreads[type];
+        const unsigned n = cfg->threadsPerType[type];
 
         for(unsigned i = 0; i < n; ++i)
         {
@@ -1543,8 +1568,8 @@ tws_Error _tws_init(const tws_Setup *cfg)
         }
     }
 
-    // spawn threads, one by one
-    // this is intentional; makes the thread creation in the backend easier
+    // Spawn threads, one by one, sequentially.
+    // This is intentional; makes the thread creation in the backend easier
     // because parameters can be passed using globals if necessary, without any synchronization
     for(unsigned i = 0; i < nth; ++i)
     {
@@ -1583,6 +1608,5 @@ void tws_shutdown()
     tws_Pool *pool = s_pool;
     if(!pool)
         return;
-
     _tws_clear(pool);
 }
