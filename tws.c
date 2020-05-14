@@ -1027,8 +1027,8 @@ static tws_Job *NewJob(tws_JobFunc f, const void *data, unsigned size, tws_Job *
     return job;
 }
 
-// called by any worker thread
-static void DeleteJob(tws_Job *job)
+// called by any thread, but only from _Finish()
+static void _DeleteJob(tws_Job *job)
 {
     unsigned char status = job->status;
     job->status = JB_FREE;
@@ -1265,24 +1265,26 @@ static void tws_signalEventOnce(tws_Event *ev);
 
 static void Finish(tws_Job *job)
 {
-    const tws_Atomic pending = _AtomicDec_Rel(&job->a_pending); // TODO: release semantics is correct?
-    if(!pending)
+    const tws_Atomic pending = _AtomicDec_Rel(&job->a_pending);
+    if(pending)
+        return;
+
+    if(job->event)
+        tws_signalEventOnce(job->event);
+
+    if(job->parent)
+        Finish(job->parent);
+
+    // Run continuations
+    const unsigned ncont = (unsigned)_AtomicGet_Seq(&job->a_ncont);
+    if(ncont)
     {
-        if(job->event)
-            tws_signalEventOnce(job->event);
-
-        if(job->parent)
-            Finish(job->parent);
-
-        // Run continuations
-        const unsigned ncont = (unsigned)_AtomicGet_Seq(&job->a_ncont);
-        if(ncont)
-        {
-            tws_Job **pcont = _GetContinuationArrayStart(job);
-            for(unsigned i = 0; i < ncont; ++i)
-                Submit(pcont[i]);
-        }
+        tws_Job **pcont = _GetContinuationArrayStart(job);
+        for(unsigned i = 0; i < ncont; ++i)
+            Submit(pcont[i]);
     }
+
+    _DeleteJob(job);
 }
 
 // ---- EVENTS ----

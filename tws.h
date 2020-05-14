@@ -68,7 +68,8 @@ void split(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, void *use
         tws_submit(ch);
     }
     // some finalization function to run after everything is processed. Could be added before or after the children in this example.
-    tws_Job *fin = tws_newJob(finalize, &all, sizeof(all), NULL, tws_DEFAULT, ev); // register continuation to event
+    // note that this adds itself to the event so that fin must complete before the event is signaled
+    tws_Job *fin = tws_newJob(finalize, &all, sizeof(all), NULL, tws_DEFAULT, ev);
     tws_submit(fin, job); // set fin to run as continuation after root is done
 }
 
@@ -96,6 +97,21 @@ tws_shutdown(); // whenever you're done using it
 // -- then run a finalization step on the data.
 
 // --- EXAMPLE CODE END ---
+
+
+Rules of thumb:
+
+- The fast path is everything that happens in a job function:
+  - Any followup jobs allocated and submitted inside of a job will use the lockless path.
+  - Any job allocated outside of a job function will use the slower spillover path.
+  --> Ideally, launch a single job that figures out the work that needs to be done, then adds children to itself.
+      A nice side effect is that the caller can already move on and do other things while the job system adds work to itself in the background.
+
+- If you're using an event together with a parent, and spawn child jobs from that parent, don't add the event to every child job.
+  (It's not incorrect do do this, just spammy, unnecessary, and slower than it has to be.)
+  The parent will be done once all children are done, and only then signal the event (and run continuations).
+
+- 
 */
 
 #include <stdlib.h> // for size_t, intptr_t, uintptr_t

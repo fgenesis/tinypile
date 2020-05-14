@@ -43,7 +43,7 @@ int main()
     tws_Setup ts;
     memset(&ts, 0, sizeof(ts));
     ts.cacheLineSize = cache;
-    ts.jobSpace = 64;
+    ts.jobSpace = 64; // don't need that much in this example but it's a good start
     ts.threadsPerType = &threads;
     ts.threadsPerTypeSize = 1;
     ts.semFn = tws_backend_sem;
