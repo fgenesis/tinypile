@@ -8,8 +8,8 @@ License:
 Dependencies:
   Compiles as C99 or oldschool C++ code, but can benefit from C11 or if compiled as C++11
   Requires libc for memcpy() & memset() but you can use your own by replacing tws_memcpy() & tws_memzero() defines
-  Optionally requires libc for realloc()/free()
-  Requires 64bit atomics support; works with 32bit in theory but this risks overflow.
+  Optionally requires libc for realloc()/free(), if the default allocator is used
+  Requires 64bit atomics support; works with 32bit in theory but this risks overflow [link #4 below]
 
 Origin:
   https://github.com/fgenesis/tinypile/blob/master/tws.c
@@ -18,6 +18,7 @@ Inspired by / reading material:
   - [1] https://blog.molecular-matters.com/2016/04/04/job-system-2-0-lock-free-work-stealing-part-5-dependencies/
   - [2] http://cbloomrants.blogspot.com/2012/11/11-08-12-job-system-task-types.html
   - [3] https://randomascii.wordpress.com/2012/06/05/in-praise-of-idleness/
+  - [4] https://blog.molecular-matters.com/2015/09/25/job-system-2-0-lock-free-work-stealing-part-3-going-lock-free/#comment-2270
 
 Some notes:
   This library follows the implementation described in [1],
@@ -144,10 +145,12 @@ Some notes:
 #endif
 
 #ifdef TWS_HAS_S64_TYPE
-typedef s64 tws_Atomic;
+typedef s64 tws_Atomic64;
 #else
-typedef int tws_Atomic;
+typedef int tws_Atomic64; // This will work for a while but it's dangerous (see link #4 at the top)
 #endif
+
+typedef int tws_Atomic;
 
 // Native atomic type, wrapped in a struct to prevent accidental non-atomic access
 typedef struct NativeAtomic
@@ -155,6 +158,10 @@ typedef struct NativeAtomic
     TWS_DECL_ATOMIC(tws_Atomic) val;
 } NativeAtomic;
 
+typedef struct NativeAtomic64
+{
+    TWS_DECL_ATOMIC(tws_Atomic64) val;
+} NativeAtomic64;
 
 // --- Atomic access ---
 
@@ -179,9 +186,13 @@ static inline int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic oldval, tws_At
 static inline void _AtomicSet_Seq(NativeAtomic *x, tws_Atomic newval);
 static inline tws_Atomic _AtomicGet_Acq(const NativeAtomic *x);
 static inline tws_Atomic _AtomicGet_Seq(const NativeAtomic *x);
+static inline tws_Atomic _RelaxedGet(const NativeAtomic *x); // load with no synchronization or guarantees
 
-// load with no synchronization or guarantees
-static inline tws_Atomic _RelaxedGet(const NativeAtomic *x);
+// 64 bit variants
+static inline void _Atomic64Set_Seq(NativeAtomic64 *x, tws_Atomic64 newval);
+static inline int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 oldval, tws_Atomic64 newval);
+static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x);
+
 // explicit memory fence
 static inline void _Mfence();
 // pause cpu for a tiny bit, if possible
@@ -206,23 +217,26 @@ static inline void _Yield();
 
 #ifdef TWS_USE_MSVC
 
-//#if defined(_M_X86) || defined(_M_X64)
-static inline tws_Atomic _AtomicInc_Acq(NativeAtomic *x) { return _InterlockedIncrement64(&x->val); }
-static inline tws_Atomic _AtomicInc_Rel(NativeAtomic *x) { return _InterlockedIncrement64(&x->val); }
-static inline tws_Atomic _AtomicDec_Acq(NativeAtomic *x) { return _InterlockedDecrement64(&x->val); }
-static inline tws_Atomic _AtomicDec_Rel(NativeAtomic *x) { return _InterlockedDecrement64(&x->val); }
-static inline int _AtomicCAS_Seq(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval) { return _InterlockedCompareExchange64(&x->val, newval, oldval) == oldval; }
-static inline int _AtomicCAS_Rel(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval) { return _InterlockedCompareExchange64(&x->val, newval, oldval) == oldval; }
-static inline int _AtomicCAS_Acq(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval) { return _InterlockedCompareExchange64(&x->val, newval, oldval) == oldval; }
-static inline int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval) { return _InterlockedCompareExchange64(&x->val, newval, oldval) == oldval; }
-static inline int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval) { return _InterlockedCompareExchange64(&x->val, newval, oldval) == oldval; }
-static inline void _AtomicSet_Seq(NativeAtomic *x, tws_Atomic newval) { _InterlockedExchange64(&x->val, newval); }
+static inline tws_Atomic _AtomicInc_Acq(NativeAtomic *x) { return _InterlockedIncrement(&x->val); }
+static inline tws_Atomic _AtomicInc_Rel(NativeAtomic *x) { return _InterlockedIncrement(&x->val); }
+static inline tws_Atomic _AtomicDec_Acq(NativeAtomic *x) { return _InterlockedDecrement(&x->val); }
+static inline tws_Atomic _AtomicDec_Rel(NativeAtomic *x) { return _InterlockedDecrement(&x->val); }
+static inline int _AtomicCAS_Seq(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval) { return _InterlockedCompareExchange(&x->val, newval, oldval) == oldval; }
+static inline int _AtomicCAS_Rel(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval) { return _InterlockedCompareExchange(&x->val, newval, oldval) == oldval; }
+static inline int _AtomicCAS_Acq(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval) { return _InterlockedCompareExchange(&x->val, newval, oldval) == oldval; }
+static inline int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval) { return _InterlockedCompareExchange(&x->val, newval, oldval) == oldval; }
+static inline int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval) { return _InterlockedCompareExchange(&x->val, newval, oldval) == oldval; }
+static inline void _AtomicSet_Seq(NativeAtomic *x, tws_Atomic newval) { _InterlockedExchange(&x->val, newval); }
 static inline tws_Atomic _AtomicGet_Acq(const NativeAtomic *x) { COMPILER_BARRIER(); return x->val; }
 static inline tws_Atomic _AtomicGet_Seq(const NativeAtomic *x) { COMPILER_BARRIER(); return x->val; }
 static inline tws_Atomic _RelaxedGet(const NativeAtomic *x) { return x->val; }
+
+static inline int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 oldval, tws_Atomic64 newval) { return _InterlockedCompareExchange64(&x->val, newval, oldval) == oldval; }
+static inline void _Atomic64Set_Seq(NativeAtomic64 *x, tws_Atomic64 newval) { _InterlockedExchange64(&x->val, newval); }
+static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x) { return x->val; }
+
 static inline void _Mfence() { COMPILER_BARRIER(); _mm_mfence(); }
 static inline void _Yield() { _mm_pause(); }
-//#endif
 
 #endif
 
@@ -447,10 +461,7 @@ void *fl_pop(Freelist *fl, size_t extendSize)
         return p;
     }
 
-    if(extendSize)
-        return fl_extend(fl, extendSize);
-    
-    return NULL;
+    return extendSize ? fl_extend(fl, extendSize) : NULL;
 }
 
 // p must be a pointer previously obtained via fl_pop() from the same freelist
@@ -548,8 +559,8 @@ typedef struct tws_JQ
     // size = bottom - top, therefore:
     // bottom >= top.
     // queue is empty when bottom == top
-    NativeAtomic bottom; // written by owning thread only
-    NativeAtomic top; // written concurrently
+    NativeAtomic64 bottom; // written by owning thread only
+    NativeAtomic64 top; // written concurrently
     size_t mask;
     tws_Job **jobs;
 } tws_JQ;
@@ -580,13 +591,13 @@ static int jq_push(tws_JQ *jq, tws_Job *job)
     //TWS_ASSERT(jq == &tls->jq, "internal error: jq_push() called by thread that isn't jq owner");
 
     const size_t mask = jq->mask;
-    const tws_Atomic b = _RelaxedGet(&jq->bottom);
+    const tws_Atomic64 b = _Relaxed64Get(&jq->bottom);
 
     // Check if this queue is full.
     // It is possible that someone steals a job in the meantime,
     // incrementing top, but the only consequence is that
     // we reject a job even though there would be space now.
-    size_t size = b - _RelaxedGet(&jq->top);
+    size_t size = b - _Relaxed64Get(&jq->top);
     if(size >= mask)
         return 0;
 
@@ -605,12 +616,12 @@ static tws_Job *jq_steal(tws_JQ *jq)
 {
     //TWS_ASSERT(!tls || jq != &tls->jq, "internal error: jq_steal() called by thread that owns jq");
 
-    const tws_Atomic t = _RelaxedGet(&jq->top);
+    const tws_Atomic64 t = _Relaxed64Get(&jq->top);
 
     // ensure that top is always read before bottom
     _Mfence();
 
-    const tws_Atomic b = _RelaxedGet(&jq->bottom);
+    const tws_Atomic64 b = _Relaxed64Get(&jq->bottom);
     if (t < b)
     {
         // non-empty queue
@@ -618,7 +629,7 @@ static tws_Job *jq_steal(tws_JQ *jq)
         TWS_ASSERT(job, "internal error: stolen job is NULL"); // even if stolen this must never be NULL
 
         // the CAS serves as a compiler barrier, and guarantees that the read happens before the CAS.
-        if (_AtomicCAS_Seq(&jq->top, t, t+1))
+        if (_Atomic64CAS_Seq(&jq->top, t, t+1))
         {
             // we incremented top, so there was no interfering operation
             return job;
@@ -637,11 +648,11 @@ static tws_Job *jq_pop(tws_JQ *jq)
 {
     //TWS_ASSERT(jq == &tls->jq, "jq_pop() called by thread that isn't jq owner");
 
-    const tws_Atomic b = jq->bottom.val - 1;
+    const tws_Atomic64 b = jq->bottom.val - 1;
 
-    _AtomicSet_Seq(&jq->bottom, b); // acts as memory barrier
+    _Atomic64Set_Seq(&jq->bottom, b); // acts as memory barrier
 
-    const tws_Atomic t = jq->top.val;
+    const tws_Atomic64 t = jq->top.val;
     if (t <= b)
     {
         // non-empty queue
@@ -654,7 +665,7 @@ static tws_Job *jq_pop(tws_JQ *jq)
         }
 
         // this is the last item in the queue
-        if(!_AtomicCAS_Seq(&jq->top, t, t+1))
+        if(!_Atomic64CAS_Seq(&jq->top, t, t+1))
         {
             // failed race against steal operation
             job = NULL;
@@ -893,6 +904,8 @@ inline static void _LeaveSem(tws_Sem *sem)
     s_pool->pfsem.leave(sem);
 }
 
+// ----- JOBS -----
+
 enum JobStatusBits
 {
     JB_FREE       = 0x00, // job is uninitialized
@@ -905,18 +918,18 @@ enum JobStatusBits
 
 // This struct is designed to be as compact as possible.
 // Unfortunately it is not possible to compress continuation pointers into offsets
-// because there are too many memory spaces that the job pointer could originate from.
+// because there are too many memory spaces that a job pointer could originate from.
 typedef struct tws_Job
 {
     NativeAtomic a_pending; // @+0 (assuming 64 bit atomics and pointers)
-    NativeAtomic a_ncont;   // @+8
-    tws_JobFunc f;          // @+16
-    tws_Job *parent;        // @+24
-    tws_Event *event;       // @+32
-    unsigned short datasize;// @+40
-    unsigned char status;   // @+42
-    tws_WorkType type;      // @+43
-                            // @+44
+    NativeAtomic a_ncont;   // @+4
+    tws_JobFunc f;          // @+8
+    tws_Job *parent;        // @+16
+    tws_Event *event;       // @+24
+    unsigned short datasize;// @+32
+    unsigned char status;   // @+34
+    tws_WorkType type;      // @+35
+                            // @+36
     // < compiler-inserted padding to TWS_MIN_ALIGN >
     // following:
     // unsigned char payload[datasize];
@@ -924,7 +937,19 @@ typedef struct tws_Job
     // tws_Job *continuations[...];
 } tws_Job;
 
-// ----- JOBS -----
+inline static void *_GetDataAreaStart(tws_Job *job)
+{
+    return job + 1; // data start right after the struct ends (incl. possible compiler padding)
+}
+
+static tws_Job **_GetContinuationArrayStart(tws_Job *job)
+{
+    uintptr_t p = (uintptr_t)_GetDataAreaStart(job);
+    TWS_ASSERT(IsAligned(p, TWS_MIN_ALIGN), "internal error: align check");
+    p += job->datasize;
+    p = AlignUp(p, sizeof(tws_Job*));
+    return (tws_Job**)p;
+}
 
 // called by any thread, but only called via AllocJob()
 static tws_Job *_AllocGlobalJob()
@@ -1020,7 +1045,7 @@ static tws_Job *NewJob(tws_JobFunc f, const void *data, unsigned size, tws_Job *
         job->type = type;
         job->event = ev;
 
-        void *dst = job + 1; // this includes compiler padding
+        void *dst = _GetDataAreaStart(job);
         TWS_ASSERT(IsAligned((uintptr_t)dst, TWS_MIN_ALIGN), "internal error: job userdata space is not aligned");
         tws_memcpy(dst, data, size);
     }
@@ -1153,7 +1178,7 @@ static void Execute(tws_Job *job)
 
     if(job->f)
     {
-        void *data = job + 1; // data start right after the struct ends
+        void *data = _GetDataAreaStart(job);
         job->f(data, job->datasize, (tws_Job*)job, job->event, s_pool->threadUser);
     }
 
@@ -1218,15 +1243,6 @@ success:
     // poke one thread to work on the new job
     lwsem_leave(poke);
     return 1;
-}
-
-static tws_Job **_GetContinuationArrayStart(const tws_Job *job)
-{
-    uintptr_t p = (uintptr_t)(job + 1);
-    TWS_ASSERT(IsAligned(p, TWS_MIN_ALIGN), "internal error: align check");
-    p += job->datasize;
-    p = AlignUp(p, sizeof(tws_Job*));
-    return (tws_Job**)p;
 }
 
 static int AddCont(tws_Job *ancestor, tws_Job *continuation)
