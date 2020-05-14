@@ -916,6 +916,7 @@ typedef struct tws_Job
     unsigned short datasize;// @+40
     unsigned char status;   // @+42
     tws_WorkType type;      // @+43
+                            // @+44
     // < compiler-inserted padding to TWS_MIN_ALIGN >
     // following:
     // unsigned char payload[datasize];
@@ -1222,13 +1223,6 @@ success:
     return 1;
 }
 
-int tws_submit(tws_Job *pjob)
-{
-    tws_Job *job = (tws_Job*)pjob;
-    TWS_ASSERT(!(job->status & JB_ISCONT), "RTFM: Do NOT submit continuations! They are started automatically by their ancestor job!");
-    return Submit(job);
-}
-
 static tws_Job **_GetContinuationArrayStart(const tws_Job *job)
 {
     uintptr_t p = (uintptr_t)(job + 1);
@@ -1238,7 +1232,7 @@ static tws_Job **_GetContinuationArrayStart(const tws_Job *job)
     return (tws_Job**)p;
 }
 
-int tws_addCont(tws_Job *ancestor, tws_Job *continuation)
+static int AddCont(tws_Job *ancestor, tws_Job *continuation)
 {
     TWS_ASSERT(!(continuation->status & JB_ISCONT), "RTFM: Can't add a continuation more than once! ");
     TWS_ASSERT(!(continuation->status & JB_SUBMITTED), "RTFM: Attempt to add continuation that was already submitted, this is wrong");
@@ -1261,6 +1255,13 @@ int tws_addCont(tws_Job *ancestor, tws_Job *continuation)
         _AtomicDec_Rel(&ancestor->a_ncont);
 
     return ok;
+}
+
+int tws_submit(tws_Job *job, tws_Job *ancestor)
+{
+    return !ancestor
+        ? Submit(job)
+        : AddCont(ancestor, job);
 }
 
 static void tws_signalEventOnce(tws_Event *ev);

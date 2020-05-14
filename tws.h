@@ -67,27 +67,26 @@ void split(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, void *use
         tws_Job *ch = tws_newJob(processChunk, &info, sizeof(info), job, tws_DEFAULT, NULL);
         tws_submit(ch);
     }
+    // some finalization function to run after everything is processed. Could be added before or after the children in this example.
+    tws_Job *fin = tws_newJob(finalize, &all, sizeof(all), NULL, tws_DEFAULT, ev); // register continuation to event
+    tws_submit(fin, job); // set fin to run as continuation after root is done
 }
 
 // -- get some work done --
 const size_t SZ = 1024*1024;
 float work[SZ] = ...;
+tws_Event *event = tws_newEvent(); // for synchronization
 const struct ProcessInfo all = { &work[0], SZ };
 // parameters:            (func,  data, datasize,   parent,  type,      event)
 tws_Job *root = tws_newJob(split, &all, sizeof(all), NULL, tws_DEFAULT, event);
 
-// some finalization function to run after everything is processed
-tws_Event *event = tws_newEvent(); // for synchronization
-tws_Job *fin = tws_newJob(finalize, &all, sizeof(all), NULL, tws_DEFAULT, event);
-tws_addCont(root, fin); // run fin after root is done
-
-tws_submit(root); // Submit the root job to start the chain.
+tws_submit(root, NULL); // Submit the root job to start the chain.
 // root is done when all children are done
 // Once root is done, fin is run as continuation
 
-tws_wait1(event, tws_DEFAULT); // wait until fin is done; the calling thread will help working
+tws_wait1(event, tws_DEFAULT); // wait until root and fin are done; the calling thread will help working
 
-tws_destroyEvent(event); // ideally you'd keep it around when running this multiple times
+tws_destroyEvent(event); // ideally you'd keep the event around when running this multiple times
 
 tws_shutdown(); // whenever you're done using it
 
@@ -321,21 +320,21 @@ inline tws_Job *tws_newEmptyJob()
     return tws_newJob(NULL, NULL, 0, NULL, tws_TINY, NULL);
 }
 
-// Add a continuation to an existing job.
-// A continuation will be started on completion of the ancestor job.
-// If a job's storage space is exhausted this will assert() and fail.
-// Returns 1 on success and 0 on failure.
-int tws_addCont(tws_Job *ancestor, tws_Job *continuation);
-
 // Submit a job. Submit children first, then the parent.
-// Do NOT submit continuations. Do NOT pass NULL.
 // Allocating a job via tws_newJob() in one thread and then submitting it in another is ok.
 // Once a job is submitted using the job pointer outside of the running job itself is undefined behavior.
 // (Treat the job pointer as if it was free()'d)
-// Returns 1 when queued or executed, 0 when failed.
+// If ancestor is set, submit job as a continuation of ancestor:
+//   A continuation will be started on completion of the ancestor job.
+//   If a job's storage space is exhausted this will assert() and fail.
+// Returns 1 when queued, executed, or entered as continuation, 0 when failed.
 // Returns 0 if and only if an internal memory allocation fails,
 // so if you don't worry about memory you may ignore the return value.
-int tws_submit(tws_Job *job);
+// Never pass job == NULL.
+// ProTip: If you're writing a wrapper for this, make SURE this never returns 0.
+//         Assert this as hard as you can, otherwise you may run into very hard to detect problems.
+//         Also don't add continuations in a loop if you don't know the maximum at compile-time.
+int tws_submit(tws_Job *job, tws_Job *ancestor /* = NULL */);
 
 // --- Event functions ---
 

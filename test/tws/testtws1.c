@@ -18,15 +18,17 @@ void finish(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, void *us
 void split(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, void *user)
 {
     void *p = *(void**)data;
-    printf("split %p\n", data);
+    printf("begin split %p\n", data);
     for(size_t i = 0; i < 16; ++i)
     {
         void *slice = (char*)p + i;
         tws_Job *ch = tws_newJob(work, &slice, sizeof(slice), job, tws_DEFAULT, NULL);
-        tws_submit(ch);
+        tws_submit(ch, NULL);
     }
+    printf("cont split %p\n", data);
     tws_Job *fin = tws_newJob(finish, &p, sizeof(p), NULL, tws_DEFAULT, ev);
-    tws_addCont(job, fin);
+    tws_submit(fin, job);
+    printf("end split %p\n", data);
 }
 
 int main()
@@ -46,10 +48,10 @@ int main()
     tws_Event *ev = tws_newEvent();
     void *wrk = NULL;
     tws_Job *spl = tws_newJob(split, &wrk, sizeof(wrk), NULL, tws_DEFAULT, ev);
-    tws_submit(spl);
+    tws_submit(spl, NULL);
 
     printf("wait...\n");
-    tws_wait1(ev, tws_DEFAULT);
+    tws_wait0(ev);
     printf("done!\n");
     tws_destroyEvent(ev);
 
