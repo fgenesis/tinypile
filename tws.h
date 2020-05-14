@@ -11,7 +11,9 @@ Design goals:
 - Plain C API, KISS
 - Bring your own threading & semaphores (6 function pointers in total)
 - Different thread & job types for fine-grained control
-- WTFPL because lawyers suck. except netpoet. hi netpoet! <3
+- As many debug assertions as possible to catch user error
+
+License: WTFPL because lawyers suck. except netpoet. hi netpoet! <3
 
 For more info, see tws.cpp.
 
@@ -40,17 +42,17 @@ if(tws_init(&ts) != tws_ERR_OK)  // start up threadpool
 // now ready to submit jobs
 
 // -- worker functions --
-struct ProcessInfo
+struct ProcessInfo // for passing data to workers
 {
     float *begin;
     size_t size;
 };
-void processChunk(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, const void *user)
+void processChunk(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, void *user)
 {
     ProcessInfo *info = (ProcessInfo*)data;
-    // work on info->begin[0 .. info->size]
+    // work on info->begin[0 .. info->size)
 }
-void split(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, const void *user)
+void split(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, void *user)
 {
     ProcessInfo *info = (ProcessInfo*)data;
     const size_t CHUNK = 8*1024;
@@ -93,7 +95,6 @@ tws_shutdown(); // whenever you're done using it
 // -- This setup will launch one task to split work into smaller chunks,
 // -- process these in parallel on all available threads in the pool,
 // -- then run a finalization step on the data.
-// -- I hope it's clear how the dependencies
 
 // --- EXAMPLE CODE END ---
 */
@@ -141,41 +142,21 @@ typedef int tws_Error;
 
 // --- Backend details ---
 
-typedef struct tws_Ctx    tws_Ctx;    // opaque, per-thread identifier
 typedef struct tws_Sem    tws_Sem;    // opaque, semaphore handle
 typedef struct tws_Thread tws_Thread; // opaque, thread handle
-typedef struct tws_Job    tws_Job;    // opaque, a thread job
-typedef struct tws_Event  tws_Event;  // opaque, job completion notification
-
-// Job work function -- main entry point of your job code
-// job is a pointer to the currently running job. Never NULL.
-//  - You may add children to it if the job function spawns more work.
-//    The job will be considered completed when all children have completed.
-//  - You may add continuations that will be automatically run after
-//    the job (and its children) have completed.
-// ev is the (optional) event that will be notified when the job is complete.
-//  - you may pass this to additional spawned continuations to make sure those
-//    have to be finished as well before the event is signaled.
-typedef void (*tws_JobFunc)(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, const void *user);
-/*{
-    // ...work on data a bit...
-    tws_Job *child = tws_newJob(morework_func, data, datasize, job, tws_ANY);
-
-    // TODO
-
-}*/
 
 // These structs contain function pointers so that the implementation can stay backend-agnostic.
-// All that the backend must support is spawning+joining threads and semaphores.
+// All that the backend must support is spawning+joining threads and basic semaphore operation.
 // Since you care about multithreading (you do, else you wouldn't be here!) you probably have your own
 // implementation of choice already that you should be able to hook up easily.
-// If not, some good choices:
+// If not, suggestions:
 //  - tws_backend.h (autodetects Win32, SDL, pthread, possibly more)
 //  - If you're on windows, wrap _beginthreadex() and CreateSemaphore()
 //  - C++20 (has <thread> and <semaphore> in the STL)
 //  - C++11: Has <thread>, but you'd have to roll your own semaphore
 //           (See https://stackoverflow.com/questions/4792449)
-//  - pthread, probably?
+//  - C11: Has <threads.h> but no semaphores. Roll your own.
+//  - POSIX has <pthread.h> and <semaphore.h> but it's a bit fugly across platforms
 //  - SDL (http://libsdl.org/)
 //  - Turf (https://github.com/preshing/turf)
 typedef struct tws_ThreadFn
@@ -201,15 +182,15 @@ typedef struct tws_SemFn
 
 // Optional worker thread entry point.
 // Protocol:
-// - At the start of the function, initialize whatever you need based on threadID, threadFlags, userdata.
+// - At the start of the function, initialize whatever you need based on threadID, worktype, userdata.
 //    E.g. Set thread priorities, assign GPU contexts, your own threadlocal variables, ...
 // - When done initializing, call run(opaque).
 // - run() will only return just before the threadpool is destroyed.
 // - When run() returns, you can clean up whatever resources you had previously initialized.
 // (This is intentionally a callback so that you can do stack allocations before run()!)
-// If your init fails for some reason, return before calling run().
+// If your init fails for some reason, don't call run(), just return.
 // This will be detected and threadpool creation will fail with tws_ERR_THREAD_INIT_FAIL.
-typedef void (*tws_RunThread)(int threadID, tws_WorkType threadFlags, void *userdata, const void *opaque, void (*run)(const void *opaque));
+typedef void (*tws_RunThread)(int threadID, tws_WorkType worktype, void *userdata, const void *opaque, void (*run)(const void *opaque));
 
 // Optional allocator interface. Same API as luaalloc.h.
 // (Ref: https://github.com/fgenesis/tinypile/blob/master/luaalloc.h)
@@ -221,10 +202,29 @@ typedef void (*tws_RunThread)(int threadID, tws_WorkType threadFlags, void *user
 // The allocator must be callable from multiple threads at once.
 typedef void* (*tws_AllocFn)(void *allocUser, void *ptr, size_t osize, size_t nsize);
 
+// ---- Worker function ----
+
+typedef struct tws_Job    tws_Job;    // opaque, a thread job
+typedef struct tws_Event  tws_Event;  // opaque, job completion notification
+
+// Job work function -- main entry point of your job code
+// job is a pointer to the currently running job. Never NULL.
+//  - You may add children to it if the job function spawns more work.
+//    The job will be considered completed when all children have completed.
+//  - You may add continuations that will be automatically run after
+//    the job (and its children) have completed.
+// ev is the (optional) event that will be notified when the job is complete.
+//  - you may pass this to additional spawned continuations to make sure those
+//    are finished as well before the event is signaled.
+// user is the opaque pointer assigned to tws_Setup::threadUser.
+typedef void (*tws_JobFunc)(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, void *user);
+
 enum
 {
-    TWS_CONTINUATION_COST = sizeof(void*)
+    TWS_CONTINUATION_COST = sizeof(tws_Job*)
 };
+
+// ---- Setup config ----
 
 typedef struct tws_Setup
 {
@@ -271,7 +271,7 @@ typedef struct tws_MemInfo
     size_t jobTotalSize;    // size of a single job in bytes, padded to specified cache line size
     size_t jobUnusedBytes;  // bytes at the end of a job that are used for padding (you may want to tweak setup parameters until this is 0)
     size_t eventAllocSize;  // Internal size of a tws_Event, including padding to cache line size
-    size_t bytesPerThread;  // job storage memory required by one thread
+    size_t bytesPerThread;  // raw job storage memory required by one thread
 } tws_MemInfo;
 
 
@@ -399,11 +399,6 @@ size_t tws_spillLevels(size_t *pSizes, tws_WorkType n);
 
 
 /* ASSERT:
-- job submitted twice
-- continuation added to submitted job
-- child added to submitted job (how to check if we're inside the work func?)
-- parent was submitted before child (again ^)
-
 - make drain() also reset LQ top+bottom?
 - switch from TLS to per-thread ctx, passed as param?
   - worker threads have their own ctx

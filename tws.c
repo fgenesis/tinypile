@@ -9,7 +9,7 @@ Dependencies:
   Compiles as C99 or oldschool C++ code, but can benefit from C11 or if compiled as C++11
   Requires libc for memcpy() & memset() but you can use your own by replacing tws_memcpy() & tws_memzero() defines
   Optionally requires libc for realloc()/free()
-  Requires 64bit atomics support
+  Requires 64bit atomics support; works with 32bit in theory but this risks overflow.
 
 Origin:
   https://github.com/fgenesis/tinypile/blob/master/tws.c
@@ -21,13 +21,12 @@ Inspired by / reading material:
 
 Some notes:
   This library follows the implementation described in [1],
-  but with some improvements:
+  but with some changes:
     * Supports different work/job types (See [2])
     * Idle waiting using semaphores (See [3])
     * More runtime-flexibility, less hardcoding
     * Safe against overloading (performance will degrade a bit but it will not crash)
     * Safe to call from any thread
-    * As many debug assertions as possible to catch mis-use
     * Not completely lock-free, but the hot code path is lock free
 */
 
@@ -74,6 +73,10 @@ Some notes:
 #  define TWS_HAS_MSVC
 #  pragma intrinsic(_ReadWriteBarrier)
 #  define COMPILER_BARRIER() _ReadWriteBarrier()
+#  ifndef TWS_HAS_S64_TYPE
+     typedef __int64 s64;
+#    define TWS_HAS_S64_TYPE
+#  endif
 #endif
 
 #if defined(__clang__) || defined(__GNUC__)
@@ -119,10 +122,6 @@ Some notes:
 #  define TWS_USE_MSVC
 #  define TWS_THREADLOCAL __declspec(thread)
 #  define TWS_DECL_ATOMIC(x) x
-#  ifndef TWS_HAS_S64_TYPE
-     typedef __int64 s64;
-#  define TWS_HAS_S64_TYPE
-#  endif
 #elif defined(TWS_HAS_GCC) // intrinsics
 #  define TWS_USE_GCC
 #  define TWS_THREADLOCAL __thread
@@ -176,6 +175,7 @@ static inline int _AtomicCAS_Seq(NativeAtomic *x, tws_Atomic oldval, tws_Atomic 
 static inline int _AtomicCAS_Rel(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval);
 static inline int _AtomicCAS_Acq(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval);
 static inline int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval);
+static inline int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval);
 static inline void _AtomicSet_Seq(NativeAtomic *x, tws_Atomic newval);
 static inline tws_Atomic _AtomicGet_Acq(const NativeAtomic *x);
 static inline tws_Atomic _AtomicGet_Seq(const NativeAtomic *x);
@@ -215,6 +215,7 @@ static inline int _AtomicCAS_Seq(NativeAtomic *x, tws_Atomic oldval, tws_Atomic 
 static inline int _AtomicCAS_Rel(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval) { return _InterlockedCompareExchange64(&x->val, newval, oldval) == oldval; }
 static inline int _AtomicCAS_Acq(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval) { return _InterlockedCompareExchange64(&x->val, newval, oldval) == oldval; }
 static inline int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval) { return _InterlockedCompareExchange64(&x->val, newval, oldval) == oldval; }
+static inline int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic oldval, tws_Atomic newval) { return _InterlockedCompareExchange64(&x->val, newval, oldval) == oldval; }
 static inline void _AtomicSet_Seq(NativeAtomic *x, tws_Atomic newval) { _InterlockedExchange64(&x->val, newval); }
 static inline tws_Atomic _AtomicGet_Acq(const NativeAtomic *x) { COMPILER_BARRIER(); return x->val; }
 static inline tws_Atomic _AtomicGet_Seq(const NativeAtomic *x) { COMPILER_BARRIER(); return x->val; }
@@ -440,7 +441,7 @@ void *fl_extend(Freelist *fl, size_t memsize)
 void *fl_pop(Freelist *fl, size_t extendSize)
 {
     void *p = fl->head;
-    if(p)
+    if(TWS_LIKELY(p))
     {
         fl->head = *(void**)p;
         return p;
@@ -894,7 +895,7 @@ inline static void _LeaveSem(tws_Sem *sem)
 
 enum JobStatusBits
 {
-    JB_FREE       = 0x00, // job is otherwise uninitialized
+    JB_FREE       = 0x00, // job is uninitialized
     JB_INITED     = 0x01, // job is initialized and ready to 
     JB_SUBMITTED  = 0x02, // job was submitted to workers
     JB_WORKING    = 0x04, // job was picked up by a worker
@@ -904,7 +905,7 @@ enum JobStatusBits
 
 // This struct is designed to be as compact as possible.
 // Unfortunately it is not possible to compress continuation pointers into offsets
-// because there are too many memory spaces where the job pointer could come from.
+// because there are too many memory spaces that the job pointer could originate from.
 typedef struct tws_Job
 {
     NativeAtomic a_pending; // @+0 (assuming 64 bit atomics and pointers)
@@ -917,8 +918,8 @@ typedef struct tws_Job
     tws_WorkType type;      // @+43
     // < compiler-inserted padding to TWS_MIN_ALIGN >
     // following:
-    // unsigned char payload[...];
-    // < computed padding to sizeof(void*) >
+    // unsigned char payload[datasize];
+    // < computed padding to sizeof(tws_Job*) >
     // tws_Job *continuations[...];
 } tws_Job;
 
@@ -933,11 +934,8 @@ static tws_Job *_AllocGlobalJob()
     mtx_lock(mtx);
         tws_Job *job = (tws_Job*)fl_pop(fl, memsize);
     mtx_unlock(mtx);
-    if(TWS_LIKELY(job))
-    {
-        TWS_ASSERT(job->status == JB_FREE, "global job was in freelist but not free");
+    if(TWS_LIKELY(job)) // memory that comes from the freelist is to be considered uninitialized
         job->status = JB_GLOBALMEM;
-    }
     return job;
 }
 
@@ -976,8 +974,28 @@ static tws_Job *AllocJob()
     return job;
 }
 
-static tws_Job *NewJob(tws_JobFunc f, const void *data, unsigned size, tws_Job *parent, tws_WorkType type)
+// slow, only used in assertions
+// can either access a job before submitting it,
+// after that only from the worker thread that works on it
+static inline int _CheckNotSubmittedOrWorking(tws_Job *job)
 {
+    if(!(job->status & JB_SUBMITTED))
+        return 1;
+    
+    if(job->status & JB_WORKING)
+    {
+        TWS_ASSERT(tls, "Accessing job that's already working outside of a worker thread, this is an error");
+        return 1;
+    }
+
+    return 0;
+}
+
+static void tws_incrEventCount(tws_Event *ev);
+
+static tws_Job *NewJob(tws_JobFunc f, const void *data, unsigned size, tws_Job *parent, tws_WorkType type, tws_Event *ev)
+{
+    TWS_ASSERT(!parent || _CheckNotSubmittedOrWorking(parent), "RTFM: Attempt to create job with parent that's already been submitted");
     TWS_ASSERT(!size || data, "RTFM: data == NULL with non-zero size");
     TWS_ASSERT(!size || f, "Warning: You're submitting data but no job func; looks fishy from here");
     const size_t space = s_pool->meminfo.jobSpace;
@@ -988,13 +1006,17 @@ static tws_Job *NewJob(tws_JobFunc f, const void *data, unsigned size, tws_Job *
     tws_Job *job = AllocJob();
     if(TWS_LIKELY(job))
     {
-        TWS_ASSERT((job->status & ~JB_GLOBALMEM), "allocated job still in use");
+        TWS_ASSERT(!(job->status & ~JB_GLOBALMEM), "allocated job still in use");
         job->status |= JB_INITED;
         job->a_ncont.val = 0;
         job->a_pending.val = 1;
         job->parent = parent;
+        job->datasize = size;
         job->f = f;
         job->type = type;
+        job->event = ev;
+        if(ev)
+            tws_incrEventCount(ev);
 
         void *dst = job + 1; // this includes compiler padding
         TWS_ASSERT(IsAligned((uintptr_t)dst, TWS_MIN_ALIGN), "internal error: job userdata space is not aligned");
@@ -1022,13 +1044,6 @@ static void DeleteJob(tws_Job *job)
     mtx_unlock(mtx);
 }
 
-static unsigned _PickRandomThreadIDOfType(tws_WorkType type, unsigned rnd)
-{
-    const unsigned firstTh = s_pool->forType[type].firstThread;
-    const unsigned nTh     = s_pool->forType[type].numThreads;
-    return firstTh + (rnd % nTh);
-}
-
 // called by any thread; pass myID == -1 if not worker thread
 static tws_Job *_StealFromSomeone(unsigned *pidx, tws_WorkType type, unsigned myID)
 {
@@ -1044,7 +1059,7 @@ static tws_Job *_StealFromSomeone(unsigned *pidx, tws_WorkType type, unsigned my
     for( ; i < end; ++i)
     {
         const unsigned idx = i + offs;
-        if(idx == myID)
+        if(idx == myID) // must never steal from own queue
             continue;
         tws_JQ *jq = &alltls[idx].jq;
         if( (job = jq_steal(jq)) )
@@ -1054,7 +1069,7 @@ static tws_Job *_StealFromSomeone(unsigned *pidx, tws_WorkType type, unsigned my
     for(i = 0; i < oldi; ++i)
     {
         const unsigned idx = i + offs;
-        if(idx == myID)
+        if(idx == myID) // must never steal from own queue
             continue;
         tws_JQ *jq = &alltls[idx].jq;
         if( (job = jq_steal(jq)) )
@@ -1148,11 +1163,13 @@ static void Execute(tws_Job *job)
 static int Submit(tws_Job *job)
 {
     const unsigned char status = job->status;
-    job->status = status | JB_SUBMITTED;
 
     TWS_ASSERT(status & JB_INITED, "internal error: Job was not initialized");
-    TWS_ASSERT(!(status & JB_SUBMITTED) || !(status & JB_WORKING), "Attempt to submit job that is already queued!");
-    
+    TWS_ASSERT(!(status & JB_SUBMITTED), "RTFM: Attempt to submit job more than once!");
+    TWS_ASSERT(!job->parent || _CheckNotSubmittedOrWorking(job->parent), "RTFM: Parent was submitted before child, this is wrong -- submit children first, then the parent");
+
+    job->status = status | JB_SUBMITTED;
+
     const tws_WorkType type = job->type;
 
     // tiny jobs with no active children can be run here for performance
@@ -1204,16 +1221,14 @@ success:
 int tws_submit(tws_Job *pjob)
 {
     tws_Job *job = (tws_Job*)pjob;
-    TWS_ASSERT(!(job->status & JB_ISCONT), "RTFM: Do NOT submit continuations! They are started automatically!");
-
+    TWS_ASSERT(!(job->status & JB_ISCONT), "RTFM: Do NOT submit continuations! They are started automatically by their ancestor job!");
     return Submit(job);
 }
 
-static tws_Job **_GetContinuationArrayStart(tws_Job *job)
+static tws_Job **_GetContinuationArrayStart(const tws_Job *job)
 {
     uintptr_t p = (uintptr_t)(job + 1);
-    TWS_ASSERT(p == AlignUp(p, sizeof(void*)), "internal error: align check #1");
-    TWS_ASSERT(p == AlignUp(p, sizeof(NativeAtomic)), "internal error: align check #2");
+    TWS_ASSERT(IsAligned(p, TWS_MIN_ALIGN), "internal error: align check");
     p += job->datasize;
     p = AlignUp(p, sizeof(tws_Job*));
     return (tws_Job**)p;
@@ -1221,22 +1236,30 @@ static tws_Job **_GetContinuationArrayStart(tws_Job *job)
 
 int tws_addCont(tws_Job *ancestor, tws_Job *continuation)
 {
-    tws_Job *anc = (tws_Job*)ancestor;
-    const unsigned idx = (unsigned)_AtomicInc_Acq(&anc->a_ncont);
-    tws_Job **slot = idx + _GetContinuationArrayStart(anc);
+    TWS_ASSERT(!(continuation->status & JB_ISCONT), "RTFM: Can't add a continuation more than once! ");
+    TWS_ASSERT(!(continuation->status & JB_SUBMITTED), "RTFM: Attempt to add continuation that was already submitted, this is wrong");
+    TWS_ASSERT(_CheckNotSubmittedOrWorking(ancestor), "RTFM: Can only add continuation before submiting a job or from the job handler");
+    const tws_Atomic idx = _AtomicInc_Acq(&ancestor->a_ncont) - 1;
+    tws_Job **slot = &_GetContinuationArrayStart(ancestor)[idx];
     size_t maxsize = s_pool->meminfo.jobTotalSize;
-    tws_Job **end = (tws_Job**)((char*)anc + maxsize); // one past last
+    tws_Job **end = (tws_Job**)((char*)ancestor + maxsize); // one past last
     int ok = slot < end;
 
     // make extra sure this doesn't get lost
     TWS_ASSERT(ok, "tws_addCont: Job space exhausted; can't add continuation. If you diligently check EVERY return value of tws_addCont(), feel free to comment out this assert");
     
     if(TWS_LIKELY(ok))
-        *slot = (tws_Job*)continuation;
+    {
+        *slot = continuation;
+        continuation->status |= JB_ISCONT;
+    }
+    else
+        _AtomicDec_Rel(&ancestor->a_ncont);
+
     return ok;
 }
 
-static void NotifyEvent(tws_Event *ev);
+static void tws_signalEventOnce(tws_Event *ev);
 
 static void Finish(tws_Job *job)
 {
@@ -1244,7 +1267,7 @@ static void Finish(tws_Job *job)
     if(!pending)
     {
         if(job->event)
-            NotifyEvent(job->event);
+            tws_signalEventOnce(job->event);
 
         if(job->parent)
             Finish(job->parent);
@@ -1262,9 +1285,14 @@ static void Finish(tws_Job *job)
 
 // ---- EVENTS ----
 
+// original via https://preshing.com/20150316/semaphores-are-surprisingly-versatile/
+// but with some changes
+// - Added counter how many times this needs to be signaled to be considered "done".
+// - Release ALL waiting threads when done.
 struct tws_Event
 {
     NativeAtomic remain;
+    NativeAtomic status; // 1 = signaled, <= 0: number of threads waiting
     tws_Sem *sem; // Don't need a LWsem here
     // <padding to fill a cache line>
 };
@@ -1276,6 +1304,7 @@ tws_Event *tws_newEvent()
     if(ev)
     {
         ev->remain.val = 0;
+        ev->status.val = 1; // a new event is "done"
         ev->sem = _NewSem();
         if(!ev->sem)
         {
@@ -1286,20 +1315,47 @@ tws_Event *tws_newEvent()
     return ev;
 }
 
-// called by any thread
-static void NotifyEvent(tws_Event *ev)
+void _tws_waitEvent(tws_Event *ev)
+{
+    tws_Atomic status = _AtomicDec_Acq(&ev->status);
+    TWS_ASSERT(status <= 0, "oops");
+    if(status < 0)
+        _EnterSem(ev->sem);
+}
+
+void _tws_signalEventFully(tws_Event *ev)
+{
+    tws_Atomic oldStatus;
+    for(;;)
+    {
+        oldStatus = _RelaxedGet(&ev->status);
+        TWS_ASSERT(oldStatus <= 1, "oops");
+        if(_AtomicCAS_Weak_Rel(&ev->status, oldStatus, 1))
+            break;
+    }
+    while(oldStatus++ < 0)
+        _LeaveSem(ev->sem);
+}
+
+void tws_signalEventOnce(tws_Event *ev)
 {
     tws_Atomic rem = _AtomicDec_Rel(&ev->remain);
-    TWS_ASSERT(rem >= 0, "internal error: remain < 0");
     if(!rem)
-        _LeaveSem(ev->sem);
+        _tws_signalEventFully(ev);
+}
+
+void tws_incrEventCount(tws_Event *ev)
+{
+    tws_Atomic rem = _AtomicInc_Acq(&ev->remain);
+    TWS_ASSERT(rem > 0, "oops");
+    _AtomicCAS_Acq(&ev->status, 1, 0); // unsignal event; the CAS will only succeed when we're still signaled
 }
 
 int tws_isDone(tws_Event *ev)
 {
-    tws_Atomic val = _AtomicGet_Seq(&ev->remain);
-    TWS_ASSERT(val >= 0, "tws_Event underflow");
-    return val <= 0;
+    tws_Atomic val = _AtomicGet_Seq(&ev->status);
+    TWS_ASSERT(val <= 1, "tws_Event oversignaled");
+    return val > 0;
 }
 
 void tws_destroyEvent(tws_Event *ev)
@@ -1311,7 +1367,7 @@ void tws_destroyEvent(tws_Event *ev)
 
 // only called by non-worker threads
 static void *_HelpWithWork(tws_WorkType type)
-{
+{ 
     tws_Job *job = _GetJob_External(type);
     if(job)
         Execute(job);
@@ -1321,7 +1377,7 @@ static void *_HelpWithWork(tws_WorkType type)
 void tws_wait(tws_Event *ev, tws_WorkType *help, size_t n)
 {
     TWS_ASSERT(!tls, "RTFM: Don't call tws_wait() from within worker threads. It might work but if it does it's not efficient. I'm not even sure. Feel free to comment out this assert and hope for the best.");
-    while(!tws_isDone(ev))
+    if(!tws_isDone(ev))
     {
         if(n)
             for(size_t i = 0; i < n; ++i)
@@ -1329,11 +1385,11 @@ void tws_wait(tws_Event *ev, tws_WorkType *help, size_t n)
                 tws_WorkType h = help[i];
                 if(h == (tws_WorkType)tws_TINY) // TODO: check that this is ok
                     h = tws_DEFAULT;
-                while(_HelpWithWork(help))
+                while(_HelpWithWork(h))
                     if(tws_isDone(ev))
                         return;
             }
-        _EnterSem(ev->sem);
+        _tws_waitEvent(ev);
     }
 }
 
@@ -1403,7 +1459,7 @@ tws_Job *tws_newJob(tws_JobFunc f, const void *data, unsigned size, tws_Job *par
 {
     if(!f) // empty jobs are always tiny
         type = tws_TINY;
-    return NewJob(f, data, size, parent, type);
+    return NewJob(f, data, size, parent, type, ev);
 }
 
 static void _tws_mainloop()
@@ -1462,11 +1518,10 @@ static void _tws_clear(tws_Pool *pool)
     // first, make sure all threads go down
     _AtomicSet_Seq(&pool->quit, 1);
 
-    // poke each waiter enough that all relevant threads exit
-    for(unsigned i = 0; i < 256; ++i)
-        for(unsigned k = 0; k < pool->forType[i].numThreads; ++k)
-            if(pool->forType[i].waiter.sem)
-                lwsem_leave(&pool->forType[i].waiter);
+    // poke each thread to exit
+    if(pool->threadTls)
+        for(unsigned i = 0; i < pool->numThreads; ++i)
+            lwsem_leave(pool->threadTls[i].pwaiter);
 
     // wait until all threads have quit
     if(pool->threads)
