@@ -27,14 +27,14 @@ static const tws_ThreadFn thfn = { <your function pointers> };
 static const tws_SemFn semfn = { <your function pointers> };
 
 // -- init threadpool --
-tws_Setup ts;
+tws_Setup ts; // This can be allocated on the stack; it's no longer needed after tws_init().
 memset(&ts, 0, sizeof(ts)); // we're not using optional fields here, make sure those are cleared
 ts.cacheLineSize = 64;     // <-- whatever fits your target architecture
 ts.jobSpace = 64;          // <-- whatever size you need
 ts.jobsPerThread = 1024;   // <-- each thread gets this many slots for jobs to queue
-unsigned threads = 4;      // <-- might be a good idea to auto-detect this
-ts.threadsPerType = &threads; // can specify more than one work type if needed,
-ts.threadsPerTypeSize = 1;    // e.g. an extra disk I/O thread
+unsigned threads[] = {4};  // <-- might be a good idea to auto-detect this
+ts.threadsPerType = &threads; // <-- Can specify more than one work type if needed, e.g. an extra disk I/O thread
+ts.threadsPerTypeSize = 1;    // <-- #entries in that array
 ts.threadFn = &thfn;       // link up backend (thread funcs)
 ts.semFn = &semfn;         // link up backend (semaphore funcs)
 if(tws_init(&ts) != tws_ERR_OK)  // start up threadpool
@@ -254,7 +254,7 @@ typedef struct tws_Setup
     // Called when a thread is spawned, for each thread. Set to NULL if you don't require a custom init step.
     tws_RunThread runThread;
 
-    // Passed to tws_RunThread and later to each tws_JobFunc called
+    // Passed to tws_RunThread and later to each tws_Job called
     void *threadUser;
 
     const unsigned *threadsPerType; // How many threads to spawn for each work type
@@ -270,12 +270,12 @@ typedef struct tws_Setup
                             // So this number should be the sum of user data and space needed for continuations.
 
     unsigned cacheLineSize; // The desired alignment of most internal structs, in bytes.
-                            // Should be equal to or a multiple of the CPU's cache line size to avoid false sharing.
+                            // Should be equal to or a multiple of the CPU's L1 cache line size to avoid false sharing.
                             // Must be power of 2.
                             // Recommended: 64, unless you know your architecture is different.
 
     unsigned jobsPerThread; // How many in-flight jobs one thread can hold. If you push more jobs into the system than it can handle
-                            // it will push jobs into an internal spillover queue that is rather slow in comparison to the usual lockfree operation.
+                            // it will push jobs into internal spillover queues that are rather slow in comparison to the usual lockfree operation.
                             // Recommended: 1024 for starters. Increase as needed. Internally rounded up to a power of 2.
                             // (Required memory: threads * jobsPerThread * (jobTotalSize + sizeof(tws_Job*))
 } tws_Setup;
@@ -369,14 +369,14 @@ void tws_destroyEvent(tws_Event *ev);
 int tws_isDone(tws_Event *ev);
 
 // Wait until an event signals completion.
-// Set help to the type of jobs the calling thread may process while it's waiting for the event to signal completion.
+// Set help to an array of the type of jobs the calling thread may process while it's waiting for the event to signal completion.
 // Pass NULL / n == 0 to just idle.
 // If you choose to help note that any job that the calling thread picks up must be finished
 // before this can return, so the wait may last longer than intended.
 void tws_wait(tws_Event *ev, tws_WorkType *help, size_t n);
 
 // Convenience for 0 or 1 help type
-inline void tws_wait0(tws_Event *ev) { tws_wait(ev, NULL, 0); }
+inline void tws_wait0(tws_Event *ev) { tws_wait(ev, NULL, 0); } // don't help, just idle
 inline void tws_wait1(tws_Event *ev, tws_WorkType help) { tws_wait(ev, &help, 1); }
 
 
@@ -420,4 +420,5 @@ size_t tws_spillLevels(size_t *pSizes, tws_WorkType n);
   - accept NULL instead of ctx to use spillQ
 
 - add TWS_RESTRICT
+- add notification callback? (called when spilled, too large job is pushed, etc)
 */
