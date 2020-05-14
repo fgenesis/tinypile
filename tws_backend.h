@@ -25,8 +25,18 @@ In your tws setup, assign the two exported pointers like so:
   ts.semFn = tws_backend_sem;
   if(tws_init(&ts) == tws_ERR_OK) { <ready to go!> }
 
-A function 'unsigned tws_getNumCPUs()' will be exported as well:
-Get # of CPU cores, 0 on failure.
+Extra exported functions:
+
+unsigned tws_getNumCPUs(); // Get # of CPU cores, 0 on failure.
+unsigned tws_getCacheLineSize(); // Get cache line size, or a sensible default when failed. Never 0. You can use the returned value directly.
+unsigned tws_getSuggestedWorkerThreads(); // returns max(#CPUs - 1, 1); for the most lazy setup. Don't use this if you know what you're doing.
+
+With these functions, you may setup your tws_Setup struct (as in the above example) like so:
+
+  ts.cacheLineSize = tws_getCacheLineSize();
+  unsigned threads = tws_getSuggestedWorkerThreads();
+  ts.threadsPerType = &threads;
+  ts.threadsPerTypeSize = 1;
 
 Recognized thread libs:
   * Win32 API (autodetected, needs no header. Warning: Includes Windows.h in the impl.)
@@ -51,6 +61,8 @@ extern "C" {
 extern const struct tws_ThreadFn *tws_backend_thread;
 extern const struct tws_SemFn *tws_backend_sem;
 extern unsigned tws_getNumCPUs();
+extern unsigned tws_getCPUCacheLineSize();
+extern unsigned tws_getSuggestedWorkerThreads();
 
 #ifdef __cplusplus
 }
@@ -207,12 +219,39 @@ static void tws_impl_sem_leave(tws_Sem *sem)
     ReleaseSemaphore(sem, 1, NULL);
 }
 
+typedef BOOL (WINAPI *pfnGetLogicalProcessorInformation)(PSYSTEM_LOGICAL_PROCESSOR_INFORMATION, PDWORD);
+static pfnGetLogicalProcessorInformation GetLogicalProcessorInformationFunc()
+{
+    static pfnGetLogicalProcessorInformation f = NULL;
+    if(f)
+        return f;
+    HMODULE kernel32 = GetKernel32();
+    if(kernel32)
+        f = (pfnGetLogicalProcessorInformation)GetProcAddress(kernel32, "GetLogicalProcessorInformation");
+    return f;
+}
+
 static inline unsigned tws_impl_getNumCPUs()
 {
+    // TODO: Use GetLogicalProcessorInformation() if present
+
+    // old method, works with win2k and up
     SYSTEM_INFO sysinfo;
     GetSystemInfo(&sysinfo);
     int n = sysinfo.dwNumberOfProcessors;
     return n > 0 ? n : 0;
+}
+
+static inline unsigned tws_impl_getCPUCacheLineSize()
+{
+    // TODO: use this maybe.
+    /*pfnGetLogicalProcessorInformation proc = GetLogicalProcessorInformationFunc();
+    int sz = 0;
+    if(proc)
+    {
+    }
+    return sz > 0 ? sz : 64;*/
+    return 64; // old x86 is 32, but 64 should be safe for now.
 }
 
 // --------------------------------------------------------
@@ -261,6 +300,12 @@ static inline unsigned tws_impl_getNumCPUs()
 {
     int n = SDL_GetCPUCount();
     return n > 0 ? n : 0;
+}
+
+static inline unsigned tws_impl_getCPUCacheLineSize()
+{
+    int sz = SDL_GetCPUCacheLineSize();
+    return sz > 0 ? sz : 64;
 }
 
 // --------------------------------------------------------
@@ -318,9 +363,17 @@ static void tws_impl_sem_leave(tws_Sem *sem)
 
 static inline unsigned tws_impl_getNumCPUs()
 {
+    // maybe pthread_num_processors_np() ?
     int n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? n : 0;
 }
+
+static inline unsigned tws_impl_getCPUCacheLineSize()
+{
+    int sz = sysconf(_SC_LEVEL1_DCACHE_LINESIZE);
+    if sz > 0 ? sz : 64;
+}
+
 
 
 // --------------------------------------------------------
@@ -339,6 +392,8 @@ const struct tws_SemFn tws_impl_sem = { tws_impl_sem_create, tws_impl_sem_destro
 const struct tws_ThreadFn *tws_backend_thread = &tws_impl_thread;
 const struct tws_SemFn *tws_backend_sem = &tws_impl_sem;
 unsigned tws_getNumCPUs() { return tws_impl_getNumCPUs(); }
+unsigned tws_getCPUCacheLineSize() { return tws_impl_getCPUCacheLineSize(); }
+unsigned tws_getSuggestedWorkerThreads() { unsigned cpus = tws_getNumCPUs(); return cpus ? cpus - 1 : 1; }
 #ifdef __cplusplus
 }
 #endif

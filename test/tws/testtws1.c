@@ -33,14 +33,17 @@ void split(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, void *use
 
 int main()
 {
+    unsigned cache = tws_getCPUCacheLineSize();
+    unsigned ncpu = tws_getNumCPUs();
+    unsigned threads = ncpu ? ncpu - 1: 1; // Keep main thread free; the rest can do background work
+    printf("cache line size = %u\n", cache);
+    printf("ncpu = %u\n", ncpu);
+    printf("threads = %u\n", threads);
+
     tws_Setup ts;
     memset(&ts, 0, sizeof(ts));
-    ts.cacheLineSize = 64;
+    ts.cacheLineSize = cache;
     ts.jobSpace = 64;
-    unsigned ncpu = tws_getNumCPUs();
-    printf("ncpu = %u\n", ncpu);
-    unsigned threads = ncpu ? ncpu - 1: 1;
-    printf("threads = %u\n", threads);
     ts.threadsPerType = &threads;
     ts.threadsPerTypeSize = 1;
     ts.semFn = tws_backend_sem;
@@ -53,10 +56,12 @@ int main()
     tws_Event *ev = tws_newEvent();
     void *wrk = NULL;
     tws_Job *spl = tws_newJob(split, &wrk, sizeof(wrk), NULL, tws_DEFAULT, ev);
-    tws_submit(spl, NULL);
 
+    printf("submit...\n");
+    tws_submit(spl, NULL);
     printf("wait...\n");
-    tws_wait0(ev);
+    //tws_wait0(ev); // this would idle wait, wasting one thread
+    tws_wait1(ev, tws_DEFAULT); // instead, help the pool to finish computing faster
     printf("done!\n");
     tws_destroyEvent(ev);
 
