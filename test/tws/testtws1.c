@@ -43,7 +43,9 @@ int main()
     ts.semFn = tws_backend_sem;
     ts.threadFn = tws_backend_thread;
     ts.jobsPerThread = 1024;
-    tws_init(&ts);
+    int res = tws_init(&ts);
+    if(res != tws_ERR_OK)
+        return res;
 
     tws_Event *ev = tws_newEvent();
     void *wrk = NULL;

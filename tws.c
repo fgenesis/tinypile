@@ -980,14 +980,11 @@ static tws_Job *AllocJob()
 // after that only from the worker thread that works on it
 static inline int _CheckNotSubmittedOrWorking(tws_Job *job)
 {
-    if(!(job->status & JB_SUBMITTED))
+    if(!(job->status & JB_SUBMITTED)) // not yet submitted
         return 1;
     
-    if(job->status & JB_WORKING)
-    {
-        TWS_ASSERT(tls, "Accessing job that's already working outside of a worker thread, this is an error");
+    if(job->status & JB_WORKING) // we may be in a worker thread context or an external thread helping with work.
         return 1;
-    }
 
     return 0;
 }
@@ -1604,7 +1601,7 @@ tws_Error _tws_init(const tws_Setup *cfg)
     tws_TlsBlock *alltls = (tws_TlsBlock*)_AllocZero(sizeof(tws_TlsBlock) * nth);
     pool->threads = allthreads;
     pool->threadTls = alltls;
-    if(!allthreads || !alltls)
+    if(nth && (!allthreads || !alltls))
         return tws_ERR_ALLOC_FAIL;
 
     const size_t qsz = RoundUpToPowerOfTwo(cfg->jobsPerThread);
