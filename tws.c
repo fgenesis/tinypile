@@ -1007,6 +1007,12 @@ static tws_Job *NewJob(tws_JobFunc f, const void *data, unsigned size, tws_Job *
     if(TWS_LIKELY(job))
     {
         TWS_ASSERT(!(job->status & ~JB_GLOBALMEM), "allocated job still in use");
+
+        if(ev)
+            tws_incrEventCount(ev);
+        if(parent)
+            _AtomicInc_Acq(&parent->a_pending);
+
         job->status |= JB_INITED;
         job->a_ncont.val = 0;
         job->a_pending.val = 1;
@@ -1015,8 +1021,6 @@ static tws_Job *NewJob(tws_JobFunc f, const void *data, unsigned size, tws_Job *
         job->f = f;
         job->type = type;
         job->event = ev;
-        if(ev)
-            tws_incrEventCount(ev);
 
         void *dst = job + 1; // this includes compiler padding
         TWS_ASSERT(IsAligned((uintptr_t)dst, TWS_MIN_ALIGN), "internal error: job userdata space is not aligned");
