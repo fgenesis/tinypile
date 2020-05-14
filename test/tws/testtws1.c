@@ -37,7 +37,10 @@ int main()
     memset(&ts, 0, sizeof(ts));
     ts.cacheLineSize = 64;
     ts.jobSpace = 64;
-    unsigned threads = 4;
+    unsigned ncpu = tws_getNumCPUs();
+    printf("ncpu = %u\n", ncpu);
+    unsigned threads = ncpu ? ncpu - 1: 1;
+    printf("threads = %u\n", threads);
     ts.threadsPerType = &threads;
     ts.threadsPerTypeSize = 1;
     ts.semFn = tws_backend_sem;

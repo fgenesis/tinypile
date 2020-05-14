@@ -25,6 +25,8 @@ In your tws setup, assign the two exported pointers like so:
   ts.semFn = tws_backend_sem;
   if(tws_init(&ts) == tws_ERR_OK) { <ready to go!> }
 
+A function 'unsigned tws_getNumCPUs()' will be exported as well:
+Get # of CPU cores, 0 on failure.
 
 Recognized thread libs:
   * Win32 API (autodetected, needs no header. Warning: Includes Windows.h in the impl.)
@@ -48,6 +50,7 @@ extern "C" {
 /* Pointers to function tables */
 extern const struct tws_ThreadFn *tws_backend_thread;
 extern const struct tws_SemFn *tws_backend_sem;
+extern unsigned tws_getNumCPUs();
 
 #ifdef __cplusplus
 }
@@ -118,6 +121,15 @@ static void SetThreadName(DWORD dwThreadID, const char* threadName)
 #pragma warning(pop)
 }
 
+static HMODULE GetKernel32()
+{
+    static HMODULE kernel32 = 0;
+    if (!kernel32)
+        kernel32 = LoadLibraryW(L"kernel32.dll");
+    return kernel32;
+
+}
+
 typedef HRESULT (WINAPI *pfnSetThreadDescription)(HANDLE, PCWSTR);
 static void w32_namethread(unsigned id)
 {
@@ -126,11 +138,10 @@ static void w32_namethread(unsigned id)
 
     // The nice way, but requires Win10 + VS 2017 to show up
     static pfnSetThreadDescription pSetThreadDescription = NULL;
-    static HMODULE kernel32 = 0;
+    HMODULE kernel32 = GetKernel32();
 
-    if (!kernel32)
-        if ((kernel32 = LoadLibraryW(L"kernel32.dll")))
-            pSetThreadDescription = (pfnSetThreadDescription)GetProcAddress(kernel32, "SetThreadDescription");
+    if (kernel32)
+        pSetThreadDescription = (pfnSetThreadDescription)GetProcAddress(kernel32, "SetThreadDescription");
 
     if (pSetThreadDescription)
     {
@@ -163,37 +174,45 @@ static unsigned __stdcall w32_thread_begin(void *opaque)
     return 0;
 }
 
-tws_Thread *tws_impl_thread_create(unsigned id, const void *opaque, void (*run)(const void *opaque))
+static tws_Thread *tws_impl_thread_create(unsigned id, const void *opaque, void (*run)(const void *opaque))
 {
     s_run = run;
     s_id = id;
     return (tws_Thread*)_beginthreadex(NULL, 0, w32_thread_begin, (void*)opaque, 0, NULL);
 }
 
-void tws_impl_thread_join(tws_Thread *th)
+static void tws_impl_thread_join(tws_Thread *th)
 {
     WaitForSingleObject(th, INFINITE);
     CloseHandle(th);
 }
 
-tws_Sem* tws_impl_sem_create()
+static tws_Sem* tws_impl_sem_create()
 {
     return (tws_Sem*)CreateSemaphoreA(NULL, 0, 0x7fffffff, NULL);
 }
 
-void tws_impl_sem_destroy(tws_Sem *sem)
+static void tws_impl_sem_destroy(tws_Sem *sem)
 {
     CloseHandle(sem);
 }
 
-void tws_impl_sem_enter(tws_Sem *sem)
+static void tws_impl_sem_enter(tws_Sem *sem)
 {
     WaitForSingleObject(sem, INFINITE);
 }
 
-void tws_impl_sem_leave(tws_Sem *sem)
+static void tws_impl_sem_leave(tws_Sem *sem)
 {
     ReleaseSemaphore(sem, 1, NULL);
+}
+
+static inline unsigned tws_impl_getNumCPUs()
+{
+    SYSTEM_INFO sysinfo;
+    GetSystemInfo(&sysinfo);
+    int n = sysinfo.dwNumberOfProcessors;
+    return n > 0 ? n : 0;
 }
 
 // --------------------------------------------------------
@@ -218,24 +237,30 @@ static void tws_impl_thread_join(tws_Thread *th)
     SDL_WaitThread((SDL_Thread*)th, NULL);
 }
 
-tws_Sem* tws_impl_sem_create()
+static tws_Sem* tws_impl_sem_create()
 {
     return (tws_Sem*)SDL_CreateSemaphore(0);
 }
 
-void tws_impl_sem_destroy(tws_Sem *sem)
+static void tws_impl_sem_destroy(tws_Sem *sem)
 {
     SDL_DestroySemaphore((SDL_sem*)sem);
 }
 
-void tws_impl_sem_enter(tws_Sem *sem)
+static void tws_impl_sem_enter(tws_Sem *sem)
 {
     SDL_SemWait((SDL_sem*)sem);
 }
 
-void tws_impl_sem_leave(tws_Sem *sem)
+static void tws_impl_sem_leave(tws_Sem *sem)
 {
     SDL_SemPost((SDL_sem*)sem);
+}
+
+static inline unsigned tws_impl_getNumCPUs()
+{
+    int n = SDL_GetCPUCount();
+    return n > 0 ? n : 0;
 }
 
 // --------------------------------------------------------
@@ -266,7 +291,7 @@ static void tws_impl_thread_join(tws_Thread *th)
     tws_free(th);
 }
 
-tws_Sem* tws_impl_sem_create()
+static tws_Sem* tws_impl_sem_create()
 {
     sem_t *s = (sem_t*)tws_malloc(sizeof(sem_t));
     if(!s)
@@ -275,21 +300,28 @@ tws_Sem* tws_impl_sem_create()
     return !err ? (tws_Sem*)s : NULL;
 }
 
-void tws_impl_sem_destroy(tws_Sem *sem)
+static void tws_impl_sem_destroy(tws_Sem *sem)
 {
     sem_destroy((sem_t*)sem);
     tws_free(sem);
 }
 
-void tws_impl_sem_enter(tws_Sem *sem)
+static void tws_impl_sem_enter(tws_Sem *sem)
 {
     sem_wait((sem_t*)sem);
 }
 
-void tws_impl_sem_leave(tws_Sem *sem)
+static void tws_impl_sem_leave(tws_Sem *sem)
 {
     sem_post((sem_t*)sem);
 }
+
+static inline unsigned tws_impl_getNumCPUs()
+{
+    int n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? n : 0;
+}
+
 
 // --------------------------------------------------------
 #else
@@ -306,6 +338,7 @@ const struct tws_ThreadFn tws_impl_thread = { tws_impl_thread_create, tws_impl_t
 const struct tws_SemFn tws_impl_sem = { tws_impl_sem_create, tws_impl_sem_destroy, tws_impl_sem_enter, tws_impl_sem_leave };
 const struct tws_ThreadFn *tws_backend_thread = &tws_impl_thread;
 const struct tws_SemFn *tws_backend_sem = &tws_impl_sem;
+unsigned tws_getNumCPUs() { return tws_impl_getNumCPUs(); }
 #ifdef __cplusplus
 }
 #endif
