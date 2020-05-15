@@ -233,7 +233,7 @@ static inline tws_Atomic _RelaxedGet(const NativeAtomic *x) { return x->val; }
 
 static inline int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 oldval, tws_Atomic64 newval) { return _InterlockedCompareExchange64(&x->val, newval, oldval) == oldval; }
 static inline void _Atomic64Set_Seq(NativeAtomic64 *x, tws_Atomic64 newval) { _InterlockedExchange64(&x->val, newval); }
-static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x) { return x->val; }
+static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x) { COMPILER_BARRIER(); return x->val; }
 
 static inline void _Mfence() { COMPILER_BARRIER(); _mm_mfence(); }
 static inline void _Yield() { _mm_pause(); }
