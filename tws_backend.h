@@ -29,7 +29,7 @@ Extra exported functions:
 
 unsigned tws_getNumCPUs(); // Get # of CPU cores, 0 on failure.
 unsigned tws_getCacheLineSize(); // Get cache line size, or a sensible default when failed. Never 0. You can use the returned value directly.
-unsigned tws_getSuggestedWorkerThreads(); // returns max(#CPUs - 1, 1); for the most lazy setup. Don't use this if you know what you're doing.
+unsigned tws_getLazyWorkerThreads(); // returns max(#CPUs - 1, 1); for the most lazy setup. Don't use this if you DO know what you're doing.
 
 With these functions, you may setup your tws_Setup struct (as in the above example) like so:
 
@@ -60,9 +60,11 @@ extern "C" {
 /* Pointers to function tables */
 extern const struct tws_ThreadFn *tws_backend_thread;
 extern const struct tws_SemFn *tws_backend_sem;
+
+/* Extra functions */
 extern unsigned tws_getNumCPUs();
 extern unsigned tws_getCPUCacheLineSize();
-extern unsigned tws_getSuggestedWorkerThreads();
+extern unsigned tws_getLazyWorkerThreads();
 
 #ifdef __cplusplus
 }
@@ -393,7 +395,7 @@ const struct tws_ThreadFn *tws_backend_thread = &tws_impl_thread;
 const struct tws_SemFn *tws_backend_sem = &tws_impl_sem;
 unsigned tws_getNumCPUs() { return tws_impl_getNumCPUs(); }
 unsigned tws_getCPUCacheLineSize() { return tws_impl_getCPUCacheLineSize(); }
-unsigned tws_getSuggestedWorkerThreads() { unsigned cpus = tws_getNumCPUs(); return cpus ? cpus - 1 : 1; }
+unsigned tws_getLazyWorkerThreads() { unsigned cpus = tws_getNumCPUs(); return cpus > 1 ? cpus - 1 : 1; }
 #ifdef __cplusplus
 }
 #endif

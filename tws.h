@@ -12,6 +12,7 @@ Design goals:
 - Bring your own threading & semaphores (6 function pointers in total)
 - Different thread & job types for fine-grained control
 - As many debug assertions as possible to catch user error
+- No memory allocations during regular operation
 
 License: WTFPL because lawyers suck. except netpoet. hi netpoet! <3
 
@@ -47,12 +48,12 @@ struct ProcessInfo // for passing data to workers
     float *begin;
     size_t size;
 };
-void processChunk(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, void *user)
+void processChunk(void *data, tws_Job *job, tws_Event *ev, void *user)
 {
     ProcessInfo *info = (ProcessInfo*)data;
     // work on info->begin[0 .. info->size)
 }
-void split(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, void *user)
+void split(void *data, tws_Job *job, tws_Event *ev, void *user)
 {
     ProcessInfo *info = (ProcessInfo*)data;
     const size_t CHUNK = 8*1024;
@@ -63,8 +64,8 @@ void split(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, void *use
         remain -= todo;
         const struct ProcessInfo info = { &work[i], todo }; // this will be stored in the job
         // Start as child of the current job
-        // parameters:          (func,         data,  datasize,   parent,    type,    event)
-        tws_Job *ch = tws_newJob(processChunk, &info, sizeof(info), job, tws_DEFAULT, NULL);
+        // parameters:          (func,         data,  maxcont,  type     parent, event)
+        tws_Job *ch = tws_newJob(processChunk, &info,    0,  tws_DEFAULT, NULL,  NULL);
         tws_submit(ch);
     }
     // some finalization function to run after everything is processed. Could be added before or after the children in this example.
@@ -78,8 +79,8 @@ const size_t SZ = 1024*1024;
 float work[SZ] = ...;
 tws_Event *event = tws_newEvent(); // for synchronization
 const struct ProcessInfo all = { &work[0], SZ };
-// parameters:            (func,  data, datasize,   parent,  type,      event)
-tws_Job *root = tws_newJob(split, &all, sizeof(all), NULL, tws_DEFAULT, event);
+// parameters:            (func,  data, maxcont,  type,    parent, event)
+tws_Job *root = tws_newJob(split, &all,    1,  tws_DEFAULT, NULL,  event);
 
 tws_submit(root, NULL); // Submit the root job to start the chain.
 // root is done when all children are done
@@ -111,7 +112,10 @@ Rules of thumb:
   (It's not incorrect do do this, just spammy, unnecessary, and slower than it has to be.)
   The parent will be done once all children are done, and only then signal the event (and run continuations).
 
-- 
+- Set your tws_Setup::jobSpace high enough that job data and continuations you will add fit in there.
+  It is no problem if once in a while a large data block has to be added,
+  but this will fallback to a heap allocation every time, which you want to avoid.
+  Just pass a pointer to your data and ensure the memory stays valid while jobs work on it.
 */
 
 #include <stdlib.h> // for size_t, intptr_t, uintptr_t
@@ -214,7 +218,7 @@ typedef void (*tws_RunThread)(int threadID, tws_WorkType worktype, void *userdat
 //   ptr != NULL, nsize == 0: free(ptr); // osize is size of allocation
 //   ptr != NULL, nsize != 0: return realloc(ptr, nsize); // osize = current size
 // The returned pointer must be aligned to max(atomic int64 size, pointer size).
-// The allocator must be callable from multiple threads at once.
+// The allocator must be threadsafe as it might be called by multiple threads at once.
 typedef void* (*tws_AllocFn)(void *allocUser, void *ptr, size_t osize, size_t nsize);
 
 // ---- Worker function ----
@@ -224,6 +228,7 @@ typedef struct tws_Event  tws_Event;  // opaque, job completion notification
 
 // Job work function -- main entry point of your job code
 // job is a pointer to the currently running job. Never NULL.
+//  - data points to a copy of the data passed to tws_newJob(). You need to know the size.
 //  - You may add children to it if the job function spawns more work.
 //    The job will be considered completed when all children have completed.
 //  - You may add continuations that will be automatically run after
@@ -232,7 +237,7 @@ typedef struct tws_Event  tws_Event;  // opaque, job completion notification
 //  - you may pass this to additional spawned continuations to make sure those
 //    are finished as well before the event is signaled.
 // user is the opaque pointer assigned to tws_Setup::threadUser.
-typedef void (*tws_JobFunc)(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, void *user);
+typedef void (*tws_JobFunc)(void *data, tws_Job *job, tws_Event *ev, void *user);
 
 enum
 {
@@ -254,20 +259,23 @@ typedef struct tws_Setup
     // Called when a thread is spawned, for each thread. Set to NULL if you don't require a custom init step.
     tws_RunThread runThread;
 
-    // Passed to tws_RunThread and later to each tws_Job called
+    // Passed to tws_RunThread and later to each tws_JobFunc called
     void *threadUser;
 
     const unsigned *threadsPerType; // How many threads to spawn for each work type
                                     // The index is the work type, the value the number of threads for that work type.
                                     // E.g. to spawn 1 thread each for 2 work types, pass {1,1}.
 
-    tws_WorkType threadsPerTypeSize; // # of entries of the threadsPerType array.
+    tws_WorkType threadsPerTypeSize; // # of entries in the threadsPerType array.
 
     unsigned jobSpace;      // How many bytes to make available for userdata in a job.
-                            // Set this to the maximum number of bytes you will ever need,
-                            // but keep it as small as possible.
+                            // Set this to the maximum number of bytes you will typically need, but keep it as small as possible.
                             // Each continuation added to a job costs TWS_CONTINUATION_COST bytes.
                             // So this number should be the sum of user data and space needed for continuations.
+                            // The actually used value is extended so that the end of the job data is also the end of a cache line;
+                            // the resulting size can be retrieved in tws_MemInfo::jobSpace.
+                            // If job data and number of continuations for a job exceed this space, extra memory is allocated from the heap.
+                            // TL;DR if you have no idea what to put here, set this to the same value as cacheLineSize.
 
     unsigned cacheLineSize; // The desired alignment of most internal structs, in bytes.
                             // Should be equal to or a multiple of the CPU's L1 cache line size to avoid false sharing.
@@ -282,11 +290,10 @@ typedef struct tws_Setup
 
 typedef struct tws_MemInfo
 {
-    size_t jobSpace;        // usable space in a job for user data, as passed in tws_Setup
+    size_t jobSpace;        // usable space in a job for user data, >= the value passed in tws_Setup
     size_t jobTotalSize;    // size of a single job in bytes, padded to specified cache line size
-    size_t jobUnusedBytes;  // bytes at the end of a job that are used for padding (you may want to tweak setup parameters until this is 0)
     size_t eventAllocSize;  // Internal size of a tws_Event, including padding to cache line size
-    size_t bytesPerThread;  // raw job storage memory required by one thread
+    size_t jobMemPerThread; // raw job storage memory required by one thread
 } tws_MemInfo;
 
 
@@ -301,15 +308,15 @@ tws_Error tws_info(const tws_Setup *cfg, tws_MemInfo *mem);
 // Returns 0 on success or an error if failed.
 tws_Error tws_init(const tws_Setup *cfg);
 
-// Process jobs in the pool until the pool is completely empty.
-// Recommended to use this before deleting.
+// Process jobs in the pool until the pool is completely empty and idle.
+// Recommended to use this before tws_shutdown().
 // The 'help' parameter has the same use as in tws_wait().
-void tws_drain(tws_WorkType help);
+void tws_drain(tws_WorkType *help, size_t n);
 
 // Signals all pool threads to please stop ASAP. Returns once everything is stopped and cleaned up.
-// Submitting new jobs from worker threads still possible but they may or may not be processed.
-// Submitting new jobs from other threads is undefined behavior.
-// Any pointers from the pool become invalid once this function is called.
+// Submitting new jobs from inside job functions is still possible but they may or may not be processed.
+// Submitting new jobs from outside (incl. other threads) is undefined behavior.
+// Any tws pointers become invalid for the outside world once this function is called.
 void tws_shutdown();
 
 // --- Job functions ---
@@ -317,39 +324,41 @@ void tws_shutdown();
 // Create a new job.
 // You can create child jobs and add continuations until the job is submitted.
 // When inside a job's work function, you may add more children and continuations to the currently running job.
-// data[0..size) is copied into the job. If there is not enough space, job creation will fail, assert(), and return NULL.
+// 'data[0..size)' is copied into the job. If there is not enough space, a heap allocation is made.
+//    If that fails too, job creation will fail and return NULL.
+// 'maxcont' is the maximum number of continuations that you will ever add to this job. Must be known up-front. Adding less is ok.
 // 'type' specifies which threads can run this job.
 // Optionally, pass an event that will indicate when the job has completed.
 // After allocating a new job, add childen and continuations as required, then submit it ASAP. Don't keep it around for later.
 // You *must* submit a job eventually; not doing so is a resource leak.
-// Note that when you first submit some children and then the parent job,
-// that parent job might be scheduled to run immediately!
-// Parent-child relation is ONLY used for when to consider a job done;
+// Sumbitting a job may run it immediately. More importantly, parent jobs may be run anytime wrt. their children.
+// Parent-child relation is ONLY used for when to consider a job done (parent is done when all children are done);
 // to express dependencies, use continuations.
-tws_Job *tws_newJob(tws_JobFunc f, const void *data, unsigned size, tws_Job *parent, tws_WorkType type, tws_Event *ev);
+tws_Job *tws_newJob(tws_JobFunc f, const void *data, size_t size, unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev);
 
 // Shortcut to add an empty job.
 // This is useful to set as parent for some other jobs that need to run first,
-// and registering continuations that have to run when those child jobs are done.
-inline tws_Job *tws_newEmptyJob()
+// and for registering continuations that have to run when those child jobs are done.
+inline tws_Job *tws_newEmptyJob(unsigned maxcont)
 {
-    return tws_newJob(NULL, NULL, 0, NULL, tws_TINY, NULL);
+    return tws_newJob(NULL, NULL, 0, maxcont, tws_TINY, NULL, NULL);
 }
 
 // Submit a job. Submit children first, then the parent.
-// Allocating a job via tws_newJob() in one thread and then submitting it in another is ok.
-// Once a job is submitted using the job pointer outside of the running job itself is undefined behavior.
+// Allocating a job via tws_newJob() in one thread and then submitting it in another is ok but not recommended.
+// Once a job is submitted it is undefined behavior to use the job pointer outside of the running job function itself.
 // (Treat the job pointer as if it was free()'d)
 // If ancestor is set, submit job as a continuation of ancestor:
 //   A continuation will be started on completion of the ancestor job.
-//   If a job's storage space is exhausted this will assert() and fail.
-// Returns 1 when queued, executed, or entered as continuation, 0 when failed.
-// Returns 0 if and only if an internal memory allocation fails,
-// so if you don't worry about memory you may ignore the return value.
+//   If a job's max. continuation number is exceeded this will assert() and fail.
+// Returns 1 when queued, executed, or registered as continuation, 0 when failed.
+// Returns 0 if and only if:
+//   1) ancestor == NULL and an internal memory allocation fails (this does not assert()), -OR-
+//   2) ancestor != NULL and the ancestor's continuation space is full (this does assert()).
+// so if you don't worry about memory you may ignore the return value and trust the asserts.
 // Never pass job == NULL.
 // ProTip: If you're writing a wrapper for this, make SURE this never returns 0.
 //         Assert this as hard as you can, otherwise you may run into very hard to detect problems.
-//         Also don't add continuations in a loop if you don't know the maximum at compile-time.
 int tws_submit(tws_Job *job, tws_Job *ancestor /* = NULL */);
 
 // --- Event functions ---
@@ -369,8 +378,9 @@ void tws_destroyEvent(tws_Event *ev);
 int tws_isDone(tws_Event *ev);
 
 // Wait until an event signals completion.
-// Set help to an array of the type of jobs the calling thread may process while it's waiting for the event to signal completion.
-// Pass NULL / n == 0 to just idle.
+// Any number of threads can be waiting on an event. All waiting threads will continue once the event is signaled.
+// Set help to an array of the type of jobs the calling thread may process while waiting.
+// Pass NULL, n == 0 to just idle.
 // If you choose to help note that any job that the calling thread picks up must be finished
 // before this can return, so the wait may last longer than intended.
 void tws_wait(tws_Event *ev, tws_WorkType *help, size_t n);
@@ -420,5 +430,5 @@ size_t tws_spillLevels(size_t *pSizes, tws_WorkType n);
   - accept NULL instead of ctx to use spillQ
 
 - add TWS_RESTRICT
-- add notification callback? (called when spilled, too large job is pushed, etc)
+- TWS_CHECK_WARN() + add notification callback? (called when spilled, too large job is pushed, etc)
 */

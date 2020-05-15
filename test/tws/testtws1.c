@@ -3,66 +3,98 @@
 #include "tws.h"
 #include "tws_backend.h"
 
-void work(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, void *user)
+void work(void *data, tws_Job *job, tws_Event *ev, void *user)
 {
     void *p = *(void**)data;
-    printf("work %p\n", p);
+    printf("work   %p\n", p);
 }
 
-void finish(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, void *user)
+void finish(void *data, tws_Job *job, tws_Event *ev, void *user)
 {
     void *p = *(void**)data;
-    printf("finish %p\n", p);
+    printf("FINISH %p\n", p);
 }
 
-void split(void *data, unsigned datasize, tws_Job *job, tws_Event *ev, void *user)
+void split(void *data, tws_Job *job, tws_Event *ev, void *user)
 {
     void *p = *(void**)data;
-    printf("begin split %p\n", data);
+
+    tws_Job *fin = tws_newJob(finish, &p, sizeof(p), 0, tws_DEFAULT, NULL, ev);
+    tws_submit(fin, job); // First continuation
+
+    printf("begin  %p\n", p);
     for(size_t i = 0; i < 16; ++i)
     {
         void *slice = (char*)p + i;
-        tws_Job *ch = tws_newJob(work, &slice, sizeof(slice), job, tws_DEFAULT, NULL);
+        tws_Job *ch = tws_newJob(work, &slice, sizeof(slice), 0, tws_DEFAULT, job, NULL);
         tws_submit(ch, NULL);
     }
-    printf("cont split %p\n", data);
-    tws_Job *fin = tws_newJob(finish, &p, sizeof(p), NULL, tws_DEFAULT, ev);
-    tws_submit(fin, job);
-    printf("end split %p\n", data);
+    printf("end    %p\n", p); // you will likely some more "work" printed after this
 }
+
+void largeprint(void *data, tws_Job *job, tws_Event *ev, void *user)
+{
+    puts((char*)data); // access memory stored in the job
+}
+
+
 
 int main()
 {
     unsigned cache = tws_getCPUCacheLineSize();
-    unsigned ncpu = tws_getNumCPUs();
-    unsigned threads = ncpu ? ncpu - 1: 1; // Keep main thread free; the rest can do background work
+    unsigned th0 = tws_getLazyWorkerThreads(); // Keep main thread free; the rest can do background work 
     printf("cache line size = %u\n", cache);
-    printf("ncpu = %u\n", ncpu);
-    printf("threads = %u\n", threads);
+    printf("cpu cores = %u\n", tws_getNumCPUs());
+    printf("worker threads = %u\n", th0);
 
     tws_Setup ts;
-    memset(&ts, 0, sizeof(ts));
-    ts.cacheLineSize = cache;
-    ts.jobSpace = 64; // don't need that much in this example but it's a good start
-    ts.threadsPerType = &threads;
+    memset(&ts, 0, sizeof(ts)); // clear out all other optional params
+    // there's only one work type (tws_DEFAULT), but we could add more by extending the array
+    unsigned threads[] = { th0 };
+    ts.threadsPerType = &threads[0];
     ts.threadsPerTypeSize = 1;
+    // the other mandatory things
+    ts.cacheLineSize = cache;
     ts.semFn = tws_backend_sem;
     ts.threadFn = tws_backend_thread;
     ts.jobsPerThread = 1024;
-    int res = tws_init(&ts);
-    if(res != tws_ERR_OK)
-        return res;
+
+    tws_MemInfo mi;
+    if(tws_info(&ts, &mi) != tws_ERR_OK)
+        return 1;
+
+    printf("---\n");
+    printf("jobSpace = %u\n", (unsigned)mi.jobSpace); // any job data above this size must be dynamically allocated
+    printf("jobTotalSize = %u\n", (unsigned)mi.jobTotalSize);
+    printf("jobMemPerThread = %u\n", (unsigned)mi.jobMemPerThread);
+
+    if(tws_init(&ts) != tws_ERR_OK)
+        return 2;
+
+    printf("---\n");
 
     tws_Event *ev = tws_newEvent();
-    void *wrk = NULL;
-    tws_Job *spl = tws_newJob(split, &wrk, sizeof(wrk), NULL, tws_DEFAULT, ev);
+    void *wrk = (void*)(uintptr_t)(0xf00000); // just to pass some pointer that the splitting is easily visible
+
+    tws_Job *splitter = tws_newJob(split, &wrk, sizeof(wrk), 1+1, tws_DEFAULT, NULL, ev); // will add 1 continuation in split(), 1 below
+
+    const char blah[] = "This text is so long, it won't fit into the job memory, forcing an external allocation.\n"
+        "  - Greetings fly out to MASTER BOOT RECORD! -- text taken from https://masterbootrecord.bandcamp.com/album/virtuaverse-ost\n\n"
+        "* In a future not-so-far-away, one superior intelligence prevails above all other AI. Society is migrating to a permanently-integrated reality connected to a single neural network, continuously optimizing user experience by processing personal data.\n"
+        "* An outsider, Nathan, makes a living off-the-grid as a smuggler of modded hardware and cracked software. Geared with a custom headset, he is among the few that can switch AVR off and see reality for what it truly is. Nathan shares an apartment with his girlfriend Jay, a talented AVR graffiti artist whose drones bit-spray techno-color all over the city's augmented space.\n"
+        "* One morning, Nathan wakes to an empty apartment and discovers a cryptic message on the bathroom mirror. Having accidentally broken his headset, Nathan is disconnected but determined to figure out what happened to Jay. He embarks on an unbelievable journey involving hacker groups and guilds of AVR technomancers.\n"
+        "* Traversing the world, Nathan confronts hardware graveyards, digital archaeology, tribes of cryptoshamans, and virtual reality debauchery.\n";
+    tws_Job *prn = tws_newJob(largeprint, blah, sizeof(blah), 0, tws_DEFAULT, NULL, ev);
+    tws_submit(prn, splitter); // Second continuation: run print job after split job
+    // The order in which continuations of a job are executed is undefined. You may see the long text or "FINISH" first.
 
     printf("submit...\n");
-    tws_submit(spl, NULL);
+    tws_submit(splitter, NULL);
     printf("wait...\n");
     //tws_wait0(ev); // this would idle wait, wasting one thread
     tws_wait1(ev, tws_DEFAULT); // instead, help the pool to finish computing faster
     printf("done!\n");
+
     tws_destroyEvent(ev);
 
     tws_shutdown();

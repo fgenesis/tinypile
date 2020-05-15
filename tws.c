@@ -9,7 +9,7 @@ Dependencies:
   Compiles as C99 or oldschool C++ code, but can benefit from C11 or if compiled as C++11
   Requires libc for memcpy() & memset() but you can use your own by replacing tws_memcpy() & tws_memzero() defines
   Optionally requires libc for realloc()/free(), if the default allocator is used
-  Requires 64bit atomics support; works with 32bit in theory but this risks overflow [link #4 below]
+  Requires some 64bit atomics support; works with 32bit in theory but this risks overflow [link #4 below]
 
 Origin:
   https://github.com/fgenesis/tinypile/blob/master/tws.c
@@ -914,6 +914,7 @@ enum JobStatusBits
     JB_WORKING    = 0x04, // job was picked up by a worker
     JB_ISCONT     = 0x08, // job was added to some other job as a continuation
     JB_GLOBALMEM  = 0x10, // job was allocated from global spare instead of TLS memory
+    JB_EXTDATA    = 0x20  // extra data were allocated on the heap; payload is a pointer to the actual data
 };
 
 // This struct is designed to be as compact as possible.
@@ -926,29 +927,64 @@ typedef struct tws_Job
     tws_JobFunc f;          // @+8
     tws_Job *parent;        // @+16
     tws_Event *event;       // @+24
-    unsigned short datasize;// @+32
+    unsigned short maxcont; // @+32
     unsigned char status;   // @+34
     tws_WorkType type;      // @+35
                             // @+36
     // < compiler-inserted padding to TWS_MIN_ALIGN >
     // following:
-    // unsigned char payload[datasize];
-    // < computed padding to sizeof(tws_Job*) >
-    // tws_Job *continuations[...];
+    // tws_Job *continuations[maxcont];
+    // unsigned char payload[];
 } tws_Job;
 
-inline static void *_GetDataAreaStart(tws_Job *job)
+// when the data don't fit in the job, JB_EXTDATA is set and this is used instead
+typedef struct tws_JobExt
 {
-    return job + 1; // data start right after the struct ends (incl. possible compiler padding)
+    size_t allocsize;
+    // following:
+    // tws_Job *continuations[tws_Job::maxcont];
+    // unsigned char payload[];
+} tws_JobExt;
+
+tws_JobExt *_GetJobExt(tws_Job *job)
+{
+    tws_JobExt *xp = NULL;
+    if(job->status & JB_EXTDATA)
+    {
+        void *p = job + 1;
+        xp = *(tws_JobExt**)p;
+    }
+    return xp;
 }
 
-static tws_Job **_GetContinuationArrayStart(tws_Job *job)
+tws_JobExt *_AllocJobExt(tws_Job *job, size_t datasize, size_t ncont)
 {
-    uintptr_t p = (uintptr_t)_GetDataAreaStart(job);
-    TWS_ASSERT(IsAligned(p, TWS_MIN_ALIGN), "internal error: align check");
-    p += job->datasize;
-    p = AlignUp(p, sizeof(tws_Job*));
+    size_t sz = sizeof(tws_JobExt) + sizeof(tws_Job**) * ncont + datasize;
+    tws_JobExt *xp = _Alloc(sz);
+    if(TWS_LIKELY(xp))
+    {
+        xp->allocsize = sz;
+        void *p = job + 1;
+        *(tws_JobExt**)p = xp;
+        job->status |= JB_EXTDATA;
+    }
+    return xp;
+}
+
+inline static tws_Job **_GetJobContinuationArrayStart(tws_Job *job)
+{
+    void *p = job + 1; // data start right after the struct ends (incl. possible compiler padding)
+    if(TWS_UNLIKELY(job->status & JB_EXTDATA))
+    {
+        tws_JobExt *xp = *(tws_JobExt**)p; // instead of the data, there's a pointer behind the struct, follow it
+        p = xp + 1; // just after tws_JobExt::allocsize;
+    }
     return (tws_Job**)p;
+}
+
+inline static void *_GetJobDataStart(tws_Job *job)
+{
+    return _GetJobContinuationArrayStart(job) + job->maxcont;
 }
 
 // called by any thread, but only called via AllocJob()
@@ -956,7 +992,7 @@ static tws_Job *_AllocGlobalJob()
 {
     tws_Mutex *mtx = &s_pool->jobStoreLock;
     Freelist *fl = s_pool->jobStore;
-    size_t memsize = s_pool->meminfo.bytesPerThread;
+    size_t memsize = s_pool->meminfo.jobMemPerThread;
     mtx_lock(mtx);
         tws_Job *job = (tws_Job*)fl_pop(fl, memsize);
     mtx_unlock(mtx);
@@ -1014,48 +1050,14 @@ static inline int _CheckNotSubmittedOrWorking(tws_Job *job)
     return 0;
 }
 
-static void tws_incrEventCount(tws_Event *ev);
-
-static tws_Job *NewJob(tws_JobFunc f, const void *data, unsigned size, tws_Job *parent, tws_WorkType type, tws_Event *ev)
-{
-    TWS_ASSERT(!parent || _CheckNotSubmittedOrWorking(parent), "RTFM: Attempt to create job with parent that's already been submitted");
-    TWS_ASSERT(!size || data, "RTFM: data == NULL with non-zero size");
-    TWS_ASSERT(!size || f, "Warning: You're submitting data but no job func; looks fishy from here");
-    const size_t space = s_pool->meminfo.jobSpace;
-    TWS_ASSERT(size < space, "RTFM: userdata size exceeds storage space in job, increase tws_Setup::jobSpace");
-    if(TWS_UNLIKELY(size >= space))
-        return NULL;
-
-    tws_Job *job = AllocJob();
-    if(TWS_LIKELY(job))
-    {
-        TWS_ASSERT(!(job->status & ~JB_GLOBALMEM), "allocated job still in use");
-
-        if(ev)
-            tws_incrEventCount(ev);
-        if(parent)
-            _AtomicInc_Acq(&parent->a_pending);
-
-        job->status |= JB_INITED;
-        job->a_ncont.val = 0;
-        job->a_pending.val = 1;
-        job->parent = parent;
-        job->datasize = size;
-        job->f = f;
-        job->type = type;
-        job->event = ev;
-
-        void *dst = _GetDataAreaStart(job);
-        TWS_ASSERT(IsAligned((uintptr_t)dst, TWS_MIN_ALIGN), "internal error: job userdata space is not aligned");
-        tws_memcpy(dst, data, size);
-    }
-    return job;
-}
-
-// called by any thread, but only from _Finish()
+// called by any thread, but only from _Finish(), and possibly NewJob() in case of error
 static void _DeleteJob(tws_Job *job)
 {
-    unsigned char status = job->status;
+    tws_JobExt *xp = _GetJobExt(job);
+    if(TWS_UNLIKELY(xp))
+        _Free(xp, xp->allocsize);
+
+    const unsigned char status = job->status;
     job->status = JB_FREE;
 
     // If the job is from a TLS buffer, just mark it as free and we're done.
@@ -1069,6 +1071,50 @@ static void _DeleteJob(tws_Job *job)
     mtx_lock(mtx);
         fl_push(s_pool->jobStore, job);
     mtx_unlock(mtx);
+}
+
+static void tws_incrEventCount(tws_Event *ev);
+
+static tws_Job *NewJob(tws_JobFunc f, const void *data, size_t size, unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev)
+{
+    TWS_ASSERT(!parent || _CheckNotSubmittedOrWorking(parent), "RTFM: Attempt to create job with parent that's already been submitted");
+    TWS_ASSERT(!size || data, "RTFM: data == NULL with non-zero size");
+    TWS_ASSERT(!size || f, "Warning: You're submitting data but no job func; looks fishy from here");
+    const size_t space = s_pool->meminfo.jobSpace;
+
+    tws_Job *job = AllocJob();
+    if(TWS_LIKELY(job))
+    {
+        TWS_ASSERT(!(job->status & ~JB_GLOBALMEM), "allocated job still in use");
+
+        if(TWS_UNLIKELY(space < size))
+        {
+            tws_JobExt *xp = _AllocJobExt(job, size, maxcont); // pointer is also stored in the job
+            if(TWS_UNLIKELY(!xp))
+            {
+                _DeleteJob(job);
+                return NULL;
+            }
+        }
+
+        if(ev)
+            tws_incrEventCount(ev);
+        if(parent)
+            _AtomicInc_Acq(&parent->a_pending);
+
+        job->status |= JB_INITED;
+        job->a_ncont.val = 0;
+        job->a_pending.val = 1;
+        job->parent = parent;
+        job->f = f;
+        job->maxcont = maxcont;
+        job->type = type;
+        job->event = ev;
+
+        void *dst = _GetJobDataStart(job);
+        tws_memcpy(dst, data, size);
+    }
+    return job;
 }
 
 // called by any thread; pass myID == -1 if not worker thread
@@ -1178,8 +1224,8 @@ static void Execute(tws_Job *job)
 
     if(job->f)
     {
-        void *data = _GetDataAreaStart(job);
-        job->f(data, job->datasize, (tws_Job*)job, job->event, s_pool->threadUser);
+        void *data = _GetJobDataStart(job);
+        job->f(data, job, job->event, s_pool->threadUser);
     }
 
    TWS_ASSERT(!HasJobCompleted(job), "internal error: Job completed before Finish()");
@@ -1231,11 +1277,12 @@ static int Submit(tws_Job *job)
 
     // This thread couldn't take the job.
     // Since we're not allowed to push into other threads' queues,
-    // we need to hit the spillover queue.
+    // we need to hit the spillover queue of the right work type.
     if(TWS_LIKELY(lq_push(spill, job)))
         goto success;
 
     // Bad, spillover queue is full and failed to reallocate
+    TWS_ASSERT(0, "tws_submit: spillover queue is full and failed to reallocate");
     job->status = status & ~JB_SUBMITTED;
     return 0;
 
@@ -1249,23 +1296,20 @@ static int AddCont(tws_Job *ancestor, tws_Job *continuation)
 {
     TWS_ASSERT(!(continuation->status & JB_ISCONT), "RTFM: Can't add a continuation more than once! ");
     TWS_ASSERT(!(continuation->status & JB_SUBMITTED), "RTFM: Attempt to add continuation that was already submitted, this is wrong");
-    TWS_ASSERT(_CheckNotSubmittedOrWorking(ancestor), "RTFM: Can only add continuation before submiting a job or from the job handler");
+    TWS_ASSERT(_CheckNotSubmittedOrWorking(ancestor), "RTFM: Can only add continuation before submitting a job or from the job function");
     const tws_Atomic idx = _AtomicInc_Acq(&ancestor->a_ncont) - 1;
-    tws_Job **slot = &_GetContinuationArrayStart(ancestor)[idx];
-    size_t maxsize = s_pool->meminfo.jobTotalSize;
-    tws_Job **end = (tws_Job**)((char*)ancestor + maxsize); // one past last
-    int ok = slot < end;
+    const int ok = idx < ancestor->maxcont;
 
     // make extra sure this doesn't get lost
-    TWS_ASSERT(ok, "tws_addCont: Job space exhausted; can't add continuation. If you diligently check EVERY return value of tws_addCont(), feel free to comment out this assert");
-    
+    TWS_ASSERT(ok, "Can't add continuation, no more slots free. If you diligently check EVERY return value of tws_submit() and handle that appropriately, feel free to comment out this assert");
+
     if(TWS_LIKELY(ok))
     {
+        tws_Job **slot = &_GetJobContinuationArrayStart(ancestor)[idx];
         *slot = continuation;
         continuation->status |= JB_ISCONT;
     }
-    else
-        _AtomicDec_Rel(&ancestor->a_ncont);
+    // else a_ncont keeps increasing, but we know the actual maximum
 
     return ok;
 }
@@ -1292,11 +1336,13 @@ static void Finish(tws_Job *job)
         Finish(job->parent);
 
     // Run continuations
-    const unsigned ncont = (unsigned)_AtomicGet_Seq(&job->a_ncont);
+    const unsigned ncont = _AtomicGet_Seq(&job->a_ncont);
     if(ncont)
     {
-        tws_Job **pcont = _GetContinuationArrayStart(job);
-        for(unsigned i = 0; i < ncont; ++i)
+        const unsigned nmax = job->maxcont;
+        const unsigned n = ncont < nmax ? ncont : nmax; // possibly higher than maxcont if we tried to add continuations but the buffer was full
+        tws_Job **pcont = _GetJobContinuationArrayStart(job);
+        for(unsigned i = 0; i < n; ++i)
             Submit(pcont[i]);
     }
 
@@ -1432,7 +1478,6 @@ static tws_Error checksetup(const tws_Setup *cfg)
 
     if(cfg->threadsPerTypeSize == 0
     || (cfg->jobsPerThread == 0)
-    || (cfg->jobSpace == 0)
     || !IsPowerOfTwo(cfg->cacheLineSize)
     || (cfg->cacheLineSize < TWS_MIN_ALIGN)
         )
@@ -1443,12 +1488,13 @@ static tws_Error checksetup(const tws_Setup *cfg)
 
 static void fillmeminfo(const tws_Setup *cfg, tws_MemInfo *mem)
 {
-    const size_t myJobSize = sizeof(tws_Job) + cfg->jobSpace;
-    const uintptr_t jobAlnSize = AlignUp(myJobSize, cfg->cacheLineSize);
+    const size_t reqJobSize = sizeof(tws_Job) + cfg->jobSpace;
+    const uintptr_t jobAlnSize = AlignUp(reqJobSize, cfg->cacheLineSize);
     mem->jobTotalSize = (size_t)jobAlnSize;
-    mem->jobUnusedBytes = (size_t)(jobAlnSize - myJobSize);
-    mem->bytesPerThread = (size_t)(jobAlnSize * RoundUpToPowerOfTwo(cfg->jobsPerThread));
-    mem->jobSpace = cfg->jobSpace;
+    mem->jobMemPerThread = (size_t)(jobAlnSize * RoundUpToPowerOfTwo(cfg->jobsPerThread));
+
+    mem->jobSpace = jobAlnSize - sizeof(tws_Job);
+    TWS_ASSERT(mem->jobSpace >= TWS_MIN_ALIGN, "internal error: Not enough space behind a job struct");
 
     // Make sure there's only one tws_Event per cache line
     unsigned evsz = sizeof(tws_Event);
@@ -1475,11 +1521,11 @@ static void *defaultalloc(void *user, void *ptr, size_t osize, size_t nsize)
     return NULL;
 }
 
-tws_Job *tws_newJob(tws_JobFunc f, const void *data, unsigned size, tws_Job *parent, tws_WorkType type, tws_Event *ev)
+tws_Job *tws_newJob(tws_JobFunc f, const void *data, size_t size, unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev)
 {
     if(!f) // empty jobs are always tiny
         type = tws_TINY;
-    return NewJob(f, data, size, parent, type, ev);
+    return NewJob(f, data, size, maxcont, type, parent, ev);
 }
 
 static void _tws_mainloop()
@@ -1592,7 +1638,7 @@ tws_Error _tws_init(const tws_Setup *cfg)
     // global job reserve pool
     if(!mtx_init(&pool->jobStoreLock))
         return tws_ERR_ALLOC_FAIL;
-    pool->jobStore = fl_new(pool->meminfo.bytesPerThread, jobStride, cfg->cacheLineSize);
+    pool->jobStore = fl_new(pool->meminfo.jobMemPerThread, jobStride, cfg->cacheLineSize);
     if(!pool->jobStore)
         return tws_ERR_ALLOC_FAIL;
 
