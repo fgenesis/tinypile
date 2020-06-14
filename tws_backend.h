@@ -105,6 +105,7 @@ static char *tinyutoa(char *buf, unsigned v)
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <process.h>
+#include <limits.h> // INT_MAX
 
 // --- Begin thread naming ---
 
@@ -184,7 +185,9 @@ static unsigned s_id; // for thread naming only
 static unsigned __stdcall w32_thread_begin(void *opaque)
 {
     w32_namethread(s_id);
-    s_run(opaque);
+    tws_RunFunc f = s_run;
+    s_run = NULL;
+    f(opaque);
     return 0;
 }
 
@@ -203,7 +206,7 @@ static void tws_impl_thread_join(tws_Thread *th)
 
 static tws_Sem* tws_impl_sem_create()
 {
-    return (tws_Sem*)CreateSemaphoreA(NULL, 0, 0x7fffffff, NULL);
+    return (tws_Sem*)CreateSemaphoreA(NULL, 0, INT_MAX, NULL);
 }
 
 static void tws_impl_sem_destroy(tws_Sem *sem)
@@ -316,6 +319,8 @@ static inline unsigned tws_impl_getCPUCacheLineSize()
 #include <semaphore.h>
 
 // pthread_t and sem_t size isn't defined by the posix standard, so we need to heap-allocate those
+#include <stdlib.h>
+
 #ifndef tws_malloc
 #define tws_malloc(x) malloc(x)
 #endif
@@ -377,6 +382,56 @@ static inline unsigned tws_impl_getCPUCacheLineSize()
 }
 
 
+// --------------------------------------------------------
+#elif defined(__MACH__) && 0
+// --------------------------------------------------------
+#include <mach/mach.h>
+
+static tws_Thread *tws_impl_thread_create(unsigned id, const void *opaque, void (*run)(const void *opaque))
+{
+    // TODO
+}
+
+static void tws_impl_thread_join(tws_Thread *th)
+{
+    // TODO
+}
+
+static tws_Sem* tws_impl_sem_create()
+{
+    semaphore_t sem = 0;
+    semaphore_create(mach_task_self(), &sem, SYNC_POLICY_FIFO, 0);
+    return (tws_Sem*)sem;
+}
+
+static void tws_impl_sem_destroy(tws_Sem *sem)
+{
+    semaphore_destroy(mach_task_self(), (semaphore_t)sem);
+}
+
+static void tws_impl_sem_enter(tws_Sem *sem)
+{
+    semaphore_wait((semaphore_t)sem);
+}
+
+static void tws_impl_sem_leave(tws_Sem *sem)
+{
+    semaphore_signal((semaphore_t)sem);
+}
+
+static inline unsigned tws_impl_getNumCPUs()
+{
+    // TODO
+    return 0;
+}
+
+static inline unsigned tws_impl_getCPUCacheLineSize()
+{
+    // TODO
+    return 64;
+}
+
+
 
 // --------------------------------------------------------
 #else
@@ -401,3 +456,9 @@ unsigned tws_getLazyWorkerThreads() { unsigned cpus = tws_getNumCPUs(); return c
 #endif
 
 #endif /* TWS_BACKEND_IMPLEMENTATION */
+
+
+// TODO detect C++20 and use this?
+/*#if defined(__cpp_lib_semaphore)
+#  include <semaphore>
+#endif*/

@@ -118,7 +118,7 @@ Rules of thumb:
   Just pass a pointer to your data and ensure the memory stays valid while jobs work on it.
 */
 
-#include <stdlib.h> // for size_t, intptr_t, uintptr_t
+#include <stddef.h> // for size_t, intptr_t, uintptr_t
 
 #ifdef __cplusplus
 extern "C" {
@@ -388,7 +388,6 @@ void tws_wait(tws_Event *ev, tws_WorkType *help, size_t n);
 // Convenience for 0 or 1 help type
 inline void tws_wait0(tws_Event *ev) { tws_wait(ev, NULL, 0); } // don't help, just idle
 inline void tws_wait1(tws_Event *ev, tws_WorkType help) { tws_wait(ev, &help, 1); }
-
 
 
 // --- Threadpool status - For information/debug purposes only ---

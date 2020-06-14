@@ -3,19 +3,19 @@
 #include "tws.h"
 #include "tws_backend.h"
 
-void work(void *data, tws_Job *job, tws_Event *ev, void *user)
+static void work(void *data, tws_Job *job, tws_Event *ev, void *user)
 {
     void *p = *(void**)data;
     printf("work   %p\n", p);
 }
 
-void finish(void *data, tws_Job *job, tws_Event *ev, void *user)
+static void finish(void *data, tws_Job *job, tws_Event *ev, void *user)
 {
     void *p = *(void**)data;
     printf("FINISH %p\n", p);
 }
 
-void split(void *data, tws_Job *job, tws_Event *ev, void *user)
+static void split(void *data, tws_Job *job, tws_Event *ev, void *user)
 {
     void *p = *(void**)data;
 
@@ -32,7 +32,7 @@ void split(void *data, tws_Job *job, tws_Event *ev, void *user)
     printf("end    %p\n", p); // you will likely some more "work" printed after this
 }
 
-void largeprint(void *data, tws_Job *job, tws_Event *ev, void *user)
+static void largeprint(void *data, tws_Job *job, tws_Event *ev, void *user)
 {
     puts((char*)data); // access memory stored in the job
 }
