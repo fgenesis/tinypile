@@ -1722,7 +1722,6 @@ static tws_Error checksetup(const tws_Setup *cfg)
 
 static void fillmeminfo(const tws_Setup *cfg, tws_MemInfo *mem)
 {
-    mem->cacheLineSize = cfg->cacheLineSize;
     const size_t reqJobSize = sizeof(tws_Job) + cfg->jobSpace;
     const uintptr_t jobAlnSize = AlignUp(reqJobSize, cfg->cacheLineSize);
     mem->jobTotalSize = (size_t)jobAlnSize;

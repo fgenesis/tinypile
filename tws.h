@@ -43,8 +43,7 @@ extern "C" {
 // Pre-defined job types.
 // Values that are not used here are free for your own use.
 // Each thread is specialized in one work type and can only process that specific type.
-// tws_TINY is special: Use it to annotate "tiny" work units that
-// are not worth to distribute to worker threads.
+// tws_TINY is special: Use it to annotate "tiny" work units that may be run immediately, by any thread, if ready to run.
 // See http://cbloomrants.blogspot.com/2012/11/11-08-12-job-system-task-types.html for more info.
 typedef enum
 {
@@ -65,20 +64,20 @@ typedef unsigned char tws_WorkType;
 
 typedef enum
 {
-    tws_ERR_OK                  = 0,
-    tws_ERR_ALLOC_FAIL          = -1,
-    tws_ERR_FUNCPTRS_INCOMPLETE = -2,
-    tws_ERR_PARAM_ERROR         = -3,
-    tws_ERR_THREAD_SPAWN_FAIL   = -4,
-    tws_ERR_THREAD_INIT_FAIL    = -5
+    tws_ERR_OK                  = 0,    // No error, all good
+    tws_ERR_ALLOC_FAIL          = -1,   // a memory or semaphore allocation failed
+    tws_ERR_FUNCPTRS_INCOMPLETE = -2,   // the set of function pointers passed is not usable. RTFM and go fix your init code.
+    tws_ERR_PARAM_ERROR         = -3,   // some passed parameters are not usable. RTFM.
+    tws_ERR_THREAD_SPAWN_FAIL   = -4,   // backend can't spawn a thread.
+    tws_ERR_THREAD_INIT_FAIL    = -5    // If you get this, your code signaled failure in your tws_Setup::runThread function.
 } tws_Error_;
 
 typedef int tws_Error;
 
 // --- Backend details ---
 
-typedef struct tws_Sem    tws_Sem;    // opaque, semaphore handle
-typedef struct tws_Thread tws_Thread; // opaque, thread handle
+typedef void* tws_Sem;    // opaque, semaphore handle
+typedef void* tws_Thread; // opaque, thread handle
 
 // These structs contain function pointers so that the implementation can stay backend-agnostic.
 // All that the backend must support is spawning+joining threads and basic semaphore operation.
@@ -86,13 +85,14 @@ typedef struct tws_Thread tws_Thread; // opaque, thread handle
 // implementation of choice already that you should be able to hook up easily.
 // If not, suggestions:
 //  - tws_backend.h (autodetects Win32, SDL, pthread, possibly more)
-//  - If you're on windows, wrap _beginthreadex() and CreateSemaphore()
+//    --> https://github.com/fgenesis/tinypile/blob/master/tws_backend.h
+//  - If you're on windows, wrap _beginthreadex() and CreateSemaphore()             [supported in tws_backend.h]
 //  - C++20 (has <thread> and <semaphore> in the STL)
 //  - C++11: Has <thread>, but you'd have to roll your own semaphore
 //           (See https://stackoverflow.com/questions/4792449)
 //  - C11: Has <threads.h> but no semaphores. Roll your own.
-//  - POSIX has <pthread.h> and <semaphore.h> but it's a bit fugly across platforms
-//  - SDL (http://libsdl.org/)
+//  - POSIX has <pthread.h> and <semaphore.h> but it's a bit fugly across platforms [supported in tws_backend.h]
+//  - SDL (http://libsdl.org/)                                                      [supported in tws_backend.h]
 //  - Turf (https://github.com/preshing/turf)
 typedef struct tws_ThreadFn
 {
@@ -120,7 +120,7 @@ typedef struct tws_SemFn
 // - At the start of the function, initialize whatever you need based on threadID, worktype, userdata.
 //    E.g. Set thread priorities, assign GPU contexts, your own threadlocal variables, ...
 // - When done initializing, call run(opaque).
-// - run() will only return just before the threadpool is destroyed.
+// - run() will not return until the threadpool is destroyed.
 // - When run() returns, you can clean up whatever resources you had previously initialized.
 // (This is intentionally a callback so that you can do stack allocations before run()!)
 // If your init fails for some reason, don't call run(), just return.
@@ -152,7 +152,7 @@ typedef struct tws_Event  tws_Event;  // opaque, job completion notification
 // ev is the (optional) event that will be notified when the job is complete.
 //  - you may pass this to additional spawned continuations to make sure those
 //    are finished as well before the event is signaled.
-// user is the opaque pointer assigned to tws_Setup::threadUser. // TODO CHECK THIS
+// user is the opaque pointer assigned to tws_Setup::threadUser during tws_init().
 typedef void (*tws_JobFunc)(void *data, tws_Job *job, tws_Event *ev, void *user);
 
 enum
@@ -206,7 +206,6 @@ typedef struct tws_Setup
 
 typedef struct tws_MemInfo
 {
-    size_t cacheLineSize;   // As passed via tws_Setup::cacheLineSize
     size_t jobSpace;        // usable space in a job for user data, >= the value passed in tws_Setup
     size_t jobTotalSize;    // size of a single job in bytes, padded to specified cache line size
     size_t eventAllocSize;  // Internal size of a tws_Event, including padding to cache line size
