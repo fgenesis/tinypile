@@ -5,16 +5,19 @@
 TL;DR:
 - Safe multithreading made easy!
 - Split your work into Jobs, submit them into a threadpool
-- Supports job dependencies, jobs generating more jobs, waiting for job completion
-- Don't use this API directly -- you'll want a wrapper.
+- Custom job types:
+    16 threads for number crunching, 1 for file I/O, 1 for GPU transfers and 1 for GPU compute? No problem!
+    Each job will only run on the correct associated thread(s).
+- Supports job dependencies, jobs starting more jobs, sync to job completion
+- Consider using a tws API wrapper to make things a little easier.
   (E.g. https://github.com/fgenesis/tinypile/blob/master/tws.hh or make your own)
 
 Design goals:
 - Plain C API, KISS.
-- Bring your own threading & semaphores (6 function pointers in total)
-- Different thread & job types for fine-grained control
+- Bring your own threading & semaphores (6 function pointers in total) -- the code is completely API agnostic.
 - As many debug assertions as possible to catch user error (if it says RTFM, do that)
 - No memory allocations during regular operation unless you spam & overload the pool
+- Safe operation even if grossly overloaded
 
 For example code and usage information, see the end of this file.
 
@@ -226,7 +229,7 @@ tws_Error tws_init(const tws_Setup *cfg);
 // Submitting new jobs from inside job functions is still possible but they may or may not be processed.
 // Submitting new jobs from outside (incl. other threads) is undefined behavior.
 // Any tws pointers become invalid for the outside world once this function is called.
-void tws_shutdown();
+void tws_shutdown(void);
 
 // --- Job functions ---
 
@@ -281,7 +284,7 @@ TWS_PLEASE_CHECK int tws_submit(tws_Job *job, tws_Job *ancestor /* = NULL */);
 // An event initially starts with a count of 0. Submitting an event increases the count by 1,
 // completion of a job decreases the count by 1. An event is "done" when the count is 0.
 // Avoid creating and deleting events repeatedly, re-use them if possible.
-tws_Event *tws_newEvent();
+tws_Event *tws_newEvent(void);
 
 // Delete a previously created event.
 // Deleting an in-flight event is undefined behavior.
@@ -412,13 +415,22 @@ size_t tws_spillLevels(size_t *pSizes, tws_WorkType n);
 
 
 
-// --- Utility functions for wrappers ---
+// --- Utility functions ---
 
 typedef int tws_SpinLock;
 void tws_atomicLock(tws_SpinLock *lock);
 int tws_atomicTryLock(tws_SpinLock *lock); // attempt to lock (non-blocking), 1 when locked, 0 when not
 void tws_atomicUnlock(tws_SpinLock *lock);
 
+
+// --- Don't touch this unless you know what you're doing. ---
+// Control internal 'lightweight semaphore' spin count.
+// Most internal semaphores use a short spin loop before falling back to the system semaphore,
+// as wait times are usually short and using syscalls for short waits usually impacts performance negatively.
+// It's set to a reasonable default but can be changed if you have to.
+// Note that this is a global setting and applies to ALL sempahores used internally.
+unsigned tws_getSemSpinCount(void);
+void tws_setSemSpinCount(unsigned spin);
 
 
 #ifdef __cplusplus

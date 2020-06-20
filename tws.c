@@ -9,13 +9,14 @@ Dependencies:
   Compiles as C99 or oldschool C++ code, but can benefit from C11 or if compiled as C++11
   Requires libc for memcpy() & memset() but you can use your own by replacing tws_memcpy() & tws_memzero() defines
   Optionally requires libc for realloc()/free(), if the default allocator is used
-  Requires some 64bit atomics support; works with 32bit in theory but this risks overflow [link #4 below]
+  Requires compiler/library support for 32bit atomics.
+  Requires some 64bit atomics support (write, read, CAS); works with 32bit in theory but this risks overflow [link #4 below]
 
 Origin:
   https://github.com/fgenesis/tinypile/blob/master/tws.c
 
 Inspired by / reading material:
-  - [1] https://blog.molecular-matters.com/2016/04/04/job-system-2-0-lock-free-work-stealing-part-5-dependencies/
+  - [1] https://blog.molecular-matters.com/2016/04/04/job-system-2-0-lock-free-work-stealing-part-5-dependencies/ (the entire series)
   - [2] http://cbloomrants.blogspot.com/2012/11/11-08-12-job-system-task-types.html
   - [3] https://randomascii.wordpress.com/2012/06/05/in-praise-of-idleness/
   - [4] https://blog.molecular-matters.com/2015/09/25/job-system-2-0-lock-free-work-stealing-part-3-going-lock-free/#comment-2270
@@ -36,6 +37,7 @@ Some notes:
 
 // Define this to not wrap the system semaphore
 // (The wrapper reduces API calls a lot and potentionally speeds things up. Go and benchmark if in doubt.)
+// If semaphores are not wrapped, tws_setSemSpinCount() will have no effect.
 //#define TWS_NO_SEMAPHORE_WRAPPER
 
 // ---------------------------------------
@@ -141,7 +143,7 @@ Some notes:
 #elif defined(TWS_HAS_CPP11) // STL, but most likely all inline/intrinsics
 #  include <atomic>
 #  define TWS_USE_CPP11
-#  define TWS_THEADLOCAL thread_local
+#  define TWS_THREADLOCAL thread_local
 #  define TWS_DECL_ATOMIC(x) std::atomic<x>
 #  define COMPILER_BARRIER() atomic_signal_fence(memory_order_seq_cst)
 #else
@@ -206,9 +208,9 @@ static inline int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 *expected, tw
 static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x);
 
 // explicit memory fence
-static inline void _Mfence();
+static inline void _Mfence(void);
 // pause cpu for a tiny bit, if possible
-static inline void _Yield();
+static inline void _Yield(void);
 
 #ifndef COMPILER_BARRIER
 #  error need COMPILER_BARRIER
@@ -306,8 +308,8 @@ static inline int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 *expected, tw
 static inline tws_Atomic64 _Atomic64Set_Seq(NativeAtomic64 *x, tws_Atomic64 newval) { return _InterlockedExchange64(&x->val, newval); }
 static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x) { COMPILER_BARRIER(); return x->val; }
 
-static inline void _Mfence() { COMPILER_BARRIER(); _mm_mfence(); }
-static inline void _Yield() { _mm_pause(); }
+static inline void _Mfence(void) { COMPILER_BARRIER(); _mm_mfence(); }
+static inline void _Yield(void) { _mm_pause(); }
 
 #endif
 
@@ -337,7 +339,7 @@ inline static void *_AllocZero(size_t bytes);
 inline static void *_Realloc(void *p, size_t oldbytes, size_t newbytes);
 inline static void *_Free(void *p, size_t bytes);
 
-inline static tws_Sem *_NewSem();
+inline static tws_Sem *_NewSem(void);
 inline static void _DestroySem(tws_Sem *sem);
 inline static void _EnterSem(tws_Sem *sem);
 inline static void _LeaveSem(tws_Sem *sem);
@@ -392,6 +394,18 @@ struct LWsem
     tws_Sem *sem;
 };
 
+static unsigned s_lwsemSpinCount = 10000; // must never be 0
+
+unsigned tws_getSemSpinCount(void)
+{
+    return s_lwsemSpinCount;
+}
+
+void tws_setSemSpinCount(unsigned spin)
+{
+    s_lwsemSpinCount = spin ? spin : 1;
+}
+
 static void *lwsem_init(LWsem *ws, int count)
 {
 #ifndef TWS_NO_SEMAPHORE_WRAPPER
@@ -403,6 +417,7 @@ static void *lwsem_init(LWsem *ws, int count)
 static void lwsem_destroy(LWsem *ws)
 {
     _DestroySem(ws->sem);
+    ws->sem = NULL;
 }
 
 #ifndef TWS_NO_SEMAPHORE_WRAPPER
@@ -420,8 +435,9 @@ static void lwsem_enter(LWsem *ws)
     if(_lwsem_tryenter(ws))
         return;
 
+    unsigned spin = s_lwsemSpinCount;
+    COMPILER_BARRIER();
     tws_Atomic old = _RelaxedGet(&ws->a_count);
-    int spin = 10000; // TODO: make configurable
     do
     {
         COMPILER_BARRIER();
@@ -982,7 +998,6 @@ struct tws_Pool
     tws_AllocFn alloc;       // one and only allocation function
     void *allocUser;         // userdata for allocator
     void *threadUser;        // userdata passed to all threads
-    tws_TlsBlock *threadTls; // TLS blocks array, one entry per thread
     tws_Mutex jobStoreLock;  // lock must be taken before accessing jobStore
     Freelist *jobStore;      // global job list and backup allocation
     unsigned numThreads;     // how many workers to spawn
@@ -990,7 +1005,8 @@ struct tws_Pool
     tws_RunThread runThread; // thread user starting point
     tws_Sem *initsync;       // for ensuring proper startup
     tws_MemInfo meminfo;     // filled during init
-    tws_PerType forType[256];// one entry per type // FIXME: should be dynamically allocated and padded to avoid false sharing
+    tws_Array forType;       // <tws_PerType> one entry per type
+    tws_Array threadTls;     // <tws_TlsBlock> one entry per thread
 };
 
 inline static void *_Alloc(size_t bytes)
@@ -1018,7 +1034,7 @@ inline static void *_Free(void *p, size_t bytes)
     return s_pool->alloc(s_pool->allocUser, p, bytes, 0);
 }
 
-inline static tws_Sem *_NewSem()
+inline static tws_Sem *_NewSem(void)
 {
     return s_pool->pfsem.create();
 }
@@ -1036,6 +1052,16 @@ inline static void _EnterSem(tws_Sem *sem)
 inline static void _LeaveSem(tws_Sem *sem)
 {
     s_pool->pfsem.leave(sem);
+}
+
+inline static tws_PerType *_GetPerTypeData(tws_WorkType type)
+{
+    return (tws_PerType*)arr_ptr(&s_pool->forType, type);
+}
+
+inline static tws_TlsBlock *_GetThreadTLS(unsigned tid)
+{
+    return (tws_TlsBlock*)arr_ptr(&s_pool->threadTls, tid);
 }
 
 // ----- JOBS -----
@@ -1122,7 +1148,7 @@ inline static void *_GetJobDataStart(tws_Job *job)
 }
 
 // called by any thread, but only called via AllocJob()
-static tws_Job *_AllocGlobalJob()
+static tws_Job *_AllocGlobalJob(void)
 {
     tws_Mutex *mtx = &s_pool->jobStoreLock;
     Freelist *fl = s_pool->jobStore;
@@ -1160,7 +1186,7 @@ static tws_Job *_AllocTLSJob(tws_TlsBlock *mytls)
 }
 
 // called by any thread
-static tws_Job *AllocJob()
+static tws_Job *AllocJob(void)
 {
     tws_Job *job = NULL;
     tws_TlsBlock *mytls = tls; // tls == NULL for non-pool-threads
@@ -1267,9 +1293,9 @@ static tws_Job *NewJob(tws_JobFunc f, const void *data, size_t size, unsigned sh
 // called by any thread; pass myID == -1 if not worker thread
 static tws_Job *_StealFromSomeone(unsigned *pidx, tws_WorkType type, unsigned myID)
 {
-    const unsigned offs = s_pool->forType[type].firstThread;
-    const unsigned end = s_pool->forType[type].numThreads;
-    tws_TlsBlock *alltls = &s_pool->threadTls[0];
+    tws_PerType *perType = _GetPerTypeData(type);
+    const unsigned offs = perType->firstThread;
+    const unsigned end = perType->numThreads;
     unsigned i = *pidx;
     TWS_ASSERT(i < end, "internal error: steal idx outside of expected range");
 
@@ -1281,8 +1307,8 @@ static tws_Job *_StealFromSomeone(unsigned *pidx, tws_WorkType type, unsigned my
         const unsigned idx = i + offs;
         if(idx == myID) // must never steal from own queue
             continue;
-        tws_JQ *jq = &alltls[idx].jq;
-        if( (job = jq_steal(jq)) )
+        tws_TlsBlock *thTls = _GetThreadTLS(idx);
+        if( (job = jq_steal(&thTls->jq)) )
             goto out;
     }
 
@@ -1291,8 +1317,8 @@ static tws_Job *_StealFromSomeone(unsigned *pidx, tws_WorkType type, unsigned my
         const unsigned idx = i + offs;
         if(idx == myID) // must never steal from own queue
             continue;
-        tws_JQ *jq = &alltls[idx].jq;
-        if( (job = jq_steal(jq)) )
+        tws_TlsBlock *thTls = _GetThreadTLS(idx);
+        if( (job = jq_steal(&thTls->jq)) )
             goto out;
     }
     return NULL;
@@ -1305,7 +1331,8 @@ out:
 
 static tws_Job *_GetJobFromGlobalQueue(tws_WorkType type)
 {
-    return lq_pop(&s_pool->forType[type].spillQ);
+    tws_PerType *perType = _GetPerTypeData(type);
+    return lq_pop(&perType->spillQ);
 }
 
 // called by any worker thread
@@ -1391,10 +1418,11 @@ static int Submit(tws_Job *job)
     job->status = status | JB_SUBMITTED;
 
     const tws_WorkType type = job->type;
+    tws_PerType *perType = _GetPerTypeData(type);
 
     // tiny jobs with no active children can be run here for performance
     // jobs for which there is no worker thread MUST be run here else we'd deadlock
-    if(!s_pool->forType[type].numThreads
+    if(!perType->numThreads
         || (_IsTinyJob(job) && !HasDependencies(job))
     ){
         Execute(job);
@@ -1421,8 +1449,8 @@ static int Submit(tws_Job *job)
     }
     else // We're not a worker
     {
-        spill = &s_pool->forType[type].spillQ;
-        poke = &s_pool->forType[type].waiter;
+        spill = &perType->spillQ;
+        poke = &perType->waiter;
     }
 
     // This thread couldn't take the job.
@@ -1599,7 +1627,7 @@ struct tws_Event
     // <padding to fill a cache line>
 };
 
-tws_Event *tws_newEvent()
+tws_Event *tws_newEvent(void)
 {
     size_t sz = s_pool->meminfo.eventAllocSize;
     tws_Event *ev = (tws_Event*)_Alloc(sz);
@@ -1751,7 +1779,8 @@ static void _tws_mainloop(void)
 
     tws_TlsBlock *mytls = tls;
     const tws_WorkType type = tls->worktype;
-    AREvent *waiter = &s_pool->forType[type].waiter;
+    tws_PerType *perType = _GetPerTypeData(type);
+    AREvent *waiter = &perType->waiter;
     while(!_RelaxedGet(&s_pool->quit))
     {
         tws_Job *job = _GetJob_Worker(mytls); // get whatever work is available
@@ -1773,7 +1802,7 @@ static void _tws_run(const void *opaque)
 static void _tws_launch(const void *opaque)
 {
     unsigned tid = (unsigned)(uintptr_t)opaque;
-    tws_TlsBlock *mytls = &s_pool->threadTls[tid];
+    tws_TlsBlock *mytls = _GetThreadTLS(tid);
     tls = mytls;
 
     if(s_pool->runThread)
@@ -1801,9 +1830,14 @@ static void _tws_clear(tws_Pool *pool)
     _AtomicSet_Seq(&pool->quit, 1);
 
     // poke each thread to exit
-    if(pool->threadTls)
+    if(pool->threadTls.mem)
+    {
         for(unsigned i = 0; i < pool->numThreads; ++i)
-            ar_breaklock(pool->threadTls[i].pwaiter, 1);
+        {
+            tws_TlsBlock *thTls = _GetThreadTLS(i);
+            ar_breaklock(thTls->pwaiter, 1);
+        }
+    }
 
     // wait until all threads have quit
     if(pool->threads)
@@ -1858,49 +1892,64 @@ tws_Error _tws_init(const tws_Setup *cfg)
     if(!pool->jobStore)
         return tws_ERR_ALLOC_FAIL;
 
+    // per-work-type array container, cacheline padded to avoid false sharing
+    size_t paddedPerTypeSize = AlignUp(sizeof(tws_PerType), cfg->cacheLineSize);
+    if(!arr_init(&pool->forType, cfg->threadsPerTypeSize, paddedPerTypeSize))
+        return tws_ERR_ALLOC_FAIL;
+
     // per-work-type setup
     unsigned nth = 0;
     for(tws_WorkType type = 0; type < cfg->threadsPerTypeSize; ++type)
     {
+        tws_PerType *perType = _GetPerTypeData(type);
         unsigned n = cfg->threadsPerType[type];
-        pool->forType[type].firstThread = nth;
-        pool->forType[type].numThreads = n;
+        perType->firstThread = nth;
+        perType->numThreads = n;
 
-        if(!ar_init(&pool->forType[type].waiter, 0))
+        if(!ar_init(&perType->waiter, 0))
             return tws_ERR_ALLOC_FAIL;
-        if(!lq_init(&pool->forType[type].spillQ, 1024)) // TODO: make configurable?
+        if(!lq_init(&perType->spillQ, cfg->jobsPerThread)) // reasonable default but this could be anything
             return tws_ERR_ALLOC_FAIL;
 
         nth += n;
     }
     pool->numThreads = nth;
 
-    // per-thread setup
-    // TODO: this should be tws_Array and cleared to 0
-    tws_Thread **allthreads = (tws_Thread**)_AllocZero(sizeof(tws_Thread*) * nth);
-    tws_TlsBlock *alltls = (tws_TlsBlock*)_AllocZero(sizeof(tws_TlsBlock) * nth);
+    tws_Thread **allthreads = NULL;
+
+    if(nth)
+    {
+        // per-thread TLS data
+        size_t paddedTLSSize = AlignUp(sizeof(tws_TlsBlock), cfg->cacheLineSize);
+        if(!arr_init(&pool->threadTls, nth, paddedTLSSize))
+            return tws_ERR_ALLOC_FAIL;
+
+        // pointers to all threads
+        allthreads = (tws_Thread**)_AllocZero(sizeof(tws_Thread*) * nth);
+        if(!allthreads)
+            return tws_ERR_ALLOC_FAIL;
+    }
     pool->threads = allthreads;
-    pool->threadTls = alltls;
-    if(nth && (!allthreads || !alltls))
-        return tws_ERR_ALLOC_FAIL;
 
     const size_t qsz = RoundUpToPowerOfTwo(cfg->jobsPerThread);
     unsigned tid = 0;
     for(tws_WorkType type = 0; type < cfg->threadsPerTypeSize; ++type)
     {
         const unsigned n = cfg->threadsPerType[type];
-
-        for(unsigned i = 0; i < n; ++i)
+        tws_PerType * const perType = _GetPerTypeData(type);
+        
+        for(unsigned i = 0; i < n; ++i, ++tid)
         {
-            alltls[i].threadID = tid++;
-            alltls[i].worktype = type;
-            alltls[i].pwaiter = &pool->forType[type].waiter;
-            alltls[i].pspillQ = &pool->forType[type].spillQ;
-            alltls[i].jobmemIdx = 0;
-            alltls[i].stealFromIdx = 0;
-            if(!jq_init(&alltls[i].jq, qsz))
+            tws_TlsBlock *thTls = (tws_TlsBlock*)arr_ptr(&pool->threadTls, tid);
+            thTls->threadID = tid;
+            thTls->worktype = type;
+            thTls->pwaiter = &perType->waiter;
+            thTls->pspillQ = &perType->spillQ;
+            thTls->jobmemIdx = 0;
+            thTls->stealFromIdx = 0;
+            if(!jq_init(&thTls->jq, qsz))
                 return tws_ERR_ALLOC_FAIL;
-            if(!arr_init(&alltls[i].jobmem, qsz, jobStride))
+            if(!arr_init(&thTls->jobmem, qsz, jobStride))
                 return tws_ERR_ALLOC_FAIL;
         }
     }
@@ -1939,7 +1988,7 @@ tws_Error tws_init(const tws_Setup *cfg)
     return err;
 }
 
-void tws_shutdown()
+void tws_shutdown(void)
 {
     TWS_ASSERT(!tls, "RTFM: Do not call tws_shutdown() from a worker thread!");
     tws_Pool *pool = s_pool;
