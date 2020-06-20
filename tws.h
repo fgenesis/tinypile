@@ -5,120 +5,33 @@
 TL;DR:
 - Safe multithreading made easy!
 - Split your work into Jobs, submit them into a threadpool
-- Supports job dependencies, jobs generating more jobs, waiting for jobs
+- Supports job dependencies, jobs generating more jobs, waiting for job completion
+- Don't use this API directly -- you'll want a wrapper.
+  (E.g. https://github.com/fgenesis/tinypile/blob/master/tws.hh or make your own)
 
 Design goals:
-- Plain C API, KISS
+- Plain C API, KISS.
 - Bring your own threading & semaphores (6 function pointers in total)
 - Different thread & job types for fine-grained control
-- As many debug assertions as possible to catch user error
-- No memory allocations during regular operation
+- As many debug assertions as possible to catch user error (if it says RTFM, do that)
+- No memory allocations during regular operation unless you spam & overload the pool
+
+For example code and usage information, see the end of this file.
 
 License: WTFPL because lawyers suck. except netpoet. hi netpoet! <3
 
 For more info, see tws.cpp.
-
-How to use:
-
-// --- EXAMPLE CODE BEGIN ---
-
-// -- backend setup --
-// if you need a quick & dirty ready-made backend, see tws_backend.h
-static const tws_ThreadFn thfn = { <your function pointers> };
-static const tws_SemFn semfn = { <your function pointers> };
-
-// -- init threadpool --
-tws_Setup ts; // This can be allocated on the stack; it's no longer needed after tws_init().
-memset(&ts, 0, sizeof(ts)); // we're not using optional fields here, make sure those are cleared
-ts.cacheLineSize = 64;     // <-- whatever fits your target architecture
-ts.jobSpace = 64;          // <-- whatever size you need
-ts.jobsPerThread = 1024;   // <-- each thread gets this many slots for jobs to queue
-unsigned threads[] = {4};  // <-- might be a good idea to auto-detect this
-ts.threadsPerType = &threads; // <-- Can specify more than one work type if needed, e.g. an extra disk I/O thread
-ts.threadsPerTypeSize = 1;    // <-- #entries in that array
-ts.threadFn = &thfn;       // link up backend (thread funcs)
-ts.semFn = &semfn;         // link up backend (semaphore funcs)
-if(tws_init(&ts) != tws_ERR_OK)  // start up threadpool
-    gtfo("threadpool init failed");
-// now ready to submit jobs
-
-// -- worker functions --
-struct ProcessInfo // for passing data to workers
-{
-    float *begin;
-    size_t size;
-};
-void processChunk(void *data, tws_Job *job, tws_Event *ev, void *user)
-{
-    ProcessInfo *info = (ProcessInfo*)data;
-    // work on info->begin[0 .. info->size)
-}
-void split(void *data, tws_Job *job, tws_Event *ev, void *user)
-{
-    ProcessInfo *info = (ProcessInfo*)data;
-    const size_t CHUNK = 8*1024;
-    size_t remain = info->size;
-    for(size_t i = 0; remain; i += CHUNK) // split work into chunks
-    {
-        const size_t todo = remain < CHUNK ? remain : CHUNK; // handle incomplete sizes
-        remain -= todo;
-        const struct ProcessInfo info = { &work[i], todo }; // this will be stored in the job
-        // Start as child of the current job
-        // parameters:          (func,         data,  maxcont,  type     parent, event)
-        tws_Job *ch = tws_newJob(processChunk, &info,    0,  tws_DEFAULT, NULL,  NULL);
-        tws_submit(ch);
-    }
-    // some finalization function to run after everything is processed. Could be added before or after the children in this example.
-    // note that this adds itself to the event so that fin must complete before the event is signaled
-    tws_Job *fin = tws_newJob(finalize, &all, sizeof(all), NULL, tws_DEFAULT, ev);
-    tws_submit(fin, job); // set fin to run as continuation after root is done
-}
-
-// -- get some work done --
-const size_t SZ = 1024*1024;
-float work[SZ] = ...;
-tws_Event *event = tws_newEvent(); // for synchronization
-const struct ProcessInfo all = { &work[0], SZ };
-// parameters:            (func,  data, maxcont,  type,    parent, event)
-tws_Job *root = tws_newJob(split, &all,    1,  tws_DEFAULT, NULL,  event);
-
-tws_submit(root, NULL); // Submit the root job to start the chain.
-// root is done when all children are done
-// Once root is done, fin is run as continuation
-
-tws_wait1(event, tws_DEFAULT); // wait until root and fin are done; the calling thread will help working
-
-tws_destroyEvent(event); // ideally you'd keep the event around when running this multiple times
-
-tws_shutdown(); // whenever you're done using it
-
-// -- In summary:
-// -- This setup will launch one task to split work into smaller chunks,
-// -- process these in parallel on all available threads in the pool,
-// -- then run a finalization step on the data.
-
-// --- EXAMPLE CODE END ---
-
-
-Rules of thumb:
-
-- The fast path is everything that happens in a job function:
-  - Any followup jobs allocated and submitted inside of a job will use the lockless path.
-  - Any job allocated outside of a job function will use the slower spillover path.
-  --> Ideally, launch a single job that figures out the work that needs to be done, then adds children to itself.
-      A nice side effect is that the caller can already move on and do other things while the job system adds work to itself in the background.
-
-- If you're using an event together with a parent, and spawn child jobs from that parent, don't add the event to every child job.
-  (It's not incorrect do do this, just spammy, unnecessary, and slower than it has to be.)
-  The parent will be done once all children are done, and only then signal the event (and run continuations).
-
-- Set your tws_Setup::jobSpace high enough that job data and continuations you will add fit in there.
-  It is no problem if once in a while a large data block has to be added,
-  but this will fallback to a heap allocation every time, which you want to avoid.
-  Just pass a pointer to your data and ensure the memory stays valid while jobs work on it.
 */
 
 #include <stddef.h> // for size_t, intptr_t, uintptr_t
+
+#if (defined(__GNUC__) && (__GNUC__ >= 4)) || defined(__clang__)
+#define TWS_PLEASE_CHECK __attribute__((warn_unused_result))
+#elif defined(_MSC_VER) && (_MSC_VER >= 1700)
+#define TWS_PLEASE_CHECK _Must_inspect_result_
+#else
+#define TWS_PLEASE_CHECK
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -236,7 +149,7 @@ typedef struct tws_Event  tws_Event;  // opaque, job completion notification
 // ev is the (optional) event that will be notified when the job is complete.
 //  - you may pass this to additional spawned continuations to make sure those
 //    are finished as well before the event is signaled.
-// user is the opaque pointer assigned to tws_Setup::threadUser.
+// user is the opaque pointer assigned to tws_Setup::threadUser. // TODO CHECK THIS
 typedef void (*tws_JobFunc)(void *data, tws_Job *job, tws_Event *ev, void *user);
 
 enum
@@ -290,6 +203,7 @@ typedef struct tws_Setup
 
 typedef struct tws_MemInfo
 {
+    size_t cacheLineSize;   // As passed via tws_Setup::cacheLineSize
     size_t jobSpace;        // usable space in a job for user data, >= the value passed in tws_Setup
     size_t jobTotalSize;    // size of a single job in bytes, padded to specified cache line size
     size_t eventAllocSize;  // Internal size of a tws_Event, including padding to cache line size
@@ -299,19 +213,14 @@ typedef struct tws_MemInfo
 
 // --- Threadpool control ---
 
-// Checks your config struct and returns 0 if it's fine,
+// Checks your config struct and returns tws_ERR_OK (0) if it's fine,
 // or an error code if there's an obvious problem.
 // Optionally, pass 'mem' to fill the struct with memory usage information.
 tws_Error tws_info(const tws_Setup *cfg, tws_MemInfo *mem);
 
 // Setup the thread pool given a setup configuration.
-// Returns 0 on success or an error if failed.
+// Returns tws_ERR_OK (0) on success or an error if failed.
 tws_Error tws_init(const tws_Setup *cfg);
-
-// Process jobs in the pool until the pool is completely empty and idle.
-// Recommended to use this before tws_shutdown().
-// The 'help' parameter has the same use as in tws_wait().
-void tws_drain(tws_WorkType *help, size_t n);
 
 // Signals all pool threads to please stop ASAP. Returns once everything is stopped and cleaned up.
 // Submitting new jobs from inside job functions is still possible but they may or may not be processed.
@@ -336,6 +245,11 @@ void tws_shutdown();
 // to express dependencies, use continuations.
 tws_Job *tws_newJob(tws_JobFunc f, const void *data, size_t size, unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev);
 
+// Similar to tws_newJob(), but does not copy any data into the job.
+// Instead, a pointer to the job data is returned in pdata.
+// This function is intended for interfacing with C++ where memory is non-POD and we need an exposed pointer for placement new or similar.
+tws_Job *tws_newJobNoInit(tws_JobFunc f, void **pdata, size_t size, unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev);
+
 // Shortcut to add an empty job.
 // This is useful to set as parent for some other jobs that need to run first,
 // and for registering continuations that have to run when those child jobs are done.
@@ -348,8 +262,8 @@ inline tws_Job *tws_newEmptyJob(unsigned maxcont)
 // Allocating a job via tws_newJob() in one thread and then submitting it in another is ok but not recommended.
 // Once a job is submitted it is undefined behavior to use the job pointer outside of the running job function itself.
 // (Treat the job pointer as if it was free()'d)
-// If ancestor is set, submit job as a continuation of ancestor:
-//   A continuation will be started on completion of the ancestor job.
+// If ancestor is set, submit the job as a continuation of ancestor:
+//   It will be started upon completion of the ancestor job.
 //   If a job's max. continuation number is exceeded this will assert() and fail.
 // Returns 1 when queued, executed, or registered as continuation, 0 when failed.
 // Returns 0 if and only if:
@@ -359,10 +273,9 @@ inline tws_Job *tws_newEmptyJob(unsigned maxcont)
 // Never pass job == NULL.
 // ProTip: If you're writing a wrapper for this, make SURE this never returns 0.
 //         Assert this as hard as you can, otherwise you may run into very hard to detect problems.
-int tws_submit(tws_Job *job, tws_Job *ancestor /* = NULL */);
+TWS_PLEASE_CHECK int tws_submit(tws_Job *job, tws_Job *ancestor /* = NULL */);
 
 // --- Event functions ---
-
 // Create an event to indicate job completion.
 // An event can be submitted along one or more jobs and can be queried whether all associated jobs have finished.
 // An event initially starts with a count of 0. Submitting an event increases the count by 1,
@@ -375,12 +288,12 @@ tws_Event *tws_newEvent();
 void tws_destroyEvent(tws_Event *ev);
 
 // Quick check whether an event is done. Non-blocking.
-int tws_isDone(tws_Event *ev);
+int tws_isDone(const tws_Event *ev);
 
 // Wait until an event signals completion.
 // Any number of threads can be waiting on an event. All waiting threads will continue once the event is signaled.
 // Set help to an array of the type of jobs the calling thread may process while waiting.
-// Pass NULL, n == 0 to just idle.
+// Pass n == 0 to just idle.
 // If you choose to help note that any job that the calling thread picks up must be finished
 // before this can return, so the wait may last longer than intended.
 void tws_wait(tws_Event *ev, tws_WorkType *help, size_t n);
@@ -388,6 +301,87 @@ void tws_wait(tws_Event *ev, tws_WorkType *help, size_t n);
 // Convenience for 0 or 1 help type
 inline void tws_wait0(tws_Event *ev) { tws_wait(ev, NULL, 0); } // don't help, just idle
 inline void tws_wait1(tws_Event *ev, tws_WorkType help) { tws_wait(ev, &help, 1); }
+
+
+// --- Promise API ---
+
+// A promise provides an easy way of returning data from a job asynchronously.
+// It's like an event except it's fully user controlled and can carry data.
+
+/* Usage:
+
+struct JobData
+{
+    tws_Promise *pr;
+    // whatever else you need as input
+};
+
+// In func, calculate whatever you want to return:
+static void func(void *data, tws_Job *curjob, tws_Event *ev, void *user)
+{
+    JobData *dat = (JobData*)data;
+    MyResult *res = (MyResult*)tws_getPromiseData(dat->pr, NULL);
+    int ok = calcSomething(res, dat); // assumed to return 1 on success, 0 on fail
+    tws_fulfillPromise(dat->pr, ok);
+}
+
+// Launch like this:
+tws_Promise *pr = tws_newPromise(sizeof(res));
+JobData dat { pr, ... };
+tws_Job *job = tws_newJob(func, &dat, sizeof(dat), ...)
+tws_submit(job, NULL);
+
+// Do something else in the meantime...
+// Eventually, get the result:
+
+if(tws_waitPromise(pr))
+    success((MyResult*)tws_getPromiseData(pr, NULL));
+else
+    fail();
+tws_destroyPromise(pr);
+*/
+
+typedef struct tws_Promise tws_Promise;
+
+// Allocate a new promise with 'space' bytes for return data.
+// Alignment is optional and may be set if the promise's internal memory must be aligned to a certain size.
+// Alignment must be power of 2, or pass 0 if you don't care.
+tws_Promise *tws_newPromise(size_t space, size_t alignment);
+
+// Delete a previously allocated promise.
+// Deleting an in-flight promise is undefined behavior.
+void tws_destroyPromise(tws_Promise *pr);
+
+// Reset a promise to pristine state, allowing to use it again without re-allocating.
+// Same rules as tws_destroyPromise() apply, don't reset an in-flight promise!
+// Calling this more than once has no effect.
+void tws_resetPromise(tws_Promise *pr);
+
+// Non-blocking; returns 1 when a promise was fulfilled, 0 when it was not.
+int tws_isDonePromise(const tws_Promise *pr);
+
+// Get pointer into internal promise memory region reserved for return data.
+// psize is set to capacity if passed, ignored if NULL.
+// This function is needed at least twice:
+//    First time to set the data (copy data into the returned pointer),
+//    Second after tws_waitPromise() returns, to get a pointer to the returned data.
+// You can store any data inside the promise; the memory is not touched and will not get cleared on reset.
+// The returned pointer is be aligned to cache line size.
+void *tws_getPromiseData(tws_Promise *pr, size_t *psize);
+
+// Fulfill (or fail) a promise. Code is up to you and will be returned by tws_waitPromise().
+// You must call this function exactly once per promise.
+// You may call this function again after resetting the promise.
+// Order of operations:
+//  - Call tws_getPromiseData() first and copy whatever you want to return
+//  - Afterwards, call this function.
+void tws_fulfillPromise(tws_Promise *pr, int code);
+
+// Wait until promise is done, and return the code passed to tws_fulfillPromise().
+// After this function returns, you may use tws_getPromiseData() to get the return data.
+int tws_waitPromise(tws_Promise *pr);
+
+
 
 
 // --- Threadpool status - For information/debug purposes only ---
@@ -417,17 +411,131 @@ size_t tws_queueLevels(size_t *pSizes, size_t n, size_t *pCapacity);
 size_t tws_spillLevels(size_t *pSizes, tws_WorkType n);
 
 
+
+// --- Utility functions for wrappers ---
+
+typedef int tws_SpinLock;
+void tws_atomicLock(tws_SpinLock *lock);
+int tws_atomicTryLock(tws_SpinLock *lock); // attempt to lock (non-blocking), 1 when locked, 0 when not
+void tws_atomicUnlock(tws_SpinLock *lock);
+
+
+
 #ifdef __cplusplus
 }
 #endif
 
+/*
+How to use:
+
+// --- EXAMPLE CODE BEGIN ---
+
+// -- backend setup --
+// if you need a quick & dirty ready-made backend, see tws_backend.h
+static const tws_ThreadFn thfn = { <your function pointers> };
+static const tws_SemFn semfn = { <your function pointers> };
+
+// -- init threadpool --
+tws_Setup ts; // This can be allocated on the stack; it's no longer needed after tws_init().
+memset(&ts, 0, sizeof(ts)); // we're not using optional fields here, make sure those are cleared
+ts.cacheLineSize = 64;     // <-- whatever fits your target architecture
+ts.jobSpace = 64;          // <-- whatever size you need
+ts.jobsPerThread = 1024;   // <-- each thread gets this many slots for jobs to queue
+unsigned threads[] = {4};  // <-- might be a good idea to auto-detect this
+ts.threadsPerType = &threads; // <-- Can specify more than one work type if needed, e.g. an extra disk I/O thread
+ts.threadsPerTypeSize = 1;    // <-- #entries in that array
+ts.threadFn = &thfn;       // link up backend (thread funcs)
+ts.semFn = &semfn;         // link up backend (semaphore funcs)
+if(tws_init(&ts) != tws_ERR_OK)  // start up threadpool
+    gtfo("threadpool init failed");
+// now ready to submit jobs
+
+// -- worker functions --
+struct ProcessInfo // for passing data to workers
+{
+    float *begin;
+    size_t size;
+};
+void processChunk(void *data, tws_Job *job, tws_Event *ev, void *user)
+{
+    ProcessInfo *info = (ProcessInfo*)data;
+    // work on info->begin[0 .. info->size)
+}
+void split(void *data, tws_Job *job, tws_Event *ev, void *user)
+{
+    ProcessInfo *info = (ProcessInfo*)data;
+    const size_t CHUNK = 8*1024;
+    size_t remain = info->size;
+    for(size_t i = 0; remain; i += CHUNK) // split work into chunks
+    {
+        const size_t todo = remain < CHUNK ? remain : CHUNK; // handle incomplete sizes
+        remain -= todo;
+        const struct ProcessInfo info = { &work[i], todo }; // this will be stored in the job
+        // Start as child of the current job
+        // parameters:          (func,         data,  maxcont,  type     parent, event)
+        tws_Job *ch = tws_newJob(processChunk, &info,    0,  tws_DEFAULT,  job,  NULL);
+        tws_submit(ch, NULL);
+    }
+    // some finalization function to run after everything is processed. Could be added before or after the children in this example.
+    // note that this adds itself to the event so that fin must complete before the event is signaled
+    tws_Job *fin = tws_newJob(finalize, &all, sizeof(all), NULL, tws_DEFAULT, ev);
+    tws_submit(fin, job); // set fin to run as continuation after root is done
+}
+
+// -- get some work done --
+const size_t SZ = 1024*1024;
+float work[SZ] = ...;
+tws_Event *event = tws_newEvent(); // for synchronization
+const struct ProcessInfo all = { &work[0], SZ };
+// parameters:            (func,  data, maxcont,  type,    parent, event)
+tws_Job *root = tws_newJob(split, &all,    1,  tws_DEFAULT, NULL,  event);
+
+tws_submit(root, NULL); // Submit the root job to start the chain.
+// root is done when all children are done
+// Once root is done, fin is run as continuation
+
+tws_wait1(event, tws_DEFAULT); // wait until root and fin are done; the calling thread will help working
+
+tws_destroyEvent(event); // ideally you'd keep the event around when running this multiple times
+
+tws_shutdown(); // whenever you're done using it
+
+// -- In summary:
+// -- This setup will launch one task to split work into smaller chunks,
+// -- process these in parallel on all available threads in the pool,
+// -- then run a finalization step on the data.
+
+// --- EXAMPLE CODE END ---
+
+
+Rules of thumb:
+
+- The fast path is everything that happens in a job function:
+  - Any followup jobs allocated and submitted inside of a job will use the lockless path.
+  - Any job allocated outside of a job function will use the slower spillover path.
+  --> Ideally, launch a single job that figures out the work that needs to be done, then adds children to itself.
+      A nice side effect is that the caller can already move on and do other things while the job system adds work to itself in the background.
+
+- If you're using an event together with a parent, and spawn child jobs from that parent, don't add the event to every child job.
+  (It's not incorrect do do this, just spammy, unnecessary, and slower than it has to be.)
+  The parent will be done once all children are done, and only then signal the event (and run continuations).
+
+- Set your tws_Setup::jobSpace high enough that job data and continuations you will add fit in there.
+  It is no problem if once in a while a large data block has to be added,
+  but this will fallback to a heap allocation every time, which you want to avoid.
+  Just pass a pointer to your data and ensure the memory stays valid while jobs work on it.
+*/
+
 
 /* ASSERT:
-- make drain() also reset LQ top+bottom?
-- switch from TLS to per-thread ctx, passed as param?
-  - worker threads have their own ctx
-  - accept NULL instead of ctx to use spillQ
-
+- tws_drain() to wait for all the things to finish and also reset LQ top+bottom?
 - add TWS_RESTRICT
 - TWS_CHECK_WARN() + add notification callback? (called when spilled, too large job is pushed, etc)
+
+typedef enum tws_Warn
+{
+    TWS_WARN_JOB_SPILLED,       // job was unexpectedly spilled to (slower) backup queue
+    TWS_WARN_JOB_REALLOCATED,   // could not store all data within the job; had to allocate an extra heap block
+    TWS_WARN_JOB_SLOW_ALLOC,    // job had to be allocated from the slow global heap instead of the fast per-worker storage
+} tws_Warn;
 */
