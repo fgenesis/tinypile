@@ -24,19 +24,22 @@ Inspired by / reading material:
 Some notes:
   This library follows the implementation described in [1],
   but with some changes:
+    * No waiting on jobs directly. Job submission has free()-like semantics, waiting and dependencies uses tws_Event, which is safer.
     * Supports different work/job types (See [2])
     * Idle waiting using semaphores (See [3])
     * More runtime-flexibility, less hardcoding
-    * Safe against overloading (performance will degrade a bit but it will not crash)
+    * Safe against overloading (performance will degrade a bit but it will not crash, unlike [1])
     * Safe to call from any thread
     * Not completely lock-free, but the hot code path is lock free
 */
+
+/* ---- Compile config ---- */
 
 // Define this to not pull in symbols for realloc/free
 //#define TWS_NO_DEFAULT_ALLOC
 
 // Define this to not wrap the system semaphore
-// (The wrapper reduces API calls a lot and potentionally speeds things up. Go and benchmark if in doubt.)
+// (The wrapper reduces API calls a lot and very likely speeds things up. Go and benchmark if in doubt.)
 // If semaphores are not wrapped, tws_setSemSpinCount() will have no effect.
 //#define TWS_NO_SEMAPHORE_WRAPPER
 
@@ -991,22 +994,25 @@ typedef struct tws_PerType
 // one pool exists globally
 struct tws_Pool
 {
-    NativeAtomic activeTh;   // number of currently running worker threads
-    NativeAtomic quit;       // workers check this and exit if not 0
+    // hot
     tws_SemFn pfsem;         // function pointers for semaphores
-    tws_ThreadFn pfth;       // function pointers for threads
-    tws_AllocFn alloc;       // one and only allocation function
-    void *allocUser;         // userdata for allocator
-    void *threadUser;        // userdata passed to all threads
-    tws_Mutex jobStoreLock;  // lock must be taken before accessing jobStore
-    Freelist *jobStore;      // global job list and backup allocation
-    unsigned numThreads;     // how many workers to spawn
-    tws_Thread **threads;    // all workers
-    tws_RunThread runThread; // thread user starting point
-    tws_Sem *initsync;       // for ensuring proper startup
-    tws_MemInfo meminfo;     // filled during init
     tws_Array forType;       // <tws_PerType> one entry per type
     tws_Array threadTls;     // <tws_TlsBlock> one entry per thread
+    // lukewarm
+    NativeAtomic quit;       // workers check this and exit if not 0
+    tws_Mutex jobStoreLock;  // lock must be taken before accessing jobStore
+    Freelist *jobStore;      // global job list and backup allocation
+    tws_AllocFn alloc;       // one and only allocation function
+    void *allocUser;         // userdata for allocator
+    // cold
+    tws_ThreadFn pfth;       // function pointers for threads
+    tws_RunThread runThread; // thread user starting point
+    void *runThreadUser;     // userdata passed to all threads
+    NativeAtomic activeTh;   // number of currently running worker threads
+    tws_Thread **threads;    // all workers
+    unsigned numThreads;     // how many workers to spawn
+    tws_Sem *initsync;       // for ensuring proper startup
+    tws_MemInfo meminfo;     // filled during init
 };
 
 inline static void *_Alloc(size_t bytes)
@@ -1399,7 +1405,7 @@ static void Execute(tws_Job *job)
     if(job->f)
     {
         void *data = _GetJobDataStart(job);
-        job->f(data, job, job->event, s_pool->threadUser);
+        job->f(data, job, job->event);
     }
 
    TWS_ASSERT(!HasJobCompleted(job), "internal error: Job completed before Finish()");
@@ -1443,8 +1449,7 @@ static int Submit(tws_Job *job)
             if(TWS_LIKELY(jq_push(&mytls->jq, job)))
                 goto success;
 
-            // TODO: spillover warning
-            int xx = 0;
+            // queue is full, need to spill
         }
     }
     else // We're not a worker
@@ -1605,18 +1610,22 @@ static void mr_wait(MREvent *mr)
         _EnterSem(mr->sem);
 }
 
+static void mr_waitAndHelpWithType(MREvent *mr, tws_WorkType type)
+{
+    for(;;)
+    {
+        if(mr_isset(mr))
+            return;
+        if(!_HelpWithWorkOnce(type))
+            break;
+    }
+    mr_wait(mr);
+}
+
 static void mr_waitAndHelp(MREvent *mr)
 {
     tws_TlsBlock *mytls = tls;
-    if(mytls)
-        for(;;)
-        {
-            if(mr_isset(mr))
-                return;
-            if(!_HelpWithWorkOnce(mytls->worktype))
-                break;
-        }
-    mr_wait(mr);
+    mr_waitAndHelpWithType(mr, mytls ? mytls->worktype : tws_DEFAULT);
 }
 
 
@@ -1659,9 +1668,6 @@ static void tws_incrEventCount(tws_Event *ev)
 
 int tws_isDone(const tws_Event *ev)
 {
-    /*tws_Atomic val = _AtomicGet_Seq(&ev->remain);
-    TWS_ASSERT(val >= 0, "tws_Event remain is negative");
-    return val == 0;*/
     return mr_isset(&ev->mr);
 }
 
@@ -1672,25 +1678,25 @@ void tws_destroyEvent(tws_Event *ev)
     _Free(ev, s_pool->meminfo.eventAllocSize);
 }
 
-void tws_wait(tws_Event *ev, tws_WorkType *help, size_t n)
+void tws_wait(tws_Event *ev)
 {
-    //TWS_ASSERT(!tls, "RTFM: Don't call tws_wait() from within worker threads. It might work but if it does it's not efficient. I'm not even sure. Feel free to comment out this assert and hope for the best.");
-    
-    // If we're a worker thread, we know better (and we might not actually be able to work on the requested type!)
-    // TODO: Can this deadlock somehow?
-    if(n && !tls)
+    mr_waitAndHelp(&ev->mr);
+}
+
+void tws_waitEx(tws_Event *ev, tws_WorkType *help, size_t n)
+{
+    if(n)
         for(size_t i = 0; i < n; ++i)
         {
             tws_WorkType h = help[i];
-            if(h == (tws_WorkType)tws_TINY) // TODO: check that this is ok
-                h = tws_DEFAULT;
+            TWS_ASSERT(h != (tws_WorkType)tws_TINY, "RTFM: Do not pass tws_TINY");
             while(_HelpWithWorkOnce(h))
                 if(tws_isDone(ev))
                     return;
         }
 
     // Helped whereever possible; fall back to default help behavior or waiting
-    mr_waitAndHelp(&ev->mr);
+    mr_wait(&ev->mr);
 }
 
 
@@ -1805,7 +1811,7 @@ static void _tws_launch(const void *opaque)
     tls = mytls;
 
     if(s_pool->runThread)
-        s_pool->runThread(tid, mytls->worktype, s_pool->threadUser, opaque, _tws_run);
+        s_pool->runThread(tid, mytls->worktype, s_pool->runThreadUser, opaque, _tws_run);
     else
         _tws_mainloop();
 
@@ -1881,7 +1887,7 @@ tws_Error _tws_init(const tws_Setup *cfg)
     pool->pfth = *cfg->threadFn;
     pool->pfsem = *cfg->semFn;
     pool->runThread = cfg->runThread;
-    pool->threadUser = cfg->threadUser;
+    pool->runThreadUser = cfg->runThreadUser;
     pool->initsync = cfg->semFn->create();
 
     // global job reserve pool

@@ -3,19 +3,19 @@
 #include "tws.h"
 #include "tws_backend.h"
 
-static void work(void *data, tws_Job *job, tws_Event *ev, void *user)
+static void work(void *data, tws_Job *job, tws_Event *ev)
 {
     void *p = *(void**)data;
     printf("work   %p\n", p);
 }
 
-static void finish(void *data, tws_Job *job, tws_Event *ev, void *user)
+static void finish(void *data, tws_Job *job, tws_Event *ev)
 {
     void *p = *(void**)data;
     printf("FINISH %p\n", p);
 }
 
-static void split(void *data, tws_Job *job, tws_Event *ev, void *user)
+static void split(void *data, tws_Job *job, tws_Event *ev)
 {
     void *p = *(void**)data;
 
@@ -32,7 +32,7 @@ static void split(void *data, tws_Job *job, tws_Event *ev, void *user)
     printf("end    %p\n", p); // you will likely some more "work" printed after this
 }
 
-static void largeprint(void *data, tws_Job *job, tws_Event *ev, void *user)
+static void largeprint(void *data, tws_Job *job, tws_Event *ev)
 {
     puts((char*)data); // access memory stored in the job
 }
@@ -91,8 +91,7 @@ int main()
     printf("submit...\n");
     tws_submit(splitter, NULL);
     printf("wait...\n");
-    //tws_wait0(ev); // this would idle wait, wasting one thread
-    tws_wait1(ev, tws_DEFAULT); // instead, help the pool to finish computing faster
+    tws_wait(ev); // wait until done while helping with unfinished work
     printf("done!\n");
 
     tws_destroyEvent(ev);

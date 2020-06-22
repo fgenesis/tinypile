@@ -12,14 +12,14 @@ static std::atomic<unsigned> a_test;
 enum TestLimits
 {
     TEST1LIMIT = 10000,
-    TEST2LIMIT = 10000,
-    TEST2REC = 17
+    TEST2LIMIT = 100000,
+    TEST2REC = 47
 };
 
-static float compute()
+static float compute(size_t n)
 {
     volatile float a = 0;
-    for(size_t i = 0; i < 1000; ++i)
+    for(size_t i = 0; i < n; ++i)
         a += (float)sqrt(float(rand()));
     return a;
 }
@@ -27,9 +27,9 @@ static float compute()
 // each job submits one more job, up to a limit, but no parent/child relationship
 // (the chain is too long and would cause a stack overflow)
 // ev is passed everytime and caller waits for ev
-static void work(void *data, tws_Job *curjob, tws_Event *ev, void *user)
+static void work(void *data, tws_Job *curjob, tws_Event *ev)
 {
-    compute();
+    compute(50);
     const unsigned a = ++a_test;
     if(a < TEST1LIMIT)
     {
@@ -39,15 +39,32 @@ static void work(void *data, tws_Job *curjob, tws_Event *ev, void *user)
 }
 
 // recursive expansion
-static void work2(void *data, tws_Job *curjob, tws_Event *ev, void *user)
+static void work2c(void *data, tws_Job *curjob, tws_Event *ev)
 {
-    compute();
-    const unsigned a = ++a_test;
-    if(a < TEST2LIMIT)
+    compute(100);
+}
+static void work2b(void *data, tws_Job *curjob, tws_Event *ev)
+{
+    compute(500);
+    //const unsigned a = ++a_test;
+    //if(a < TEST2LIMIT)
     {
         for(unsigned i = 0; i < TEST2REC; ++i)
         {
-            tws_Job *job = tws_newJob(work2, NULL, 0, 0, tws_DEFAULT, NULL, ev);
+            tws_Job *job = tws_newJob(work2c, NULL, 0, 0, tws_DEFAULT, NULL, ev);
+            tws_submit(job, NULL);
+        }
+    }
+}
+
+static void work2a(void *data, tws_Job *curjob, tws_Event *ev)
+{
+    //const unsigned a = ++a_test;
+    //if(a < TEST2LIMIT)
+    {
+        for(unsigned i = 0; i < 100000; ++i)
+        {
+            tws_Job *job = tws_newJob(work2b, NULL, 0, 0, tws_DEFAULT, NULL, ev);
             tws_submit(job, NULL);
         }
     }
@@ -57,6 +74,7 @@ int main()
 {
     unsigned cache = tws_getCPUCacheLineSize();
     unsigned th0 = tws_getLazyWorkerThreads(); // Keep main thread free; the rest can do background work 
+    //tws_setSemSpinCount(100);
 
     tws_Setup ts;
     memset(&ts, 0, sizeof(ts)); // clear out all other optional params
@@ -74,22 +92,27 @@ int main()
         return 2;
 
     tws_Event *ev = tws_newEvent();
-
+    tws_Job *job;
+    /*
     printf("test 1...\n");
-    tws_Job *job = tws_newJob(work, NULL, 0, 0, tws_DEFAULT, NULL, ev);
-    tws_submit(job, NULL);
+    job = tws_newJob(work, NULL, 0, 0, tws_DEFAULT, NULL, ev);
+    tws_submit(job, NULL);W
     tws_wait1(ev, tws_DEFAULT);
     assert(a_test == TEST1LIMIT);
     printf("value = %u\n", (unsigned)a_test);
     printf("ok\n");
+    */
 
-    a_test = 0;
     printf("test 2...\n");
-    job = tws_newJob(work2, NULL, 0, 0, tws_DEFAULT, NULL, ev);
+    a_test = 0;
+
+    job = tws_newJob(work2a, NULL, 0, 0, tws_DEFAULT, NULL, ev);
     tws_submit(job, NULL);
-    tws_wait1(ev, tws_DEFAULT);
-    printf("value = %u\n", (unsigned)a_test);
+
+    printf("waiting...\n");
+    tws_wait(ev);
     printf("ok\n");
+    printf("value = %u\n", (unsigned)a_test);
 
 
     tws_destroyEvent(ev);

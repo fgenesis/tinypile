@@ -152,8 +152,7 @@ typedef struct tws_Event  tws_Event;  // opaque, job completion notification
 // ev is the (optional) event that will be notified when the job is complete.
 //  - you may pass this to additional spawned continuations to make sure those
 //    are finished as well before the event is signaled.
-// user is the opaque pointer assigned to tws_Setup::threadUser during tws_init().
-typedef void (*tws_JobFunc)(void *data, tws_Job *job, tws_Event *ev, void *user);
+typedef void (*tws_JobFunc)(void *data, tws_Job *job, tws_Event *ev);
 
 enum
 {
@@ -175,8 +174,8 @@ typedef struct tws_Setup
     // Called when a thread is spawned, for each thread. Set to NULL if you don't require a custom init step.
     tws_RunThread runThread;
 
-    // Passed to tws_RunThread and later to each tws_JobFunc called
-    void *threadUser;
+    // Passed to runThread if set, otherwise unused
+    void *runThreadUser;
 
     const unsigned *threadsPerType; // How many threads to spawn for each work type
                                     // The index is the work type, the value the number of threads for that work type.
@@ -294,15 +293,16 @@ int tws_isDone(const tws_Event *ev);
 
 // Wait until an event signals completion.
 // Any number of threads can be waiting on an event. All waiting threads will continue once the event is signaled.
+// The calling thread will help with any unfinished work while waiting, if possible.
+// Can be safely called from within a job but doing so indicates you might be doing it wrong
+//  (it's probably better to use continuations instead of waiting in the job).
+void tws_wait(tws_Event *ev);
+
+// Like tws_wait(), but with more control.
 // Set help to an array of the type of jobs the calling thread may process while waiting.
 // Pass n == 0 to just idle.
-// If you choose to help note that any job that the calling thread picks up must be finished
-// before this can return, so the wait may last longer than intended.
-void tws_wait(tws_Event *ev, tws_WorkType *help, size_t n);
-
-// Convenience for 0 or 1 help type
-inline void tws_wait0(tws_Event *ev) { tws_wait(ev, NULL, 0); } // don't help, just idle
-inline void tws_wait1(tws_Event *ev, tws_WorkType help) { tws_wait(ev, &help, 1); }
+// Do not pass tws_TINY in help.
+void tws_waitEx(tws_Event *ev, tws_WorkType *help, size_t n);
 
 
 // --- Promise API ---
@@ -356,19 +356,18 @@ void tws_destroyPromise(tws_Promise *pr);
 
 // Reset a promise to pristine state, allowing to use it again without re-allocating.
 // Same rules as tws_destroyPromise() apply, don't reset an in-flight promise!
-// Calling this more than once has no effect.
+// Resetting an already reset promise has no effect.
 void tws_resetPromise(tws_Promise *pr);
 
 // Non-blocking; returns 1 when a promise was fulfilled, 0 when it was not.
 int tws_isDonePromise(const tws_Promise *pr);
 
-// Get pointer into internal promise memory region reserved for return data.
+// Get pointer into the internal promise memory region reserved for return data.
 // psize is set to capacity if passed, ignored if NULL.
 // This function is needed at least twice:
 //    First time to set the data (copy data into the returned pointer),
 //    Second after tws_waitPromise() returns, to get a pointer to the returned data.
 // You can store any data inside the promise; the memory is not touched and will not get cleared on reset.
-// The returned pointer is be aligned to cache line size.
 void *tws_getPromiseData(tws_Promise *pr, size_t *psize);
 
 // Fulfill (or fail) a promise. Code is up to you and will be returned by tws_waitPromise().
@@ -381,36 +380,8 @@ void tws_fulfillPromise(tws_Promise *pr, int code);
 
 // Wait until promise is done, and return the code passed to tws_fulfillPromise().
 // After this function returns, you may use tws_getPromiseData() to get the return data.
+// Like tws_wait(), this helps with any unfinished work while waiting.
 int tws_waitPromise(tws_Promise *pr);
-
-
-
-
-// --- Threadpool status - For information/debug purposes only ---
-
-// Query current status of the lock-free queues.
-// pSizes is an array with 'n' entries (usually one per thread in the pool). Can be NULL.
-//   Each entry is set to the number of elements currently in the lockfree queue
-//   of the corresponding thread.
-//   The access to the internal queue is not synchronized in any way, take the numbers as an estimate!
-// pMax receives the queue capacity (single number). Can be NULL.
-//   (Same as tws_Setup::jobsPerThread passed during init.)
-// Returns how many entries would be written to pSizes (= how many threads in the pool)
-size_t tws_queueLevels(size_t *pSizes, size_t n, size_t *pCapacity);
-
-// Query current status of the spillover queues.
-// pSizes is an array with 'n' entries (usually one per work type in use). Can be NULL.
-//   Each entry is set to the number of elements currently in the spillover queue
-//   for that work type.
-// Ideally pSizes is all zeros, or close to! If it's not: You're overloading the scheduler.
-//   To fix:
-//     - Increase tws_Setup::jobsPerThread
-//     - Spawn more threads
-//     - Submit less jobs from external threads (only jobs started from within jobs use the fast, lockless path)
-//     - Submit less jobs in general
-//   While this is not a problem it will degrade performance.
-// Returns how many entries would be written to pSizes (= how many work types in use)
-size_t tws_spillLevels(size_t *pSizes, tws_WorkType n);
 
 
 
@@ -426,8 +397,9 @@ void tws_atomicUnlock(tws_SpinLock *lock);
 // Control internal 'lightweight semaphore' spin count.
 // Most internal semaphores use a short spin loop before falling back to the system semaphore,
 // as wait times are usually short and using syscalls for short waits usually impacts performance negatively.
-// It's set to a reasonable default but can be changed if you have to.
+// It's set to a reasonable default but can be changed if you have to. Benchmark & profile if you do.
 // Note that this is a global setting and applies to ALL sempahores used internally.
+// (There's a #define in tws.c to turn off the spinning completely)
 unsigned tws_getSemSpinCount(void);
 void tws_setSemSpinCount(unsigned spin);
 
