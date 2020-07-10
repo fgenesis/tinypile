@@ -31,6 +31,7 @@ Some notes:
     * Safe against overloading (performance will degrade a bit but it will not crash, unlike [1])
     * Safe to call from any thread
     * Not completely lock-free, but the hot code path is lock free
+  * If you see lwsem_enter() or lq_pop() in your perf profile, you're overloading the scheduler. Consider increasing tws_Setup::jobsPerThread.
 */
 
 /* ---- Compile config ---- */
@@ -785,7 +786,8 @@ static int jq_push(tws_JQ *jq, tws_Job *job)
 static tws_Job *jq_steal(tws_JQ *jq)
 {
     //TWS_ASSERT(!tls || jq != &tls->jq, "internal error: jq_steal() called by thread that owns jq");
-
+retry: ;
+    COMPILER_BARRIER();
     tws_Atomic64 t = _Relaxed64Get(&jq->top);
 
     // ensure that top is always read before bottom
@@ -806,6 +808,7 @@ static tws_Job *jq_steal(tws_JQ *jq)
         }
 
         // A concurrent steal or pop operation removed an element from the deque in the meantime.
+        goto retry;
     }
 
     // empty queue
@@ -904,7 +907,7 @@ static size_t lq_size(tws_LQ *q)
 // called by any thread
 static tws_Job *lq_pop(tws_LQ *q)
 {
-   tws_Job *job = NULL;
+    tws_Job *job = NULL;
     mtx_lock(&q->mtx);
         size_t r = q->rpos;
         if(r != q->wpos)
@@ -974,58 +977,6 @@ out:
     return ok;
 }
 
-// AutoResetEvent
-// (original via https://preshing.com/20150316/semaphores-are-surprisingly-versatile/ but with changes)
-typedef struct AREvent
-{
-    LWsem sem;
-    NativeAtomic status;
-} AREvent;
-
-static void *ar_init(AREvent *ar, int isset)
-{
-    ar->status.val = !!isset;
-    return lwsem_init(&ar->sem, 0);
-}
-
-static void ar_destroy(AREvent *ar)
-{
-    TWS_ASSERT(ar->status.val >= 0, "destroying AREvent while threads are waiting");
-    lwsem_destroy(&ar->sem);
-}
-
-// wait until set, then auto-reset
-static void ar_wait(AREvent *ar)
-{
-    tws_Atomic oldStatus = _AtomicDec_Acq(&ar->status);
-    TWS_ASSERT(oldStatus <= 1, "internal error: invalid ar->status");
-    if(oldStatus < 0)
-        lwsem_enter(&ar->sem);
-}
-
-// set and release one waiting thread, or if none are waiting, the next one will not wait and reset immediately
-static void ar_set(AREvent *ar)
-{
-    tws_Atomic oldStatus = _RelaxedGet(&ar->status);
-    for(;;)
-    {
-        TWS_ASSERT(oldStatus <= 1, "internal error: invalid ar->status");
-        int newStatus = oldStatus < 1 ? oldStatus + 1 : 1;
-        if(_AtomicCAS_Weak_Rel(&ar->status, &oldStatus, newStatus))
-            break;
-    }
-    if(oldStatus < 0)
-        lwsem_leave(&ar->sem);
-}
-
-// only used during shutdown
-static void ar_breaklock(AREvent *ar, unsigned n)
-{
-    for(unsigned i = 0; i < n; ++i)
-        lwsem_leave(&ar->sem);
-}
-
-
 // --- Statics and threadlocals ---
 
 typedef struct tws_Pool tws_Pool;
@@ -1044,7 +995,7 @@ struct tws_TlsBlock
     tws_LQ *pspillQ;       // points to associated tws_PerType::spillQ
     tws_Array jobmem;      // private memory block to allocate this threads' jobs from
     size_t jobmemIdx;      // running index keeping track of next slot when allocating from jobmem
-    AREvent *pwaiter;      // points to associated tws_PerType::waiter
+    LWsem *pwaiter;        // points to associated tws_PerType::waiter
     unsigned threadID;     // never changes
     unsigned stealFromIdx; // running index to distribute stealing
     tws_WorkType worktype; // never changes
@@ -1054,7 +1005,7 @@ struct tws_TlsBlock
 // one entry per distinct tws_WorkType
 typedef struct tws_PerType
 {
-    AREvent waiter;        // AutoResetEvent used to wait until work of that type is available
+    LWsem waiter;          // used to wait until work of that type is available
     unsigned firstThread;  // first threads' ID that works on this type
     unsigned numThreads;   // number of threads that work on this type
     tws_LQ spillQ;         // spillover queue if a thread's jq is full
@@ -1482,7 +1433,6 @@ static void Finish(tws_Job *job);
 static void Execute(tws_Job *job)
 {
     TWS_ASSERT(!tls || areWorkTypesCompatible(job->type, tls->worktype), "internal error: thread has picked up incompatible work type");
-
     TWS_ASSERT(!(job->status & JB_WORKING), "internal error: Job is already being worked on");
     job->status |= JB_WORKING;
 
@@ -1528,7 +1478,7 @@ static void Submit(tws_Job *job)
     }
 
     tws_LQ *spill;
-    AREvent *poke;
+    LWsem *poke;
     tws_TlsBlock *mytls = tls;
 retry:
     if(mytls)
@@ -1573,7 +1523,7 @@ retry:
 
 success:
     // poke one thread to work on the new job
-    ar_set(poke);
+    lwsem_leave(poke);
 }
 
 static void AddCont(tws_Job *ancestor, tws_Job *continuation)
@@ -1922,19 +1872,20 @@ tws_Job *tws_newJobNoInit(tws_JobFunc f, void **pdata, size_t size, unsigned sho
 static void _tws_mainloop(void)
 {
     _AtomicInc_Acq(&s_pool->activeTh);
-    _LeaveSem(s_pool->initsync); // ok, this thread is up
+    _LeaveSem(s_pool->initsync); // ok, this thread is up, next one can start
 
     tws_TlsBlock *mytls = tls;
     const tws_WorkType type = tls->worktype;
     tws_PerType *perType = _GetPerTypeData(type);
-    AREvent *waiter = &perType->waiter;
-    while(!_RelaxedGet(&s_pool->quit))
+    LWsem *waiter = &perType->waiter;
+    for(;;)
     {
+        lwsem_enter(waiter); // wait until work is available
+        if(!_RelaxedGet(&s_pool->quit))
+            break;
         tws_Job *job = _GetJob_Worker(mytls); // get whatever work is available
         if(job)
             Execute(job);
-        else // wait until someone pushes more work
-            ar_wait(waiter);
     }
 
     _AtomicDec_Rel(&s_pool->activeTh);
@@ -1982,7 +1933,7 @@ static void _tws_clear(tws_Pool *pool)
         for(unsigned i = 0; i < pool->numThreads; ++i)
         {
             tws_TlsBlock *thTls = _GetThreadTLS(i);
-            ar_breaklock(thTls->pwaiter, 1);
+            lwsem_leave(thTls->pwaiter);
         }
     }
 
@@ -2051,7 +2002,7 @@ tws_Error _tws_init(const tws_Setup *cfg)
         perType->firstThread = nth;
         perType->numThreads = n;
 
-        if(!ar_init(&perType->waiter, 0))
+        if(!lwsem_init(&perType->waiter, 0))
             return tws_ERR_ALLOC_FAIL;
         if(!lq_init(&perType->spillQ, cfg->jobsPerThread)) // reasonable default but this could be anything
             return tws_ERR_ALLOC_FAIL;
