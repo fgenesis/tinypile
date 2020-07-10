@@ -210,6 +210,9 @@ static inline tws_Atomic64 _Atomic64Set_Seq(NativeAtomic64 *x, tws_Atomic64 newv
 static inline int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 *expected, tws_Atomic64 newval);
 static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x);
 
+// pointers
+static inline int _AtomicPtrCAS_Weak(void **x, void **expected, void *newval);
+
 // explicit memory fence
 static inline void _Mfence(void);
 // pause cpu for a tiny bit, if possible
@@ -241,6 +244,8 @@ static inline int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 *expected, tw
 static inline tws_Atomic64 _Atomic64Set_Seq(NativeAtomic64 *x, tws_Atomic64 newval) { return atomic_store(&x->val, newval); }
 static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x) { COMPILER_BARRIER(); return atomic_load_explicit(&x->val, memory_order_relaxed); }
 
+static inline int _AtomicPtrCAS_Weak(void **x, void **expected, void *newval) { return atomic_compare_exchange_weak(x, expected, newval); }
+
 static inline void _Mfence() { COMPILER_BARRIER(); atomic_thread_fence(memory_order_seq_cst); }
 static inline void _Yield() { __builtin_ia32_pause(); } // TODO: does this work on ARM?
 
@@ -255,8 +260,8 @@ static inline void _Yield() { __builtin_ia32_pause(); } // TODO: does this work 
 #pragma intrinsic(_InterlockedCompareExchange64)
 
 #ifdef _M_IX86
-// No _InterlockedExchange64() on x86 apparently
-// Clang and gcc have their own way of emulating a 64bit store, but with MSVC it's back to a good old CAS loop.
+// No _InterlockedExchange64() on x86_32 apparently
+// Clang and gcc have their own way of doing a 64bit store, but with MSVC it's back to a good old CAS loop.
 // Via https://doxygen.reactos.org/d6/d48/interlocked_8h_source.html
 inline s64 _InterlockedExchange64(volatile s64 *Target, s64 Value)
 {
@@ -297,6 +302,16 @@ static inline int _msvc_cas64_x86(NativeAtomic64 *x, tws_Atomic64 *expected, tws
     *expected = prevVal;
     return 0;
 }
+static inline int _msvc_casptr_x86(void **x, void **expected, void *newval)
+{
+    void *expectedVal = *expected;
+    void *prevVal = _InterlockedCompareExchangePointer((void * volatile*)x, newval, expectedVal);
+    if(prevVal == expectedVal)
+        return 1;
+    
+    *expected = prevVal;
+    return 0;
+}
 static inline int _AtomicCAS_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval) { return _msvc_cas32_x86(x, expected, newval); }
 static inline int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval) { return _msvc_cas32_x86(x, expected, newval); }
 static inline int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval) { return _msvc_cas32_x86(x, expected, newval); }
@@ -310,6 +325,9 @@ static inline tws_Atomic _RelaxedGet(const NativeAtomic *x) { return x->val; }
 static inline int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return _msvc_cas64_x86(x, expected, newval); }
 static inline tws_Atomic64 _Atomic64Set_Seq(NativeAtomic64 *x, tws_Atomic64 newval) { return _InterlockedExchange64(&x->val, newval); }
 static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x) { COMPILER_BARRIER(); return x->val; }
+
+static inline int _AtomicPtrCAS_Weak(void **x, void **expected, void *newval) { return _msvc_casptr_x86(x, expected, newval); }
+
 
 static inline void _Mfence(void) { COMPILER_BARRIER(); _mm_mfence(); }
 static inline void _Yield(void) { _mm_pause(); }
@@ -467,6 +485,42 @@ static void lwsem_leave(LWsem *ws)
         _LeaveSem(ws->sem);
 }
 
+
+// ---- Mutex ----
+
+// Semaphores are part of the user API, but we also need a good old classical mutex for some things.
+// We don't expect much contention so this Benaphore is good enough.
+// via https://preshing.com/20120226/roll-your-own-lightweight-mutex/
+typedef struct tws_Mutex
+{
+    NativeAtomic counter;
+    LWsem sem;
+} tws_Mutex;
+
+// returns non-NULL on success
+static inline void *mtx_init(tws_Mutex *mtx)
+{
+    mtx->counter.val = 0;
+    return lwsem_init(&mtx->sem, 0);
+}
+
+static inline void mtx_destroy(tws_Mutex *mtx)
+{
+    lwsem_destroy(&mtx->sem);
+}
+
+static inline void mtx_lock(tws_Mutex *mtx)
+{
+    if (_AtomicInc_Acq(&mtx->counter) > 1)
+        lwsem_enter(&mtx->sem);
+}
+
+static inline void mtx_unlock(tws_Mutex *mtx)
+{
+    if (_AtomicDec_Rel(&mtx->counter) > 0)
+        lwsem_leave(&mtx->sem);
+}
+
 // ---- Freelist ----
 
 typedef struct FreelistBlock FreelistBlock;
@@ -481,10 +535,12 @@ typedef struct Freelist
     void *head; // next free element
     size_t stride;
     size_t alignment;
+    tws_Mutex mtx;
     FreelistBlock block;
 } Freelist;
 
-static void fl_format(char *p, char *end, size_t stride, size_t alignment, void *chain)
+// returns last element p, for which *(void**)p == NULL is true when this returns
+static void *fl_format(char *p, char *end, size_t stride, size_t alignment)
 {
     for(;;)
     {
@@ -495,11 +551,13 @@ static void fl_format(char *p, char *end, size_t stride, size_t alignment, void 
         p = next;
     }
     TWS_ASSERT(p + stride < end, "oops: freelist stomping memory");
-    *(void**)p = chain;
+    *(void**)p = NULL; // terminate list
+    return p;
 }
 
-void fl_destroy(Freelist *fl)
+static void fl_destroy(Freelist *fl)
 {
+    mtx_destroy(&fl->mtx);
     FreelistBlock blk = fl->block;
     void *p = fl;
     do
@@ -511,26 +569,35 @@ void fl_destroy(Freelist *fl)
     while(p);
 }
 
-Freelist *fl_new(size_t memsize, size_t stride, size_t alignment)
+static Freelist *fl_new(size_t memsize, size_t stride, size_t alignment)
 {
     void *mem = _Alloc(memsize);
     Freelist *fl = (Freelist*)mem;
     if(TWS_LIKELY(fl))
     {
-        char * const end = ((char*)mem) + memsize;
-        const size_t off = stride > sizeof(Freelist) ? stride : sizeof(Freelist);
-        char *p = (char*)AlignUp((intptr_t)mem + off, alignment);
-        fl->head = p;
-        fl->stride = stride;
-        fl->alignment = alignment;
-        fl->block.size = memsize;
-        fl->block.next = NULL;
-        fl_format(p, end, stride, alignment, NULL);
+        if(mtx_init(&fl->mtx))
+        {
+            char * const end = ((char*)mem) + memsize;
+            const size_t off = stride > sizeof(Freelist) ? stride : sizeof(Freelist);
+            char *p = (char*)AlignUp((intptr_t)mem + off, alignment);
+            fl->head = p;
+            fl->stride = stride;
+            fl->alignment = alignment;
+            fl->block.size = memsize;
+            fl->block.next = NULL;
+            fl_format(p, end, stride, alignment);
+        }
+        else
+        {
+            _Free(mem, memsize);
+            fl = NULL;
+        }
     }
     return fl;
 }
 
-void *fl_extend(Freelist *fl, size_t memsize)
+// not safe to call concurrently -- only called by fl_pop() while mutex is locked
+static void *_fl_extend(Freelist *fl, size_t memsize, void **plast)
 {
     void *mem = _Alloc(memsize);
     if(TWS_UNLIKELY(!mem))
@@ -540,8 +607,8 @@ void *fl_extend(Freelist *fl, size_t memsize)
     char * const end = ((char*)mem) + memsize;
     const size_t off = stride > sizeof(FreelistBlock) ? stride : sizeof(FreelistBlock);
     char *p = (char*)AlignUp((intptr_t)mem + off, fl->alignment);
-    fl_format(p, end, stride, fl->alignment, fl->head);
-    fl->head = p;
+    *plast = fl_format(p, end, stride, fl->alignment);
+    //fl->head = p; // We don't want to link this up just yet! Other threads might be executing _fl_trypop()/fl_push() right now.
 
     FreelistBlock *blk = (FreelistBlock*)mem;
     blk->size = memsize;
@@ -550,26 +617,64 @@ void *fl_extend(Freelist *fl, size_t memsize)
     return p;
 }
 
-void *fl_pop(Freelist *fl, size_t extendSize)
+// returns NULL if freelist has no more elements
+static void *_fl_trypop(Freelist *fl)
 {
     void *p = fl->head;
+    while(p)
+        if(_AtomicPtrCAS_Weak(&fl->head, &p, *(void**)p))
+            break;
+    return p;
+}
+
+// returns NULL only in case of allocation failure
+static void *fl_pop(Freelist *fl, size_t extendSize)
+{
+    void *p = _fl_trypop(fl);
 
     if(TWS_UNLIKELY(!p))
-        p = fl_extend(fl, extendSize);
+    {
+        mtx_lock(&fl->mtx); // -- Lock -- but someone else can still call fl_push(), _fl_trypop() anytime
+            p = _fl_trypop(fl); // try again. maybe this thread was waiting for the mutex while someone else was busy reallocating
+            if(!p)
+            {
+                // still nothing. now we really need to extend.
+                void *tail;
+                p = _fl_extend(fl, extendSize, &tail); // may return NULL if allocator fails
 
-    if(TWS_LIKELY(p))
-        fl->head = *(void**)p;
+                if(TWS_LIKELY(p))
+                {
+                    void * const next = *(void**)p; // Claim the first element (p) for ourselves, and link up the remainder of the freelist
+                    void *cur = fl->head; // probably NULL, but maybe someone called fl_push() in the meantime
+                    for(;;)
+                    {
+                        *(void**)tail = cur; // whatever was in fl->head goes to the end of the new freelist extension so we don't lose it
+                        if(_AtomicPtrCAS_Weak(&fl->head, &cur, next)) // link it up! And race against concurrent fl_push(), _fl_trypop() that are unaware of the mutex
+                            break;
+                        // failed race. fl->head may or may not be NULL.
+                        // whatever it is, cur is updated and must be linked to the end of the freelist extension
+                    }
+                    // now fl->head is set and we can finally unlock the mutex.
+                    // (if that was done too early, some other thread would see fl->head == NULL and proceed to extend)
+                }
+            }
+        mtx_unlock(&fl->mtx);
+    }
 
     return p;
 }
 
 // p must be a pointer previously obtained via fl_pop() from the same freelist
-void fl_push(Freelist *fl, void *p)
+static void fl_push(Freelist *fl, void *p)
 {
-    *(void**)p = fl->head;
-    fl->head = p;
+    void *cur = fl->head;
+    for(;;)
+    {
+        *(void**)p = cur;
+        if(_AtomicPtrCAS_Weak(&fl->head, &cur, p))
+            break;
+    }
 }
-
 
 // ---- Array, element size handled at runtime
 
@@ -615,41 +720,6 @@ static inline TWS_NOTNULL void *arr_ptr(tws_Array *a, size_t idx)
 {
     TWS_ASSERT(idx < a->nelem, "arr_ptr: out of bounds");
     return ((char*)a->mem) + (a->stride * idx);
-}
-
-// ---- Mutex ----
-
-// Semaphores are part of the user API, but we also need a good old classical mutex for some things.
-// We don't expect much contention so this Benaphore is good enough.
-// via https://preshing.com/20120226/roll-your-own-lightweight-mutex/
-typedef struct tws_Mutex
-{
-    NativeAtomic counter;
-    LWsem sem;
-} tws_Mutex;
-
-// returns non-NULL on success
-static inline void *mtx_init(tws_Mutex *mtx)
-{
-    mtx->counter.val = 0;
-    return lwsem_init(&mtx->sem, 0);
-}
-
-static inline void mtx_destroy(tws_Mutex *mtx)
-{
-    lwsem_destroy(&mtx->sem);
-}
-
-static inline void mtx_lock(tws_Mutex *mtx)
-{
-    if (_AtomicInc_Acq(&mtx->counter) > 1)
-        lwsem_enter(&mtx->sem);
-}
-
-static inline void mtx_unlock(tws_Mutex *mtx)
-{
-    if (_AtomicDec_Rel(&mtx->counter) > 0)
-        lwsem_leave(&mtx->sem);
 }
 
 // ---- Lockless job queue ----
@@ -834,9 +904,9 @@ static size_t lq_size(tws_LQ *q)
 // called by any thread
 static tws_Job *lq_pop(tws_LQ *q)
 {
+   tws_Job *job = NULL;
     mtx_lock(&q->mtx);
         size_t r = q->rpos;
-        tws_Job *job = NULL;
         if(r != q->wpos)
         {
             job = q->jobs[r];
@@ -973,8 +1043,8 @@ struct tws_TlsBlock
     tws_JQ jq;             // private deque; others may steal from this
     tws_LQ *pspillQ;       // points to associated tws_PerType::spillQ
     tws_Array jobmem;      // private memory block to allocate this threads' jobs from
-    AREvent *pwaiter;      // points to associated tws_PerType::waiter
     size_t jobmemIdx;      // running index keeping track of next slot when allocating from jobmem
+    AREvent *pwaiter;      // points to associated tws_PerType::waiter
     unsigned threadID;     // never changes
     unsigned stealFromIdx; // running index to distribute stealing
     tws_WorkType worktype; // never changes
@@ -1000,7 +1070,6 @@ struct tws_Pool
     tws_Array threadTls;     // <tws_TlsBlock> one entry per thread
     // lukewarm
     NativeAtomic quit;       // workers check this and exit if not 0
-    tws_Mutex jobStoreLock;  // lock must be taken before accessing jobStore
     Freelist *jobStore;      // global job list and backup allocation
     tws_AllocFn alloc;       // one and only allocation function
     void *allocUser;         // userdata for allocator
@@ -1112,7 +1181,12 @@ typedef struct tws_JobExt
     // unsigned char payload[];
 } tws_JobExt;
 
-tws_JobExt *_GetJobExt(tws_Job *job)
+inline static size_t _GetJobReqSize(size_t payloadSize, unsigned short maxcont)
+{
+    return sizeof(tws_Job) + (sizeof(tws_Job*) * maxcont) + payloadSize;
+}
+
+static tws_JobExt *_GetJobExt(tws_Job *job)
 {
     tws_JobExt *xp = NULL;
     if(job->status & JB_EXTDATA)
@@ -1123,9 +1197,9 @@ tws_JobExt *_GetJobExt(tws_Job *job)
     return xp;
 }
 
-tws_JobExt *_AllocJobExt(tws_Job *job, size_t datasize, size_t ncont)
+static tws_JobExt *_AllocJobExt(tws_Job *job, size_t datasize, size_t ncont)
 {
-    size_t sz = sizeof(tws_JobExt) + sizeof(tws_Job**) * ncont + datasize;
+    size_t sz = sizeof(tws_JobExt) + sizeof(tws_Job*) * ncont + datasize;
     tws_JobExt *xp = (tws_JobExt*)_Alloc(sz);
     if(TWS_LIKELY(xp))
     {
@@ -1150,18 +1224,18 @@ inline static tws_Job **_GetJobContinuationArrayStart(tws_Job *job)
 
 inline static void *_GetJobDataStart(tws_Job *job)
 {
-    return _GetJobContinuationArrayStart(job) + job->maxcont;
+    unsigned maxcont = job->maxcont;
+    if(!maxcont)
+        maxcont = 1; // always at least 1 cont allocated even if the job says otherwise
+    return _GetJobContinuationArrayStart(job) + maxcont;
 }
 
 // called by any thread, but only called via AllocJob()
 static tws_Job *_AllocGlobalJob(void)
 {
-    tws_Mutex *mtx = &s_pool->jobStoreLock;
     Freelist *fl = s_pool->jobStore;
     size_t memsize = s_pool->meminfo.jobMemPerThread;
-    mtx_lock(mtx);
-        tws_Job *job = (tws_Job*)fl_pop(fl, memsize);
-    mtx_unlock(mtx);
+    tws_Job *job = (tws_Job*)fl_pop(fl, memsize);
     if(TWS_LIKELY(job)) // memory that comes from the freelist is to be considered uninitialized
     {
         job->status = JB_GLOBALMEM;
@@ -1236,10 +1310,7 @@ static void _DeleteJob(tws_Job *job)
         return;
 
     // Return to global buffer
-    tws_Mutex *mtx = &s_pool->jobStoreLock;
-    mtx_lock(mtx);
-        fl_push(s_pool->jobStore, job);
-    mtx_unlock(mtx);
+    fl_push(s_pool->jobStore, job);
     //_AtomicDec_Rel(&s_pool->jobStoreUsed);
 }
 
@@ -1250,16 +1321,19 @@ static tws_Job *NewJobWithoutData(tws_JobFunc f, size_t size, unsigned short max
 {
     TWS_ASSERT(!parent || _CheckNotSubmittedOrWorking(parent), "RTFM: Attempt to create job with parent that's already been submitted");
     TWS_ASSERT(!size || f, "Warning: You're submitting data but no job func; looks fishy from here");
-    const size_t space = s_pool->meminfo.jobSpace;
+    const size_t maxjobsize = s_pool->meminfo.jobTotalSize;
 
+    // always allocate at least 1 slot for continuations
+    unsigned short maxcont1 = maxcont ? maxcont : 1;
+    const size_t reqsize = _GetJobReqSize(size, maxcont1);
     tws_Job *job = AllocJob();
     if(TWS_LIKELY(job))
     {
         TWS_ASSERT(!(job->status & ~JB_GLOBALMEM), "allocated job still in use"); // all other flags must be absent
 
-        if(TWS_UNLIKELY(space < size))
+        if(TWS_UNLIKELY(maxjobsize < reqsize)) // extra data too large to fit into job? alloc separately then.
         {
-            tws_JobExt *xp = _AllocJobExt(job, size, maxcont); // pointer is also stored in the job
+            tws_JobExt *xp = _AllocJobExt(job, size, maxcont1); // also stores the returned pointer in the job
             if(TWS_UNLIKELY(!xp))
             {
                 _DeleteJob(job);
@@ -1277,9 +1351,11 @@ static tws_Job *NewJobWithoutData(tws_JobFunc f, size_t size, unsigned short max
         job->a_pending.val = 1;
         job->parent = parent;
         job->f = f;
-        job->maxcont = maxcont;
+        job->maxcont = maxcont; // we store the original number for proper checking
         job->type = type;
         job->event = ev;
+
+        _GetJobContinuationArrayStart(job)[0] = NULL; // first continuation pointer must be NULL if unused
     }
     return job;
 }
@@ -1359,7 +1435,7 @@ static tws_Job *_GetJob_Worker(tws_TlsBlock *mytls)
 // called by any external thread that is not a worker thread
 static tws_Job *_GetJob_External(tws_WorkType type)
 {
-    TWS_ASSERT(!tls, "internal error: Should not be called by a worker thread");
+    //TWS_ASSERT(!tls, "internal error: Should not be called by a worker thread"); // actually, it's no problem
 
     // let the workers do their thing and try the global queue first
     tws_Job *job = _GetJobFromGlobalQueue(type);
@@ -1369,6 +1445,14 @@ static tws_Job *_GetJob_External(tws_WorkType type)
     unsigned idx = 0;
     return _StealFromSomeone(&idx, type, -1);
 }
+
+// called by any thread
+static tws_Job *_GetJob_Generic(tws_WorkType type)
+{
+    tws_TlsBlock *mytls = tls;
+    return mytls ? _GetJob_Worker(mytls) : _GetJob_External(type);
+}
+
 
 static int HasJobCompleted(const tws_Job *job)
 {
@@ -1412,8 +1496,17 @@ static void Execute(tws_Job *job)
    Finish(job);
 }
 
+// called by any thread. Return non-NULL if something was worked on
+static void *_HelpWithWorkOnce(tws_WorkType type)
+{ 
+    tws_Job *job = _GetJob_Generic(type);
+    if(job)
+        Execute(job);
+    return job;
+}
+
 // called by any thread, also for continuations
-static int Submit(tws_Job *job)
+static void Submit(tws_Job *job)
 {
     const unsigned char status = job->status;
 
@@ -1428,16 +1521,16 @@ static int Submit(tws_Job *job)
 
     // tiny jobs with no active children can be run here for performance
     // jobs for which there is no worker thread MUST be run here else we'd deadlock
-    if(!perType->numThreads
-        || (_IsTinyJob(job) && !HasDependencies(job))
-    ){
-        Execute(job);
-        return 1;
+    if(!perType->numThreads || _IsTinyJob(job))
+    {
+        Execute(job); // this will assert fail if this job is not tiny and we're the wrong thread type to run that job. But there's no way around that.
+        return;
     }
 
     tws_LQ *spill;
     AREvent *poke;
     tws_TlsBlock *mytls = tls;
+retry:
     if(mytls)
     {
         poke = mytls->pwaiter;
@@ -1461,48 +1554,105 @@ static int Submit(tws_Job *job)
     // This thread couldn't take the job.
     // Since we're not allowed to push into other threads' queues,
     // we need to hit the spillover queue of the right work type.
-    if(TWS_LIKELY(lq_push(spill, job)))
-        goto success;
+    if(TWS_UNLIKELY(!lq_push(spill, job)))
+    {
+        // Bad, spillover queue is full and failed to reallocate
+        TWS_ASSERT(0, "tws_submit: spillover queue is full and failed to reallocate");
 
-    // Bad, spillover queue is full and failed to reallocate
-    TWS_ASSERT(0, "tws_submit: spillover queue is full and failed to reallocate");
-    job->status = status & ~JB_SUBMITTED;
-    return 0;
+        const int mine = mytls && areWorkTypesCompatible(mytls->worktype, type);
+        if(mine) // easy case. we can just run it.
+        {
+            Execute(job);
+            return;
+        }
+        
+        if(!_HelpWithWorkOnce(tws_DEFAULT)) // let someone else finish some stuff, that'll free a slot eventually
+            _Yield(); // if we couldn't help, at least yield a little
+        goto retry;
+    }
 
 success:
     // poke one thread to work on the new job
     ar_set(poke);
-    return 1;
 }
 
-static int AddCont(tws_Job *ancestor, tws_Job *continuation)
+static void AddCont(tws_Job *ancestor, tws_Job *continuation)
 {
+    TWS_ASSERT(continuation, "internal error: should never be called with NULL");
     TWS_ASSERT(!(continuation->status & JB_ISCONT), "RTFM: Can't add a continuation more than once! ");
     TWS_ASSERT(!(continuation->status & JB_SUBMITTED), "RTFM: Attempt to add continuation that was already submitted, this is wrong");
     TWS_ASSERT(_CheckNotSubmittedOrWorking(ancestor), "RTFM: Can only add continuation before submitting a job or from the job function");
+
+    continuation->status |= JB_ISCONT;
+
+    // note that ncont is always incremented, even if we fail. Finish() checks this later.
     const tws_Atomic idx = _AtomicInc_Acq(&ancestor->a_ncont) - 1;
-    const int ok = idx < ancestor->maxcont;
 
-    // make extra sure this doesn't get lost
-    TWS_ASSERT(ok, "Can't add continuation, no more slots free. If you diligently check EVERY return value of tws_submit() and handle that appropriately, feel free to comment out this assert");
+    tws_Job ** const allcont = _GetJobContinuationArrayStart(ancestor);
 
-    if(TWS_LIKELY(ok))
+    if(TWS_LIKELY(idx < ancestor->maxcont))
     {
-        tws_Job **slot = &_GetJobContinuationArrayStart(ancestor)[idx];
-        *slot = continuation;
-        continuation->status |= JB_ISCONT;
+        allcont[idx] = continuation;
+        return;
     }
-    // else a_ncont keeps increasing, but we know the actual maximum
 
-    return ok;
+    TWS_ASSERT(0, "RTFM: No more continuation slots free, using slow fallback case. You should know maxcont up-front and have set it large enough.");
+
+    // We're in a thread that owns ancestor, so we can't count on that job to finish by itself,
+    // as 1) it can't possibly have been submitted yet, or
+    //    2) we're in the worker running the job, and it's adding continuations to itself right now.
+    for(;;)
+    {
+        // tiny job thunk with space for 2 continuations
+        tws_Job *thunk = NewJob(NULL, NULL, 0, 2, tws_TINY, NULL, NULL);
+        if(thunk)
+        {
+            thunk->status |= JB_ISCONT;
+            tws_Job *prevcont = allcont[0]; // this is always possible since at least 1 slot for continuations is allocated.
+
+            // inject thunk as continuation into ancestor, replacing the first entry
+            for(;;)
+                if(_AtomicPtrCAS_Weak(allcont, &prevcont, thunk))
+                    break;
+
+            if(!prevcont) // there is now at least 1 continuation in ancestor (max. 1 thread can see prevcont == NULL)
+            {
+                _AtomicInc_Acq(&ancestor->a_ncont);
+                TWS_ASSERT(ancestor->a_ncont.val == 1, "internal error: should have exactly 1 continuation now");
+            }
+
+            // fast-path-insert both previous and new continuation (AddCont() would assert since prevcont->status already has JB_ISCONT set)
+            tws_Job **thunkcont = _GetJobContinuationArrayStart(thunk);
+            thunkcont[0] = prevcont;
+            thunkcont[1] = continuation;
+            _AtomicSet_Seq(&thunk->a_ncont, 2); // also acts as memory barrier
+
+            return;
+        }
+
+        // well, we're doomed. have to wait until some memory is relaimed, so get some other work done in the meantime.
+        tws_TlsBlock *mytls = tls;
+        if(_HelpWithWorkOnce(tws_DEFAULT)) // that'll free a slot eventually
+            _Yield(); // if we couldn't help, at least yield a little
+
+        // -----
+        // NOTE: I'm pretty sure there's a possibility this may turn into an endless loop under very specific circumstances.
+        // If there's one job that just keeps adding continuations to itself, until there is no other job in the system
+        // that could eventually end up free and usable, AND eventually memory allocation of new jobs keeps failing,
+        // THEN this will be an endless loop, since there is no other job to finish and thus 'thunk = NewJob()' would always end up NULL.
+        // This case is super unlikely and only possible with gross abuse of the job system.
+        // In any case, that's what the assertion earlier in the function is for.
+        // And really now, who would add a quasi-infinite amount of continuations to itself?!
+    }
 }
 
-TWS_PLEASE_CHECK int tws_submit(tws_Job *job, tws_Job *ancestor)
+void tws_submit(tws_Job *job, tws_Job *ancestor)
 {
     TWS_ASSERT(job, "RTFM: do not submit NULL job");
-    return !ancestor
-        ? Submit(job)
-        : AddCont(ancestor, job);
+    if(!ancestor)
+        Submit(job);
+    else
+        AddCont(ancestor, job);
 }
 
 static void tws_signalEventOnce(tws_Event *ev);
@@ -1523,23 +1673,15 @@ static void Finish(tws_Job *job)
     const unsigned ncont = _AtomicGet_Seq(&job->a_ncont);
     if(ncont)
     {
-        const unsigned nmax = job->maxcont;
-        const unsigned n = ncont < nmax ? ncont : nmax; // possibly higher than maxcont if we tried to add continuations but the buffer was full
         tws_Job **pcont = _GetJobContinuationArrayStart(job);
+        const unsigned nmax = job->maxcont;
+        const unsigned n = ncont < nmax ? ncont : nmax; // ncont is possibly >= maxcont if we tried to add continuations but the buffer was full
+        
         for(unsigned i = 0; i < n; ++i)
             Submit(pcont[i]);
     }
 
     _DeleteJob(job);
-}
-
-// only called by non-worker threads. Return non-NULL if something was worked on
-static void *_HelpWithWorkOnce(tws_WorkType type)
-{ 
-    tws_Job *job = _GetJob_External(type);
-    if(job)
-        Execute(job);
-    return job;
 }
 
 // ---- EVENTS ----
@@ -1743,7 +1885,7 @@ static void fillmeminfo(const tws_Setup *cfg, tws_MemInfo *mem)
     mem->eventAllocSize = RoundUpToPowerOfTwo(evsz);
 }
 
-tws_Error tws_info(const tws_Setup *cfg, tws_MemInfo *mem)
+tws_Error tws_check(const tws_Setup *cfg, tws_MemInfo *mem)
 {
     fillmeminfo(cfg, mem);
     return checksetup(cfg);
@@ -1891,8 +2033,6 @@ tws_Error _tws_init(const tws_Setup *cfg)
     pool->initsync = cfg->semFn->create();
 
     // global job reserve pool
-    if(!mtx_init(&pool->jobStoreLock))
-        return tws_ERR_ALLOC_FAIL;
     pool->jobStore = fl_new(pool->meminfo.jobMemPerThread, jobStride, cfg->cacheLineSize);
     if(!pool->jobStore)
         return tws_ERR_ALLOC_FAIL;

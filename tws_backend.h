@@ -14,7 +14,7 @@ before you include this file in *one* C or C++ file to create the implementation
 The implementation will detect which of the below threading libs is available
 at compile time based on whether certain macros exist, and pick one.
 
-In your tws setup, assign the two exported pointers like so:
+In your tws setup, assign the two exported tws_backend_* symbols like so:
 
   #include "tws_backend.h"
   ...
@@ -34,7 +34,7 @@ unsigned tws_getLazyWorkerThreads(); // returns max(#CPUs - 1, 1); for the most 
 With these functions, you may setup your tws_Setup struct (as in the above example) like so:
 
   ts.cacheLineSize = tws_getCacheLineSize();
-  unsigned threads = tws_getSuggestedWorkerThreads();
+  unsigned threads = tws_getLazyWorkerThreads();
   ts.threadsPerType = &threads;
   ts.threadsPerTypeSize = 1;
 

@@ -60,7 +60,7 @@ int main()
     ts.jobsPerThread = 1024;
 
     tws_MemInfo mi;
-    if(tws_info(&ts, &mi) != tws_ERR_OK)
+    if(tws_check(&ts, &mi) != tws_ERR_OK)
         return 1;
 
     printf("---\n");
