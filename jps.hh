@@ -283,6 +283,9 @@ enum JPS_Flags_
 
     // Don't check whether end position is walkable.
     JPS_Flag_NoEndCheck    = 0x08,
+
+    // Find closest path
+    JPS_Flag_Closest    = 0x16,
 };
 
 enum JPS_Result
@@ -896,6 +899,8 @@ public:
 private:
 
     const GRID& grid;
+    Position closestPosition;
+    unsigned closestBestDistance;
 
     Node *getNode(const Position& pos);
     bool identifySuccessors(const Node& n);
@@ -1291,8 +1296,14 @@ template <typename GRID> template<typename PV> bool Searcher<GRID>::findPath(PV&
             case JPS_EMPTY_PATH:
                 JPS_ASSERT(false); // can't happen
                 // fall through
-            case JPS_NO_PATH:
             case JPS_OUT_OF_MEMORY:
+                return false;
+            case JPS_NO_PATH:
+                if(flags & JPS_Flag_Closest)
+                {
+                    res = findPathInit(start, closestPosition, flags);
+                    continue;
+                }
                 return false;
         }
     }
@@ -1305,6 +1316,8 @@ template <typename GRID> JPS_Result Searcher<GRID>::findPathInit(Position start,
 
     this->flags = flags;
     endPos = end;
+    closestBestDistance = M_MAX_UNSIGNED;
+    closestPosition = start;
 
     // FIXME: check this
     if(start == end && !(flags & (JPS_Flag_NoStartCheck|JPS_Flag_NoEndCheck)))
@@ -1318,11 +1331,15 @@ template <typename GRID> JPS_Result Searcher<GRID>::findPathInit(Position start,
         if(!grid(start.x, start.y))
             return JPS_NO_PATH;
 
-    if(!(flags & JPS_Flag_NoEndCheck))
+    if(!(flags & (JPS_Flag_NoEndCheck | JPS_Flag_Closest)))
         if(!grid(end.x, end.y))
             return JPS_NO_PATH;
 
-    Node *endNode = getNode(end); // this might realloc the internal storage...
+    Node *endNode = NULL;
+    if(flags & JPS_Flag_NoEndCheck)
+        endNode = nodemap(end.x, end.y);
+    else
+        endNode = getNode(end); // this might realloc the internal storage...
     if(!endNode)
         return JPS_OUT_OF_MEMORY;
     endNodeIdx = storage.getindex(endNode); // .. so we keep this for later
@@ -1353,6 +1370,20 @@ template <typename GRID> JPS_Result Searcher<GRID>::findPathStep(int limit)
             return JPS_NO_PATH;
         Node& n = open.popNode();
         n.setClosed();
+        if(closestBestDistance == M_MAX_UNSIGNED)
+        {
+            closestPosition = n.pos;
+            closestBestDistance = Heuristic::Manhattan(n.pos, endPos);
+        }
+        else
+        {
+            unsigned h = Heuristic::Manhattan(n.pos, endPos);
+            if(closestBestDistance > h)
+            {
+                closestBestDistance = h;
+                closestPosition = n.pos;
+            }
+        }
         if(n.pos == endPos)
             return JPS_FOUND_PATH;
         if(!identifySuccessors(n))
