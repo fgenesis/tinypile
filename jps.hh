@@ -1301,8 +1301,11 @@ template <typename GRID> template<typename PV> bool Searcher<GRID>::findPath(PV&
             case JPS_NO_PATH:
                 if(flags & JPS_Flag_Closest)
                 {
-                    res = findPathInit(start, closestPosition, flags);
-                    continue;
+                    if (start != closestPosition)
+                    {
+                        res = findPathInit(start, closestPosition, flags);
+                        continue;
+                    }
                 }
                 return false;
         }
