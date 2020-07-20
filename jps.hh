@@ -900,7 +900,7 @@ private:
 
     const GRID& grid;
     Position closestPosition;
-    unsigned closestBestDistance;
+    ScoreType closestBestDistance;
 
     Node *getNode(const Position& pos);
     bool identifySuccessors(const Node& n);
@@ -1319,7 +1319,7 @@ template <typename GRID> JPS_Result Searcher<GRID>::findPathInit(Position start,
 
     this->flags = flags;
     endPos = end;
-    closestBestDistance = M_MAX_UNSIGNED;
+    closestBestDistance = UINT_MAX;
     closestPosition = start;
 
     // FIXME: check this
