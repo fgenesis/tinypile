@@ -1303,8 +1303,8 @@ template <typename GRID> template<typename PV> bool Searcher<GRID>::findPath(PV&
                 {
                     if (start != closestPosition)
                     {
-                        res = findPathInit(start, closestPosition, flags);
-                        continue;
+                        endNodeIdx = storage.getindex(getNode(closestPosition));
+                        return findPathFinish(path, step) == JPS_FOUND_PATH;
                     }
                 }
                 return false;
