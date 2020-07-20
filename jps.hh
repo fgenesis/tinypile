@@ -1373,18 +1373,21 @@ template <typename GRID> JPS_Result Searcher<GRID>::findPathStep(int limit)
             return JPS_NO_PATH;
         Node& n = open.popNode();
         n.setClosed();
-        if(closestBestDistance == M_MAX_UNSIGNED)
+        if(flags & JPS_Flag_Closest)
         {
-            closestPosition = n.pos;
-            closestBestDistance = Heuristic::Manhattan(n.pos, endPos);
-        }
-        else
-        {
-            unsigned h = Heuristic::Manhattan(n.pos, endPos);
-            if(closestBestDistance > h)
+            if(closestBestDistance == M_MAX_UNSIGNED)
             {
-                closestBestDistance = h;
                 closestPosition = n.pos;
+                closestBestDistance = Heuristic::Manhattan(n.pos, endPos);
+            }
+            else
+            {
+                unsigned h = Heuristic::Manhattan(n.pos, endPos);
+                if(closestBestDistance > h)
+                {
+                    closestBestDistance = h;
+                    closestPosition = n.pos;
+                }
             }
         }
         if(n.pos == endPos)
