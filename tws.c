@@ -1816,7 +1816,7 @@ void tws_waitEx(tws_Event *ev, tws_WorkType *help, size_t n)
     mr_wait(&ev->mr);
 }
 
-static int _tws_testAtomics();
+static int _tws_testAtomics(void);
 
 static tws_Error checksetup(const tws_Setup *cfg)
 {
@@ -2252,7 +2252,7 @@ void tws_atomicUnlock(tws_SpinLock* lock)
 }
 
 #define TWS_CHECK(cond) do { TWS_ASSERT((cond), "atomics test fail"); if(!(cond)) return 0; } while(0)
-static int _tws_testAtomics()
+static int _tws_testAtomics(void)
 {
     // Run in a single thread. It's pretty much impossible to test for correct acquire/release semantics
     // so we'll just test whether the functions do the right thing and return the right values.
