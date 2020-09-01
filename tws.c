@@ -2301,3 +2301,16 @@ static int _tws_testAtomics(void)
 
     return 1; // all good
 }
+
+/* IDEAS/TODO:
+- tws_drain() to wait for all the things to finish and also reset LQ top+bottom?
+- add TWS_RESTRICT
+- TWS_CHECK_WARN() + add notification callback? (called when spilled, too large job is pushed, etc)
+
+typedef enum tws_Warn
+{
+    TWS_WARN_JOB_SPILLED,       // job was unexpectedly spilled to (slower) backup queue
+    TWS_WARN_JOB_REALLOCATED,   // could not store all data within the job; had to allocate an extra heap block
+    TWS_WARN_JOB_SLOW_ALLOC,    // job had to be allocated from the slow global heap instead of the fast per-worker storage
+} tws_Warn;
+*/

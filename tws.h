@@ -50,7 +50,7 @@ typedef enum
     TASK_whatever
 };*/
 
-typedef unsigned char tws_WorkType;
+typedef unsigned char tws_WorkType; // ... up to 254 distinct work types.
 
 typedef enum
 {
@@ -82,7 +82,7 @@ typedef void* tws_Thread; // opaque, thread handle
 //           (See https://stackoverflow.com/questions/4792449)
 //  - C11: Has <threads.h> but no semaphores. Roll your own.
 //  - POSIX has <pthread.h> and <semaphore.h> but it's a bit fugly across platforms [supported by tws_backend.h]
-//  - SDL & SDL2 (http://libsdl.org/)                                                      [supported by tws_backend.h]
+//  - SDL & SDL2 (http://libsdl.org/)                                               [supported by tws_backend.h]
 //  - Turf (https://github.com/preshing/turf)
 typedef struct tws_ThreadFn
 {
@@ -120,12 +120,12 @@ typedef void (*tws_RunThread)(int threadID, tws_WorkType worktype, void *userdat
 // Optional allocator interface. Same API as luaalloc.h.
 // (Ref: https://github.com/fgenesis/tinypile/blob/master/luaalloc.h)
 // Cases to handle:
-//   ptr == NULL, nsize > 0:  return malloc(nsize);  // ignore osize
-//   ptr != NULL, nsize == 0: free(ptr); // osize is size of allocation
-//   ptr != NULL, nsize != 0: return realloc(ptr, nsize); // osize = current size
+//   ptr == NULL, nsize > 0:  return malloc(newsize);  // ignore oldsize
+//   ptr != NULL, nsize == 0: free(ptr); // oldsize is size of allocation
+//   ptr != NULL, nsize != 0: return realloc(ptr, newsize); // oldsize = current size
 // The returned pointer must be aligned to max(atomic int64 size, pointer size).
 // The allocator must be threadsafe as it might be called by multiple threads at once.
-typedef void* (*tws_AllocFn)(void *allocUser, void *ptr, size_t osize, size_t nsize);
+typedef void* (*tws_AllocFn)(void *allocUser, void *ptr, size_t oldsize, size_t newsize);
 
 // ---- Worker function ----
 
@@ -228,7 +228,7 @@ void tws_shutdown(void);
 // 'data[0..size)' is copied into the job. If there is not enough space, a heap allocation is made.
 //    If that fails too, job creation will fail and return NULL.
 // 'maxcont' is the maximum number of continuations that you will ever add to this job.
-//    Must be known up-front. Adding less is ok. Adding more will assert().
+//    Must be known up-front. Adding less is ok. Adding more will assert() in debug mode.
 // 'type' specifies which threads can run this job.
 // Optionally, pass an event that will indicate when the job has completed.
 // After allocating a new job, add childen and continuations as required, then submit it ASAP. Don't keep it around for later.
@@ -251,11 +251,6 @@ inline tws_Job *tws_newEmptyJob(unsigned maxcont)
 {
     return tws_newJob(NULL, NULL, 0, maxcont, tws_TINY, NULL, NULL);
 }
-
-// TODO: if we fail to add to ancestor, wait for ancestor, then run.
-// if it's a different type, submit with a thunk func that waits for ancestor
-// if OOM, run job inline if possible
-// if diff type -> help until memory is free
 
 // Submit a job. Submit children first, then the parent.
 // The job may or may not run immediately once submitted. The job may finish before this call returns.
@@ -281,7 +276,7 @@ tws_Event *tws_newEvent(void);
 // Deleting an in-flight event is undefined behavior.
 void tws_destroyEvent(tws_Event *ev);
 
-// Quick check whether an event is done. Non-blocking.
+// Quick check whether an event is done. Non-blocking. Zero when not done.
 int tws_isDone(const tws_Event *ev);
 
 // Wait until an event signals completion.
@@ -492,11 +487,14 @@ Rules of thumb:
 
 - The fast path is everything that happens in a job function:
   - Any followup jobs allocated and submitted inside of a job and of the same type will use the lockless path.
-  - Any job allocated outside of a job function or of a different type than the thread running the current job will use the slower spillover path.
+  - Any job allocated outside of a job function or of a different work type than the thread
+    running the current job will use the slower spillover path.
   --> Ideally, launch a single job that figures out the work that needs to be done, then adds children to itself.
-      A nice side effect is that the caller can already move on and do other things while the job system adds work to itself in the background.
+      A nice side effect is that the caller can already move on and do other things while the job system
+      adds work to itself in the background.
 
-- If you're using an event together with a parent, and spawn child jobs from that parent, don't add the event to every child job.
+- If you're using an event together with a parent, and spawn child jobs from that parent,
+  don't add the event to every child job.
   (It's not incorrect do do this, just spammy, unnecessary, and slower than it has to be.)
   The parent will be done once all children are done, and only then signal the event (and run continuations).
 
@@ -504,18 +502,4 @@ Rules of thumb:
   It is no problem if once in a while a large data block has to be added,
   but this will fall back to a heap allocation every time, which you want to avoid.
   Or just pass a pointer to your data and ensure the memory stays valid while jobs work on it.
-*/
-
-
-/* ASSERT:
-- tws_drain() to wait for all the things to finish and also reset LQ top+bottom?
-- add TWS_RESTRICT
-- TWS_CHECK_WARN() + add notification callback? (called when spilled, too large job is pushed, etc)
-
-typedef enum tws_Warn
-{
-    TWS_WARN_JOB_SPILLED,       // job was unexpectedly spilled to (slower) backup queue
-    TWS_WARN_JOB_REALLOCATED,   // could not store all data within the job; had to allocate an extra heap block
-    TWS_WARN_JOB_SLOW_ALLOC,    // job had to be allocated from the slow global heap instead of the fast per-worker storage
-} tws_Warn;
 */
