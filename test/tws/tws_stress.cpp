@@ -45,7 +45,6 @@ static void work2c(void *data, tws_Job *curjob, tws_Event *ev)
 }
 static void work2b(void *data, tws_Job *curjob, tws_Event *ev)
 {
-    compute(500);
     //const unsigned a = ++a_test;
     //if(a < TEST2LIMIT)
     {
@@ -55,6 +54,7 @@ static void work2b(void *data, tws_Job *curjob, tws_Event *ev)
             tws_submit(job, NULL);
         }
     }
+    compute(500);
 }
 
 static void work2a(void *data, tws_Job *curjob, tws_Event *ev)
@@ -70,6 +70,28 @@ static void work2a(void *data, tws_Job *curjob, tws_Event *ev)
     }
 }
 
+std::atomic<size_t> totalmem;
+static void *debugalloc(void *ud, void *ptr, size_t osize, size_t nsize)
+{
+    void *ret = NULL;
+    if(!ptr && nsize)
+    {
+        totalmem += nsize;
+        ret = malloc(nsize);
+    }
+    else if(ptr && !nsize)
+    {
+        totalmem -= osize;
+        free(ptr);
+    }
+    else if(ptr && nsize)
+    {
+        totalmem += (nsize - osize);
+        ret = realloc(ptr, nsize);
+    }
+    return ret;
+}
+
 int main()
 {
     unsigned cache = tws_getCPUCacheLineSize();
@@ -78,6 +100,7 @@ int main()
 
     tws_Setup ts;
     memset(&ts, 0, sizeof(ts)); // clear out all other optional params
+    ts.allocator = debugalloc;
     // there's only one work type (tws_DEFAULT), but we could add more by extending the array
     unsigned threads[] = { th0 };
     ts.threadsPerType = &threads[0];
@@ -117,6 +140,10 @@ int main()
 
     tws_destroyEvent(ev);
 
+    tws_shutdown();
+    size_t mem = totalmem;
+    printf("mem leaked: %u\n", (unsigned)mem);
+    assert(mem == 0);
 
 
     return 0;

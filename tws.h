@@ -9,12 +9,10 @@ TL;DR:
     16 threads for number crunching, 1 for file I/O, 1 for GPU transfers and 1 for GPU compute? No problem!
     Each job will only run on the correct associated thread(s).
 - Supports job dependencies, jobs starting more jobs, sync to job completion
-- Consider using a tws API wrapper to make things a little easier.
-  (E.g. https://github.com/fgenesis/tinypile/blob/master/tws.hh or make your own)
 
 Design goals:
 - Plain C API, KISS.
-- Bring your own threading & semaphores (6 function pointers in total) -- the code is completely API agnostic.
+- Bring your own threading & semaphores (6 function pointers in total) -- the code is completely API and OS agnostic.
 - As many debug assertions as possible to catch user error (if it says RTFM, do that)
 - No memory allocations during regular operation unless you spam & overload the pool
 - Safe operation even if grossly overloaded

@@ -24,8 +24,8 @@ Inspired by / reading material:
 Some notes:
   This library follows the implementation described in [1],
   but with some changes:
-    * No waiting on jobs directly. Job submission has free()-like semantics, waiting and dependencies uses tws_Event, which is safer.
-    * Supports different work/job types (See [2])
+    * No waiting on jobs directly. Job submission has free()-like semantics, waiting and dependencies use tws_Event, which is safer.
+    * Supports different job/thread types (See [2])
     * Idle waiting using semaphores (See [3])
     * More runtime-flexibility, less hardcoding
     * Safe against overloading (performance will degrade a bit but it will not crash, unlike [1])
@@ -188,7 +188,7 @@ typedef struct NativeAtomic64
 // _Rel = release semantics
 // _Seq = sequentially consistent (strongest memory guarantees)
 // _Weak = allow CAS to spuriously fail
-// Inc, Dec must return modified value.
+// Inc, Dec must return modified/new value.
 // Set must act as memory barrier and return the previous value
 // CAS returns 0 on fail, anything else on success. On fail, *expected is updated to current value.
 
@@ -534,9 +534,9 @@ struct FreelistBlock
 typedef struct Freelist
 {
     void *head; // next free element
+    tws_SpinLock popLock;
     size_t stride;
     size_t alignment;
-    tws_Mutex mtx;
     FreelistBlock block;
 } Freelist;
 
@@ -558,16 +558,18 @@ static void *fl_format(char *p, char *end, size_t stride, size_t alignment)
 
 static void fl_destroy(Freelist *fl)
 {
-    mtx_destroy(&fl->mtx);
+    if(!fl)
+        return;
     FreelistBlock blk = fl->block;
     void *p = fl;
-    do
+    for(;;)
     {
         _Free(p, blk.size);
         p = blk.next;
+        if(!p)
+            break;
         blk = *blk.next;
     }
-    while(p);
 }
 
 static Freelist *fl_new(size_t memsize, size_t stride, size_t alignment)
@@ -576,28 +578,23 @@ static Freelist *fl_new(size_t memsize, size_t stride, size_t alignment)
     Freelist *fl = (Freelist*)mem;
     if(TWS_LIKELY(fl))
     {
-        if(mtx_init(&fl->mtx))
-        {
-            char * const end = ((char*)mem) + memsize;
-            const size_t off = stride > sizeof(Freelist) ? stride : sizeof(Freelist);
-            char *p = (char*)AlignUp((intptr_t)mem + off, alignment);
-            fl->head = p;
-            fl->stride = stride;
-            fl->alignment = alignment;
-            fl->block.size = memsize;
-            fl->block.next = NULL;
-            fl_format(p, end, stride, alignment);
-        }
-        else
-        {
-            _Free(mem, memsize);
-            fl = NULL;
-        }
+        char * const end = ((char*)mem) + memsize;
+        const size_t off = stride > sizeof(Freelist) ? stride : sizeof(Freelist);
+        char *p = (char*)AlignUp((intptr_t)mem + off, alignment);
+        TWS_ASSERT(p < end, "initial freelist buffer too small for chosen alignment");
+        fl->head = p;
+        fl->popLock = 0;
+        fl->stride = stride;
+        fl->alignment = alignment;
+        fl->block.size = memsize;
+        fl->block.next = NULL;
+        fl_format(p, end, stride, alignment);
     }
     return fl;
 }
 
-// not safe to call concurrently -- only called by fl_pop() while mutex is locked
+// only called by fl_pop() when fl->head is NULL
+// may be called concurrently if multiple threads notice at the same time that the freelist is empty
 static void *_fl_extend(Freelist *fl, size_t memsize, void **plast)
 {
     void *mem = _Alloc(memsize);
@@ -608,13 +605,21 @@ static void *_fl_extend(Freelist *fl, size_t memsize, void **plast)
     char * const end = ((char*)mem) + memsize;
     const size_t off = stride > sizeof(FreelistBlock) ? stride : sizeof(FreelistBlock);
     char *p = (char*)AlignUp((intptr_t)mem + off, fl->alignment);
+    TWS_ASSERT(p < end, "buffer too small for chosen alignment");
     *plast = fl_format(p, end, stride, fl->alignment);
     //fl->head = p; // We don't want to link this up just yet! Other threads might be executing _fl_trypop()/fl_push() right now.
 
     FreelistBlock *blk = (FreelistBlock*)mem;
     blk->size = memsize;
-    blk->next = fl->block.next;
-    fl->block.next = blk;
+    FreelistBlock *old = fl->block.next;
+
+    // concurrently link new block into list of all blocks
+    for(;;)
+    {
+        blk->next = old;
+        if(_AtomicPtrCAS_Weak(&fl->block.next, &old, blk))
+            break;
+    }
     return p;
 }
 
@@ -622,9 +627,32 @@ static void *_fl_extend(Freelist *fl, size_t memsize, void **plast)
 static void *_fl_trypop(Freelist *fl)
 {
     void *p = fl->head;
-    while(p)
-        if(_AtomicPtrCAS_Weak(&fl->head, &p, *(void**)p))
-            break;
+    if(p)
+    {
+        tws_atomicLock(&fl->popLock);
+        // Ok, now we're holding a lock and are the only thread that can pop the head.
+        // Other threads may have the same p that we just read but they can't run away with it.
+        // (*If* there was no lock, we might be reading next while another thread already ran away with p
+        //   and rewrote the memory, causing us to read a corrupted next ptr.)
+        // The important part is that getting next and changing the head are one atomic step.
+        do
+        {
+            // As the sole owner of p, grab the next element from the list
+            void * const next = *(void**)p;
+
+            // The CAS can fail if:
+            //   - some other thread called fl_push() in the meantime
+            //   - some other thread saw p == NULL and extended the freelist
+            //   - some other thread popped p before us, updated the head, and possibly already rewrote p's memory.
+            //     (In that case next is an invalid pointer that must never become the new head! (We failed, so it won't) )
+            if(_AtomicPtrCAS_Weak(&fl->head, &p, next))
+                break; // Made it. Other threads will see a different head.
+            // Failed to pop our p that we held on to. Now p is some other element that someone else put there in the meantime.
+            // Try again with that p.
+        }
+        while(p);
+        tws_atomicUnlock(&fl->popLock);
+    }
     return p;
 }
 
@@ -635,31 +663,23 @@ static void *fl_pop(Freelist *fl, size_t extendSize)
 
     if(TWS_UNLIKELY(!p))
     {
-        mtx_lock(&fl->mtx); // -- Lock -- but someone else can still call fl_push(), _fl_trypop() anytime
-            p = _fl_trypop(fl); // try again. maybe this thread was waiting for the mutex while someone else was busy reallocating
-            if(!p)
+        void *tail;
+        p = _fl_extend(fl, extendSize, &tail); // may return NULL if allocator fails
+        if(TWS_LIKELY(p))
+        {
+            void * const next = *(void**)p; // Claim the first element (p) for ourselves, and link up the remainder of the freelist
+            void *cur = fl->head; // probably NULL, but maybe someone called fl_push() in the meantime
+            for(;;)
             {
-                // still nothing. now we really need to extend.
-                void *tail;
-                p = _fl_extend(fl, extendSize, &tail); // may return NULL if allocator fails
-
-                if(TWS_LIKELY(p))
-                {
-                    void * const next = *(void**)p; // Claim the first element (p) for ourselves, and link up the remainder of the freelist
-                    void *cur = fl->head; // probably NULL, but maybe someone called fl_push() in the meantime
-                    for(;;)
-                    {
-                        *(void**)tail = cur; // whatever was in fl->head goes to the end of the new freelist extension so we don't lose it
-                        if(_AtomicPtrCAS_Weak(&fl->head, &cur, next)) // link it up! And race against concurrent fl_push(), _fl_trypop() that are unaware of the mutex
-                            break;
-                        // failed race. fl->head may or may not be NULL.
-                        // whatever it is, cur is updated and must be linked to the end of the freelist extension
-                    }
-                    // now fl->head is set and we can finally unlock the mutex.
-                    // (if that was done too early, some other thread would see fl->head == NULL and proceed to extend)
-                }
+                *(void**)tail = cur; // whatever was in fl->head goes to the end of the new freelist extension so we don't lose it
+                if(_AtomicPtrCAS_Weak(&fl->head, &cur, next)) // link it up! And race against concurrent fl_push(), _fl_trypop() that are unaware of the mutex
+                    break;
+                // failed race. fl->head may or may not be NULL.
+                // whatever it is, cur is updated and must be linked to the end of the freelist extension
             }
-        mtx_unlock(&fl->mtx);
+            // now fl->head is set and we can finally unlock the mutex.
+            // (if that was done too early, some other thread would see fl->head == NULL and proceed to extend)
+        }
     }
 
     return p;
@@ -697,6 +717,8 @@ static void *arr_init(tws_Array *a, size_t cap, size_t stride)
 
 static void arr_delete(tws_Array *a)
 {
+    if(!a->mem)
+        return;
     _Free(a->mem, a->nelem * a->stride);
     a->mem = NULL;
     a->nelem = 0;
@@ -1017,7 +1039,7 @@ struct tws_Pool
 {
     // hot
     tws_SemFn pfsem;         // function pointers for semaphores
-    tws_Array forType;       // <tws_PerType> one entry per type
+    tws_Array forType;       // <tws_PerType> one entry per work type
     tws_Array threadTls;     // <tws_TlsBlock> one entry per thread
     // lukewarm
     NativeAtomic quit;       // workers check this and exit if not 0
@@ -1546,6 +1568,9 @@ static void AddCont(tws_Job *ancestor, tws_Job *continuation)
         return;
     }
 
+    // Yes, this is an error. In debug, this is where it ends. Do NOT disable this assert; go and fix your code.
+    // No, we don't hard-abort in release mode. If we're in release mode we can't communicate to the caller that something is up.
+    // So we gotta deal with it, soldier on, and save the day.
     TWS_ASSERT(0, "RTFM: No more continuation slots free, using slow fallback case. You should know maxcont up-front and have set it large enough.");
 
     // We're in a thread that owns ancestor, so we can't count on that job to finish by itself,
@@ -1577,10 +1602,10 @@ static void AddCont(tws_Job *ancestor, tws_Job *continuation)
             thunkcont[1] = continuation;
             _AtomicSet_Seq(&thunk->a_ncont, 2); // also acts as memory barrier
 
-            return;
+            return; // we managed to save the day even though it required some extra memory.
         }
 
-        // well, we're doomed. have to wait until some memory is relaimed, so get some other work done in the meantime.
+        // OOM -> we're doomed. have to wait until some memory is relaimed, so get some other work done in the meantime.
         tws_TlsBlock *mytls = tls;
         if(_HelpWithWorkOnce(tws_DEFAULT)) // that'll free a slot eventually
             _Yield(); // if we couldn't help, at least yield a little
@@ -1791,9 +1816,12 @@ void tws_waitEx(tws_Event *ev, tws_WorkType *help, size_t n)
     mr_wait(&ev->mr);
 }
 
+static int _tws_testAtomics();
 
 static tws_Error checksetup(const tws_Setup *cfg)
 {
+    TWS_ASSERT(_tws_testAtomics(), "atomics test fail");
+
     if(!cfg->semFn || !cfg->threadFn)
         return tws_ERR_FUNCPTRS_INCOMPLETE;
 
@@ -1878,14 +1906,12 @@ static void _tws_mainloop(void)
     const tws_WorkType type = tls->worktype;
     tws_PerType *perType = _GetPerTypeData(type);
     LWsem *waiter = &perType->waiter;
-    for(;;)
+    while(!_RelaxedGet(&s_pool->quit))
     {
-        lwsem_enter(waiter); // wait until work is available
-        if(!_RelaxedGet(&s_pool->quit))
-            break;
         tws_Job *job = _GetJob_Worker(mytls); // get whatever work is available
         if(job)
             Execute(job);
+        lwsem_enter(waiter); // wait until work is available
     }
 
     _AtomicDec_Rel(&s_pool->activeTh);
@@ -1939,17 +1965,42 @@ static void _tws_clear(tws_Pool *pool)
 
     // wait until all threads have quit
     if(pool->threads)
+    {
         for(unsigned i = 0; i < pool->numThreads; ++i)
             if(pool->threads[i])
                 pool->pfth.join(pool->threads[i]);
+        _Free(pool->threads, sizeof(pool->threads[0]) * pool->numThreads);
+    }
 
     TWS_ASSERT(!_AtomicGet_Seq(&pool->activeTh), "internal error: All threads have joined but counter is > 0");
 
-    // TODO clear all the things
+    // Clean up per-thread TLS stuff
+    if(pool->threadTls.mem)
+    {
+        for(unsigned i = 0; i < pool->numThreads; ++i)
+        {
+            tws_TlsBlock *thTls = _GetThreadTLS(i);
+            jq_destroy(&thTls->jq);
+            arr_delete(&thTls->jobmem);
+        }
+        arr_delete(&pool->threadTls);
+    }
 
+    // Clean up per-work-type stuff
+    if(pool->forType.mem)
+    {
+        for(size_t i = 0; i < pool->forType.nelem; ++i)
+        {
+            tws_PerType *pt = _GetPerTypeData((tws_WorkType)i);
+            lq_destroy(&pt->spillQ);
+            lwsem_destroy(&pt->waiter);
+        }
+        arr_delete(&pool->forType);
+    }
+
+    fl_destroy(pool->jobStore);
 
     _DestroySem(pool->initsync);
-    pool->initsync = NULL;
 
     _Free(pool, sizeof(*pool));
     s_pool = NULL;
@@ -2004,7 +2055,7 @@ tws_Error _tws_init(const tws_Setup *cfg)
 
         if(!lwsem_init(&perType->waiter, 0))
             return tws_ERR_ALLOC_FAIL;
-        if(!lq_init(&perType->spillQ, cfg->jobsPerThread)) // reasonable default but this could be anything
+        if(!lq_init(&perType->spillQ, cfg->jobsPerThread)) // reasonable default but this could be any size
             return tws_ERR_ALLOC_FAIL;
 
         nth += n;
@@ -2198,4 +2249,55 @@ void tws_atomicUnlock(tws_SpinLock* lock)
 {
     NativeAtomic *a = AS_LOCK(lock);
     _AtomicSet_Rel(a, 0);
+}
+
+#define TWS_CHECK(cond) do { TWS_ASSERT((cond), "atomics test fail"); if(!(cond)) return 0; } while(0)
+static int _tws_testAtomics()
+{
+    // Run in a single thread. It's pretty much impossible to test for correct acquire/release semantics
+    // so we'll just test whether the functions do the right thing and return the right values.
+
+    NativeAtomic a = { 0 };
+    tws_Atomic t;
+    int c;
+
+    t = _AtomicSet_Seq(&a, 10); TWS_CHECK(t == 0);
+    t = _AtomicSet_Acq(&a, 20); TWS_CHECK(t == 10);
+    t = _AtomicSet_Rel(&a, 30); TWS_CHECK(t == 20);
+    t = _AtomicInc_Acq(&a); TWS_CHECK(t == 31);
+    t = _AtomicInc_Rel(&a); TWS_CHECK(t == 32);
+    t = _AtomicDec_Acq(&a); TWS_CHECK(t == 31);
+    t = _AtomicDec_Rel(&a); TWS_CHECK(t == 30);
+
+    t = 1;
+    c = _AtomicCAS_Acq(&a, &t, 5); TWS_CHECK(c == 0 && t == 30); // fail, updates t to current value
+    c = _AtomicCAS_Acq(&a, &t, 5); TWS_CHECK(c != 0 && t == 30); // success
+    TWS_CHECK(a.val == 5 && t == 30);
+
+    t = 1;
+    c = _AtomicCAS_Weak_Acq(&a, &t, 8); TWS_CHECK(c == 0 && t == 5); // fail, updates t to current value
+    t = 1;
+    for(;;)
+    {
+        c = _AtomicCAS_Weak_Acq(&a, &t, 8); TWS_CHECK(t == 5); // fails first time, usually succeeds 2nd time unless there's a spurious fail
+        TWS_CHECK(!c || a.val == 8);
+        if(c)
+            break;
+    }
+
+    a.val = 5;
+    t = 1;
+    c = _AtomicCAS_Weak_Rel(&a, &t, 8); TWS_CHECK(c == 0 && t == 5); // fail, updates t to current value
+    t = 1;
+    for(;;)
+    {
+        c = _AtomicCAS_Weak_Rel(&a, &t, 8); TWS_CHECK(t == 5); // fails first time, usually succeeds 2nd time unless there's a spurious fail
+        TWS_CHECK(!c || a.val == 8);
+        if(c)
+            break;
+    }
+
+    // TODO: add some more tests for 64bit and pointer CAS
+
+    return 1; // all good
 }
