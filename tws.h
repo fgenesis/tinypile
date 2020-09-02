@@ -379,11 +379,6 @@ int tws_waitPromise(tws_Promise *pr);
 
 // --- Utility functions ---
 
-typedef int tws_SpinLock;
-void tws_atomicLock(tws_SpinLock *lock);
-int tws_atomicTryLock(tws_SpinLock *lock); // attempt to lock (non-blocking), 1 when locked, 0 when not
-void tws_atomicUnlock(tws_SpinLock *lock);
-
 
 // --- Don't touch this unless you know what you're doing. ---
 // Control internal 'lightweight semaphore' spin count.
