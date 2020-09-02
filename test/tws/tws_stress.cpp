@@ -6,6 +6,7 @@
 #include <atomic>
 #include <stdio.h>
 #include <assert.h>
+#include <chrono>
 
 static std::atomic<unsigned> a_test;
 
@@ -13,7 +14,7 @@ enum TestLimits
 {
     TEST1LIMIT = 10000,
     TEST2LIMIT = 100000,
-    TEST2REC = 47
+    TEST2REC = 300
 };
 
 static float compute(size_t n)
@@ -29,7 +30,7 @@ static float compute(size_t n)
 // ev is passed everytime and caller waits for ev
 static void work(void *data, tws_Job *curjob, tws_Event *ev)
 {
-    compute(50);
+    compute(32);
     const unsigned a = ++a_test;
     if(a < TEST1LIMIT)
     {
@@ -41,20 +42,22 @@ static void work(void *data, tws_Job *curjob, tws_Event *ev)
 // recursive expansion
 static void work2c(void *data, tws_Job *curjob, tws_Event *ev)
 {
-    compute(100);
+    compute(256);
+    ++a_test;
 }
 static void work2b(void *data, tws_Job *curjob, tws_Event *ev)
 {
     //const unsigned a = ++a_test;
     //if(a < TEST2LIMIT)
     {
-        for(unsigned i = 0; i < TEST2REC; ++i)
+        const unsigned lim = rand() & 0xff;
+        for(unsigned i = 0; i < lim; ++i)
         {
             tws_Job *job = tws_newJob(work2c, NULL, 0, 0, tws_DEFAULT, NULL, ev);
             tws_submit(job, NULL);
         }
     }
-    compute(500);
+    //compute(256);
 }
 
 static void work2a(void *data, tws_Job *curjob, tws_Event *ev)
@@ -62,7 +65,8 @@ static void work2a(void *data, tws_Job *curjob, tws_Event *ev)
     //const unsigned a = ++a_test;
     //if(a < TEST2LIMIT)
     {
-        for(unsigned i = 0; i < 100000; ++i)
+        const unsigned lim = rand() & 0xffff;
+        for(unsigned i = 0; i < lim; ++i)
         {
             tws_Job *job = tws_newJob(work2b, NULL, 0, 0, tws_DEFAULT, NULL, ev);
             tws_submit(job, NULL);
@@ -127,15 +131,20 @@ int main()
     */
 
     printf("test 2...\n");
-    a_test = 0;
 
-    job = tws_newJob(work2a, NULL, 0, 0, tws_DEFAULT, NULL, ev);
-    tws_submit(job, NULL);
-
-    printf("waiting...\n");
-    tws_wait(ev);
-    printf("ok\n");
-    printf("value = %u\n", (unsigned)a_test);
+    for(;;)
+    {
+        a_test = 0;
+        job = tws_newJob(work2a, NULL, 0, 0, tws_DEFAULT, NULL, ev);
+        tws_submit(job, NULL);
+        std::chrono::high_resolution_clock::time_point t0 = std::chrono::high_resolution_clock::now();
+        tws_wait(ev);
+        std::chrono::high_resolution_clock::time_point t1 = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> td = std::chrono::duration_cast<std::chrono::duration<double> >(t1 - t0);
+        unsigned val = a_test;
+        printf("value = %u, mem = %u, time = %f ms, job avg = %f ms\n",
+            val, (unsigned)totalmem, td.count()*1000, td.count() / double(val) * 1000);
+    }
 
 
     tws_destroyEvent(ev);

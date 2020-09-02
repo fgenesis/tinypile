@@ -439,13 +439,14 @@ static inline unsigned tws_impl_getCPUCacheLineSize()
 #endif
 // --------------------------------------------------------
 
+static const struct tws_ThreadFn tws_impl_thread = { tws_impl_thread_create, tws_impl_thread_join };
+static const struct tws_SemFn tws_impl_sem = { tws_impl_sem_create, tws_impl_sem_destroy, tws_impl_sem_enter, tws_impl_sem_leave };
+
 /* The exports */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-const struct tws_ThreadFn tws_impl_thread = { tws_impl_thread_create, tws_impl_thread_join };
-const struct tws_SemFn tws_impl_sem = { tws_impl_sem_create, tws_impl_sem_destroy, tws_impl_sem_enter, tws_impl_sem_leave };
 const struct tws_ThreadFn *tws_backend_thread = &tws_impl_thread;
 const struct tws_SemFn *tws_backend_sem = &tws_impl_sem;
 unsigned tws_getNumCPUs() { return tws_impl_getNumCPUs(); }
