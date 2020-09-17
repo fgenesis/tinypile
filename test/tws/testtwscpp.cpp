@@ -84,7 +84,7 @@ int main()
         JobTest D(3);
         JobTest E(40);
         JobTest F(50);
-        tws::Chain a = A/A/B >> (C/D >> JobTest(999)) >> E >> F >> ev;
+        tws::Chain a = A/A/B/A/A/A/A/A/A/A/A/A/A/A/A >> (C/D >> JobTest(999)) >> E >> F >> ev;
         //tws::Chain a = JobTest(0) >> JobTest(1) >> ev;
         //tws::Chain a = A >> (B/C) >> D >> ev;
         //(void)a;

@@ -666,14 +666,14 @@ private:
     // If we have to heap-alloc with this few slots already, we might as well allocate a lot more room.
     // Doesn't matter since we're going to the heap anyways, that way we'll get some breathing room at least.
     // 32 is arbitrary; I don't think someone will likely write a chain of 32x op/ in a row.
-    enum { MinParSlots = 6, FallbackParSlots = 32 };
+    enum { MinParSlots = 6, FallbackParSlots = 32, ReserveConts = 2 };
 
     tws_Job *_tail; // last continuation that was added aka where to add more continuations. In (A >> B) notation, if we're A, it's B._j.
     tws_Job **_par; // parallel slots for operator/
 
     static inline tws_Job *_Eventjob(tws_Event *ev)
     {
-        return NotNull(tws_newJob(NULL, NULL, 0, 2, tws_TINY, NULL, ev));
+        return NotNull(tws_newJob(NULL, NULL, 0, ReserveConts, tws_TINY, NULL, ev));
     }
 
     static void _SetParent(tws_Job *j, tws_Job *parent)
@@ -689,31 +689,31 @@ private:
         tws_submit(stub, j);
     }
 
-    static inline size_t _NumPar()
+    static inline size_t _NumPar() // Figures out how much space we have in a job to store pointers without hitting the heap
     {
-        size_t n = _tws_getJobAvailSpace(2) / sizeof(tws_Job*);
+        size_t n = _tws_getJobAvailSpace(ReserveConts) / sizeof(tws_Job*);
         return n >= MinParSlots ? n : FallbackParSlots;
     }
 
     // Submit all jobs that are to be started in parallel
     static void _SubmitPar(void *data, tws_Job *, tws_Event *)
     {
-        tws_Job **par = static_cast<tws_Job**>(data);
-        const uintptr_t mask = intptr_t(-2); // Pointer mask with all bits set except the lowest one
-        uintptr_t p;
-        for(size_t i = 0; ((p = (uintptr_t)par[i])); ++i)
+        for(tws_Job **par = static_cast<tws_Job**>(data) ;; )
         {
-            tws_submit((tws_Job*)(p & mask), NULL); // Mask out the marker (lowest bit)
-            if(p & 1) // If marker set, this was the last element
+            uintptr_t p = (uintptr_t)*par++;
+            tws_Job *j = (tws_Job*)(p & ~intptr_t(1)); // Mask out the marker (lowest bit)
+            if(!j)    // premature end of valid data?
+                break;
+            tws_submit(j, NULL);
+            if(p & 1) // If marker set, this was the last slot in the array and no-mans-land starts right afterwards.
                 break;
         }
     }
 
     void addpar(tws_Job *jj)
     {
-        if(_par)
+        if(tws_Job **par = _par)
         {
-            tws_Job **par = _par;
             uintptr_t e = uintptr_t(*par); // lowest bit is unknown, all other bits known to be 0
             e |= uintptr_t(jj); // Job pointers are cache-line aligned so the lowest bits are never set. Keep the lowest bit as marker.
             *par++ = (tws_Job*)e;
@@ -725,16 +725,16 @@ private:
         {    // (We can't submit those right away so gotta store them somewhere until it's time to submit them.)
             const size_t n = _NumPar();
             void *p; // Space for tws_Job[NumPar]
-            tws_Job *jp = NotNull(tws_newJobNoInit(_SubmitPar, &p, sizeof(tws_Job*) * n, 2, tws_TINY, NULL, NULL));
-            tws_Job **par = static_cast<tws_Job**>(p);
+            tws_Job *jp = NotNull(tws_newJobNoInit(_SubmitPar, &p, sizeof(tws_Job*) * n, ReserveConts, tws_TINY, NULL, NULL));
+            par = static_cast<tws_Job**>(p);
             _SetParent(_j, jp); // Upside-down relation: _j will become part of jp, so _j must notify jp when its previously added children are done.
 
             tws_Job ** const last = par + (n - 1); // inclusive
             *par++ = _j; // Prev. job: either the original, or a launcher.
             *par++ = jj;
-            _par = par;
+            _par = par; // 2 slots used, rest is free, continue here later
             do
-                *par++ = NULL;
+                *par++ = NULL; // clear the rest
             while(par < last);
             *last = (tws_Job*)uintptr_t(1); // Put stop marker on the last slot.
             _j = jp; // this is now the new master job.
@@ -762,7 +762,7 @@ public:
 
     template<typename T>
     JobOp(const T& t)
-        : Base(JobGenerator::Generate<T, 2>(t)), _tail(Base::_j)
+        : Base(JobGenerator::Generate<T, ReserveConts>(t)), _tail(Base::_j)
         , _par(NULL) {}
 
     template<typename T, unsigned short ExtraCont>
