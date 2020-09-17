@@ -53,12 +53,15 @@ int main()
     ts.threadsPerTypeSize = 1;
     // the other mandatory things
     ts.cacheLineSize = cache;
+    ts.jobSpace = cache;
     ts.semFn = tws_backend_sem;
     ts.threadFn = tws_backend_thread;
     ts.jobsPerThread = 1024;
 
     if(tws_init(&ts) != tws_ERR_OK)
         return 2;
+
+    printf("Space in job given 2 continuations: %u bytes\n", (unsigned)_tws_getJobAvailSpace(2));
     
     /*{
         Event ev;

@@ -2190,7 +2190,7 @@ void tws_shutdown(void)
 
 size_t _tws_getJobAvailSpace(unsigned short ncont)
 {
-   size_t space = s_pool->meminfo.jobTotalSize;
+   size_t space = s_pool->meminfo.jobSpace;
    const size_t cc = TWS_CONTINUATION_COST * (size_t)ncont;
    return space > cc ? space - cc : 0;
 }

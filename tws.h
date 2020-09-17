@@ -398,7 +398,7 @@ void tws_setSemSpinCount(unsigned spin);
 // Very unsafe to use, therefore DO NOT USE this function. It's intended for the C++ API, not for end users!
 int _tws_setParent(tws_Job *job, tws_Job *parent);
 
-// Free space for user data given ncont continuations, without requiring an extra allocation.
+// Free space for user data in a job given ncont continuations, without requiring an extra heap allocation.
 // For the C++ API.
 size_t _tws_getJobAvailSpace(unsigned short ncont);
 

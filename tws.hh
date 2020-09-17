@@ -662,23 +662,18 @@ public:
 
 private:
 
-    enum { NumPar = 7 }; // TODO: tweak this. or make a function _tws_getTaskSpace() to calc #slots.
+    // too few job slots make no sense. We need at least 1 for bookkeeping and some more for actual jobs.
+    // If we have to heap-alloc with this few slots already, we might as well allocate a lot more room.
+    // Doesn't matter since we're going to the heap anyways, that way we'll get some breathing room at least.
+    // 32 is arbitrary; I don't think someone will likely write a chain of 32x op/ in a row.
+    enum { MinParSlots = 6, FallbackParSlots = 32 };
 
     tws_Job *_tail; // last continuation that was added aka where to add more continuations. In (A >> B) notation, if we're A, it's B._j.
     tws_Job **_par; // parallel slots for operator/
-    size_t _paridx; // where in _par[] to write next
 
     static inline tws_Job *_Eventjob(tws_Event *ev)
     {
         return NotNull(tws_newJob(NULL, NULL, 0, 2, tws_TINY, NULL, ev));
-    }
-
-    // Submit all jobs that are to be started in parallel
-    static void _SubmitPar(void *data, tws_Job *, tws_Event *)
-    {
-        tws_Job **par = static_cast<tws_Job**>(data);
-        for(size_t i = 0; i < NumPar && par[i]; ++i)
-            tws_submit(par[i], NULL);
     }
 
     static void _SetParent(tws_Job *j, tws_Job *parent)
@@ -694,26 +689,55 @@ private:
         tws_submit(stub, j);
     }
 
+    static inline size_t _NumPar()
+    {
+        size_t n = _tws_getJobAvailSpace(2) / sizeof(tws_Job*);
+        return n >= MinParSlots ? n : FallbackParSlots;
+    }
+
+    // Submit all jobs that are to be started in parallel
+    static void _SubmitPar(void *data, tws_Job *, tws_Event *)
+    {
+        tws_Job **par = static_cast<tws_Job**>(data);
+        const uintptr_t mask = intptr_t(-2); // Pointer mask with all bits set except the lowest one
+        uintptr_t p;
+        for(size_t i = 0; ((p = (uintptr_t)par[i])); ++i)
+        {
+            tws_submit((tws_Job*)(p & mask), NULL); // Mask out the marker (lowest bit)
+            if(p & 1) // If marker set, this was the last element
+                break;
+        }
+    }
+
     void addpar(tws_Job *jj)
     {
-        if(_par && _paridx < NumPar)
-            _par[_paridx++] = jj;
+        if(_par)
+        {
+            tws_Job **par = _par;
+            uintptr_t e = uintptr_t(*par); // lowest bit is unknown, all other bits known to be 0
+            e |= uintptr_t(jj); // Job pointers are cache-line aligned so the lowest bits are never set. Keep the lowest bit as marker.
+            *par++ = (tws_Job*)e;
+            if(e & 1)        // Last slot marker set?
+                par = NULL; // That was the last free slot. Next time we need to allocate.
+            _par = par;
+        }
         else // Allocate new parallel launcher since we're out of space to store to-be-submitted jobs.
         {    // (We can't submit those right away so gotta store them somewhere until it's time to submit them.)
+            const size_t n = _NumPar();
             void *p; // Space for tws_Job[NumPar]
-            tws_Job *jp = NotNull(tws_newJobNoInit(_SubmitPar, &p, sizeof(tws_Job*) * NumPar, 2, tws_TINY, NULL, NULL));
+            tws_Job *jp = NotNull(tws_newJobNoInit(_SubmitPar, &p, sizeof(tws_Job*) * n, 2, tws_TINY, NULL, NULL));
             tws_Job **par = static_cast<tws_Job**>(p);
             _SetParent(_j, jp); // Upside-down relation: _j will become part of jp, so _j must notify jp when its previously added children are done.
 
-            size_t idx = 0;
-            par[idx++] = _j; // Prev. job: either the original, or a launcher.
-            par[idx++] = jj;
-            _paridx = idx;
-            for( ; idx < NumPar; ++idx)
-                par[idx] = NULL;
-            _j = jp; // this is now the new master job.
+            tws_Job ** const last = par + (n - 1); // inclusive
+            *par++ = _j; // Prev. job: either the original, or a launcher.
+            *par++ = jj;
             _par = par;
-
+            do
+                *par++ = NULL;
+            while(par < last);
+            *last = (tws_Job*)uintptr_t(1); // Put stop marker on the last slot.
+            _j = jp; // this is now the new master job.
         }
         _SetParent(jj, _j);
     }
@@ -721,12 +745,12 @@ private:
 public:
 
     // Force "move constructor"
-    JobOp(const JobOp& j) : Base(j.finalize()), _tail(j._tail), _par(j._par), _paridx(j._paridx)
+    JobOp(const JobOp& j) : Base(j.finalize()), _tail(j._tail), _par(j._par)
     {
     }
 
 #ifdef TWS_USE_CPP11
-    JobOp(JobOp&& j) : Base(j.finalize()), _tail(j._tail), _par(j._par), _paridx(j._paridx)
+    JobOp(JobOp&& j) : Base(j.finalize()), _tail(j._tail), _par(j._par)
     {
     }
 #endif
@@ -734,29 +758,29 @@ public:
     // --- Simple constructors for all supported types -- constructs a job out of the passed thing.
     JobOp(tws_Job *j)
         : Base(j), _tail(j)
-        , _par(NULL), _paridx(NULL) {}
+        , _par(NULL) {}
 
     template<typename T>
     JobOp(const T& t)
         : Base(JobGenerator::Generate<T, 2>(t)), _tail(Base::_j)
-        , _par(NULL), _paridx(NULL) {}
+        , _par(NULL) {}
 
     template<typename T, unsigned short ExtraCont>
     JobOp(Job<T, ExtraCont>& job)
         : Base(job.transfer()), _tail(Base::_j)
-        , _par(NULL), _paridx(NULL) {}
+        , _par(NULL) {}
 
     JobOp(Chain& c)
         : Base(c.transfer()), _tail(Base::_j)
-        , _par(NULL), _paridx(NULL) {}
+        , _par(NULL) {}
 
     JobOp(tws_Event *ev)
         : Base(_Eventjob(ev)), _tail(Base::_j)
-        , _par(NULL), _paridx(NULL) {}
+        , _par(NULL) {}
 
     JobOp(Event& ev)
         : Base(_Eventjob(ev)), _tail(Base::_j)
-        , _par(NULL), _paridx(NULL) {}
+        , _par(NULL) {}
 
     // HACK: this class is only ever used as a temporary. Therefore use const_cast to enforce "move semantics" on temporaries.
     tws_Job *finalize() const
