@@ -54,7 +54,8 @@ static void work2b(void *data, tws_Job *curjob, tws_Event *ev)
         for(unsigned i = 0; i < lim; ++i)
         {
             tws_Job *job = tws_newJob(work2c, NULL, 0, 0, tws_DEFAULT, NULL, ev);
-            tws_submit(job, NULL);
+            if(job)
+                tws_submit(job, NULL);
         }
     }
     //compute(256);
@@ -69,7 +70,8 @@ static void work2a(void *data, tws_Job *curjob, tws_Event *ev)
         for(unsigned i = 0; i < lim; ++i)
         {
             tws_Job *job = tws_newJob(work2b, NULL, 0, 0, tws_DEFAULT, NULL, ev);
-            tws_submit(job, NULL);
+            if(job)
+                tws_submit(job, NULL);
         }
     }
 }
