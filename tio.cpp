@@ -82,7 +82,7 @@ Origin:
 
 /* ---- End compile config ---- */
 
-#define tio__static_assert(cond) switch(cond){case 0:;case(cond):;}
+#define tio__static_assert(cond) switch((int)!!(cond)){case 0:;case(!!(cond)):;}
 
 // Used libc functions. Optionally replace with your own.
 #include <string.h> // memcpy, memset, strlen
@@ -214,9 +214,10 @@ enum
 #else // no UNC path madness
     tio_PathExtraSpace = 0,
 #endif
-    tio_MaxArchMask = (size_t)(tiosize)(uintptr_t)(void*)(intptr_t)(-1), // cast away as many high bits as possible on this little round-trip
     tio_MaxIOBlockSize = MaxIOBlockSize<IOSizeT>::value // max. power-of-2 size that can be safely used by the OS native read/write calls
 };
+
+static const tiosize tio_MaxArchMask = (size_t)(tiosize)(uintptr_t)(intptr_t)(-1); // cast away as many high bits as possible on this little round-trip
 
 /*
 template<typename T> // Aln must be power of 2
@@ -320,11 +321,11 @@ static void WIN_InitOptionalFuncs()
 {
     tio__TRACE("WIN_LoadOptionalFuncs");
     HMODULE hKernel32 = LoadLibraryA("Kernel32.dll");
-    tio__TRACE("hKernel32 = %p", hKernel32);
+    tio__TRACE("hKernel32 = %p", (void*)hKernel32);
     if(hKernel32)
     {
         WIN_PrefetchVirtualMemory = (WIN_PrefetchVirtualMemory_func)::GetProcAddress(hKernel32, "PrefetchVirtualMemory");
-        tio__TRACE("PrefetchVirtualMemory = %p", WIN_PrefetchVirtualMemory);
+        tio__TRACE("PrefetchVirtualMemory = %p", (void*)WIN_PrefetchVirtualMemory);
     }
 }
 
@@ -804,7 +805,7 @@ static void invalidate(tio_Stream *sm)
     sm->Refill = NULL;
 }
 
-static size_t streamRefillNop(tio_Stream *sm)
+static size_t streamRefillNop(tio_Stream *)
 {
     return 0;
 }
@@ -1046,7 +1047,7 @@ static void streamWin32OverlappedClose(tio_Stream *sm)
     os_close(hFile); // this also cancels all in-flight overlapped IO
     enum { N = OverlappedStreamOverlay::NumEvents };
     OverlappedStreamOverlay *so = _streamoverlay(sm);
-    OverlappedMemOverlay *mo = _memoverlay(sm);
+    //OverlappedMemOverlay *mo = _memoverlay(sm);
     for(size_t i = 0; i < N; ++i)
         if(HANDLE ev = so->events[i])
             ::CloseHandle(ev);
@@ -1058,7 +1059,7 @@ static void _streamWin32OverlappedRequestNextChunk(tio_Stream *sm)
     OverlappedMemOverlay *mo = _memoverlay(sm);
     if(mo->err)
         return;
-    OverlappedStreamOverlay *so = _streamoverlay(sm);
+    //OverlappedStreamOverlay *so = _streamoverlay(sm);
 
     size_t chunk = mo->nextToRequest++;
     size_t chunkidx = chunk % mo->blocksInUse;
@@ -1082,7 +1083,7 @@ static void _streamWin32OverlappedRequestNextChunk(tio_Stream *sm)
 
     // fail/EOF will be recorded in OVERLAPPED so we can ignore the return value here
     BOOL ok = ::ReadFile((HANDLE)sm->priv.u.handle, dst, (DWORD)blocksize, NULL, ov);
-    tio__TRACE("[% 2u] Overlapped ReadFile(%p) chunk %u -> ok = %u",
+    tio__TRACE("[%u] Overlapped ReadFile(%p) chunk %u -> ok = %u",
         overlappedInflight(sm), dst, unsigned(chunk), ok);
     if(ok)
         return;
@@ -1092,13 +1093,13 @@ static void _streamWin32OverlappedRequestNextChunk(tio_Stream *sm)
     {
         mo->err = err;
         mo->ptrs[chunkidx] = NULL;
-        tio__TRACE("... failed with error %u", err);
+        tio__TRACE("... failed with error %u", unsigned(err));
     }
 }
 
 static size_t streamWin32OverlappedRefill(tio_Stream *sm)
 {
-    OverlappedStreamOverlay *so = _streamoverlay(sm);
+    //OverlappedStreamOverlay *so = _streamoverlay(sm);
     OverlappedMemOverlay *mo = _memoverlay(sm);
 
     size_t chunk = (size_t)sm->priv.offs;
@@ -1119,8 +1120,8 @@ static size_t streamWin32OverlappedRefill(tio_Stream *sm)
     DWORD done = 0;
     BOOL wait = (mo->features & tioF_Nonblock) ? FALSE : TRUE; // don't wait in async mode
     BOOL ok = ::GetOverlappedResult(hFile, ov, &done, wait);
-    tio__TRACE("[% 2u] GetOverlappedResult(%p) chunk %u -> read %u, ok = %u",
-        overlappedInflight(sm), p, unsigned(chunk), done, ok);
+    tio__TRACE("[%u] GetOverlappedResult(%p) chunk %u -> read %u, ok = %u",
+        overlappedInflight(sm), (void*)p, unsigned(chunk), unsigned(done), ok);
     if(ok)
     {
         sm->priv.offs++;
@@ -1131,7 +1132,7 @@ static size_t streamWin32OverlappedRefill(tio_Stream *sm)
         switch(DWORD err = ::GetLastError())
         {
             default:
-                tio__TRACE("GetOverlappedResult(): unhandled return %u, done = %u", err, done);
+                tio__TRACE("GetOverlappedResult(): unhandled return %u, done = %u", unsigned(err), unsigned(done));
                 /* fall through */
             case ERROR_HANDLE_EOF:
                 sm->Refill = streamfail; // Use the current buffer, but fail next time
@@ -1155,7 +1156,7 @@ template<typename T> static inline T alignedRound(T val, T aln)
     return ((val + (aln - 1)) / aln) * aln;
 }
 
-tio_error streamWin32OverlappedInit(tio_Stream *sm, tio_Handle hFile, const OpenMode& om, size_t blocksize, tio_Features features)
+tio_error streamWin32OverlappedInit(tio_Stream *sm, tio_Handle hFile, size_t blocksize, tio_Features features)
 {
     tio__ASSERT(isvalidhandle(hFile));
 
@@ -1194,7 +1195,7 @@ tio_error streamWin32OverlappedInit(tio_Stream *sm, tio_Handle hFile, const Open
         return -2;
     
     void * const mem = ::VirtualAlloc(NULL, allocsize, MEM_COMMIT, PAGE_READWRITE);
-    tio__TRACE("VirtualAlloc() %p - %p", mem, (char*)mem + allocsize);
+    tio__TRACE("VirtualAlloc() %p - %p", mem, (void*)((char*)mem + allocsize));
     if(!mem)
         return 3;
 
@@ -1273,7 +1274,7 @@ static tio_error initstream(tio_Stream *sm, const char *fn, tio_Mode mode, tio_F
             wflags |= FILE_FLAG_NO_BUFFERING;
         if(!sysopen(&hFile, fn, om, features, wflags))
             return 1; // couldn't open it without the extra flags either; don't even have to check
-        if(!streamWin32OverlappedInit(sm, hFile, om, blocksize, features))
+        if(!streamWin32OverlappedInit(sm, hFile, blocksize, features))
             return 0; // all good
         else
             os_close(hFile); // and continue normally. need to re-open the file though because the extra flags are incompatible
@@ -1742,7 +1743,7 @@ TIO_EXPORT size_t tio_pagesize()
 
 TIO_EXPORT void *tio_mopenmap(tio_MMIO *mmio, const char *fn, tio_Mode mode, tiosize offset, size_t size, tio_Features features)
 {
-    tio__memzero(mmio, sizeof(mmio));
+    tio__memzero(mmio, sizeof(*mmio));
 
     char *s;
     SANITIZE_PATH(s, fn, 0, 0);
@@ -1754,7 +1755,7 @@ TIO_EXPORT void *tio_mopenmap(tio_MMIO *mmio, const char *fn, tio_Mode mode, tio
 
 TIO_EXPORT tio_error tio_mopen(tio_MMIO *mmio, const char *fn, tio_Mode mode, tio_Features features)
 {
-    tio__memzero(mmio, sizeof(mmio));
+    tio__memzero(mmio, sizeof(*mmio));
 
     char *s;
     SANITIZE_PATH(s, fn, 0, 0);
