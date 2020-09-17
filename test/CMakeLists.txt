@@ -13,6 +13,7 @@ add_library(tinypile
     ../ustrpool.h
     ../tws.c
     ../tws.h
+    ../tws.hh
     ../tws_backend.c
     ../tws_backend.h
 )
