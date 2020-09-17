@@ -84,7 +84,9 @@ Some notes:
      typedef __int64 s64;
 #    define TWS_HAS_S64_TYPE
 #  endif
-#  define TWS_NOTNULL _Ret_notnull_
+#  ifdef _Ret_notnull_
+#    define TWS_NOTNULL _Ret_notnull_
+#  endif
 #endif
 
 #if defined(__clang__) || defined(__GNUC__)
@@ -244,7 +246,7 @@ static inline tws_Atomic _AtomicGet_Seq(const NativeAtomic *x) { return atomic_l
 static inline tws_Atomic _RelaxedGet(const NativeAtomic *x) { return atomic_load_explicit(&x->val, memory_order_relaxed); }
 
 static inline int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return atomic_compare_exchange_strong(&x->val, expected, newval); }
-static inline void _Atomic64Set_Seq(NativeAtomic64 *x, tws_Atomic64 newval) { return atomic_store(&x->val, newval); }
+static inline void _Atomic64Set_Seq(NativeAtomic64 *x, tws_Atomic64 newval) { atomic_store(&x->val, newval); }
 static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x) { COMPILER_BARRIER(); return atomic_load_explicit(&x->val, memory_order_relaxed); }
 
 static inline int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void **expected, void *newval) { return atomic_compare_exchange_weak(x, expected, newval); }
@@ -266,7 +268,7 @@ static inline void _Yield() { __builtin_ia32_pause(); } // TODO: does this work 
 // No _InterlockedExchange64() on x86_32 apparently
 // Clang and gcc have their own way of doing a 64bit store, but with MSVC it's back to a good old CAS loop.
 // Via https://doxygen.reactos.org/d6/d48/interlocked_8h_source.html
-inline s64 _InterlockedExchange64(volatile s64 *Target, s64 Value)
+static inline s64 _InterlockedExchange64(volatile s64 *Target, s64 Value)
 {
     s64 Old, Prev;
     for (Old = *Target; ; Old = Prev)
@@ -276,6 +278,10 @@ inline s64 _InterlockedExchange64(volatile s64 *Target, s64 Value)
             return Prev;
     }
 }
+// Work around bug in older MSVC versions that don't define this for 32 bit compiles
+#if _MSC_VER < 1800
+#  define _InterlockedCompareExchangePointer(a, b, c) (void*)_InterlockedCompareExchange((long volatile*)(a), (long)(b), (long)(c));
+#endif
 #else
 #  pragma intrinsic(_InterlockedExchange64)
 #endif
@@ -432,7 +438,7 @@ static inline intptr_t IsAligned(uintptr_t v, uintptr_t aln) // aln must be powe
 
 static int areWorkTypesCompatible(tws_WorkType a, tws_WorkType b)
 {
-    return a == (tws_WorkType)tws_TINY || b == (tws_WorkType)tws_TINY || a == b;
+    return a == tws_TINY || b == tws_TINY || a == b;
 }
 
 // ---- Lightweight semaphore ----
@@ -760,7 +766,7 @@ static void arr_delete(tws_Array *a)
 }*/
 
 // TWS_NOTNULL annotation is for MSVC's /ANALYZE, which doesn't grok that this never returns NULL.
-static inline TWS_NOTNULL void *arr_ptr(tws_Array *a, size_t idx)
+TWS_NOTNULL inline static void *arr_ptr(tws_Array *a, size_t idx)
 {
     TWS_ASSERT(idx < a->nelem, "arr_ptr: out of bounds");
     return ((char*)a->mem) + (a->stride * idx);
@@ -1126,7 +1132,7 @@ inline static void _LeaveSem(tws_Sem *sem)
 
 inline static tws_PerType *_GetPerTypeData(tws_WorkType type)
 {
-    TWS_ASSERT(type != (tws_WorkType)tws_TINY, "should not be tiny here"); // in any case the assert in arr_ptr() would fail too, but this is more clear
+    TWS_ASSERT(type != tws_TINY, "should not be tiny here"); // in any case the assert in arr_ptr() would fail too, but this is more clear
     return (tws_PerType*)arr_ptr(&s_pool->forType, type);
 }
 
@@ -1517,7 +1523,7 @@ static void Submit(tws_Job *job)
     const tws_WorkType type = job->type;
 
     // tiny jobs should be run immediately
-    if(type == (tws_WorkType)tws_TINY)
+    if(type == tws_TINY)
         goto exec;
 
     tws_PerType *perType = _GetPerTypeData(type);
@@ -1838,7 +1844,7 @@ void tws_waitEx(tws_Event *ev, tws_WorkType *help, size_t n)
         for(size_t i = 0; i < n; ++i)
         {
             tws_WorkType h = help[i];
-            TWS_ASSERT(h != (tws_WorkType)tws_TINY, "RTFM: Do not pass tws_TINY");
+            TWS_ASSERT(h != tws_TINY, "RTFM: Do not pass tws_TINY");
             while(_HelpWithWorkOnce(h))
                 if(tws_isDone(ev))
                     return;

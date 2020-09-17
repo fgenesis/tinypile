@@ -37,7 +37,7 @@ extern "C" {
 // See http://cbloomrants.blogspot.com/2012/11/11-08-12-job-system-task-types.html for the basic idea.
 typedef enum
 {
-    tws_TINY = -1,  // Treated specially to reduce overhead; any thread can run this
+    tws_TINY = (unsigned char)(-1),  // Treated specially to reduce overhead; any thread can run this
     tws_DEFAULT  = 0, // For "standard" CPU jobs.
     tws_WORKTYPE_USER = 1, // use this as start for your own enum
 } tws_WorkType_;

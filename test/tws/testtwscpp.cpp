@@ -13,9 +13,25 @@ struct JobTest
 {
     const unsigned _i;
     unsigned x;
-    JobTest(unsigned i) : _i(i), x(0) {}
+    JobTest(unsigned i) : _i(i), x(0)
+    {
+        //printf(" JobTest(%u)\n", i);
+    }
+    /*~JobTest()
+    {
+        printf("~JobTest(%u)\n", _i);
+    }*/
 
-    void run(JobRef j)
+    /*JobTest(const JobTest& o) : _i(o._i), x(o.x)
+    {
+        printf(" JobTest(%u) copy\n", _i);
+    }*/
+    /*JobTest(JobTest&& o) noexcept : _i(o._i), x(o.x)
+    {
+        printf(" JobTest(%u) move\n", _i);
+    }*/
+
+    void run(JobRef)
     {
         printf("BEGIN test: %u %u\n", _i, x);
         Sleep(1000);
@@ -44,7 +60,7 @@ int main()
     if(tws_init(&ts) != tws_ERR_OK)
         return 2;
     
-    {
+    /*{
         Event ev;
         Job<JobTest, 2> jj(JobTest(42));
         jj->x = 100;
@@ -53,7 +69,9 @@ int main()
         Job<JobTest> more(JobTest(333), ev);
         jj.then(more);
     }
-    printf("---------\n");
+    printf("---------\n");*/
+
+    //{ tws::Job<JobTest> j(JobTest(1000)); }
 
     {
         Event ev;
@@ -63,7 +81,8 @@ int main()
         JobTest D(3);
         JobTest E(40);
         JobTest F(50);
-        auto a = A/A/B >> (C/D >> JobTest(999)) >> E >> F >> ev;
+        tws::Chain a = A/A/B >> (C/D >> JobTest(999)) >> E >> F >> ev;
+        //tws::Chain a = JobTest(0) >> JobTest(1) >> ev;
         //tws::Chain a = A >> (B/C) >> D >> ev;
         //(void)a;
         //check(A >> B);

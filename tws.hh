@@ -200,21 +200,27 @@ inline void* operator new(size_t, TWS__NewDummy, void* ptr) { return ptr; }
 inline void  operator delete(void*, TWS__NewDummy, void*)       {}
 #define TWS_PLACEMENT_NEW(p) new(TWS__NewDummy(), p)
 
-
-#define TWS_USE_CPP11 // FIXME
-
+// Visual studio 2015 and up don't set __cplusplus correctly but should support the features we're using here
+// Make it so that the user can still define TWS_USE_CPP11=0 via build system to have C++11 support disabled for whatever reason.
+#ifdef TWS_USE_CPP11
+#  if !TWS_USE_CPP11
+#    undef TWS_USE_CPP11
+#  endif
+#else
+#  if (__cplusplus >= 201103L) || (defined(_MSC_VER) && _MSC_VER >= 1800)
+#    define TWS_USE_CPP11
+#  endif
+#endif
 
 namespace tws {
 
 
 #ifdef TWS_USE_CPP11
-#  define TWS_NOEXCEPT noexcept
 #  define TWS_DELETE_METHOD(mth) mth = delete /* will lead to a compile error if used */
 #else /* We don't have C++11 */
-#  define TWS_NOEXCEPT throw()
+
 #  define TWS_DELETE_METHOD(mth) mth /* will lead to a linker error if used */
 #endif
-
 
 template<typename T, unsigned short ExtraCont>
 class Job;
@@ -281,6 +287,17 @@ struct GetWorkType
     enum { value = GetWorkTypeImpl<T, has_WorkType<T>::value>::value };
 };
 
+#ifdef TWS_USE_CPP11
+template <typename T> struct Remove_ref            { typedef T type; };
+template <typename T> struct Remove_ref<T&>        { typedef T type; };
+template <typename T> struct Remove_ref<T&&>       { typedef T type; };
+template <class T>
+typename Remove_ref<T>::type&& Move(T&& x)
+{
+    return static_cast<typename Remove_ref<T>::type &&>(x);
+}
+#endif
+
 template<typename T>
 static inline T AssertNotNull(T p) // Failure is an internal error or user error -- fail hard immediately
 {
@@ -304,15 +321,7 @@ class JobMixin;
 class JobOp;
 
 // Helper to bypass transfer() being private
-struct JobGenerator
-{
-    template<typename T, unsigned short ExtraCont>
-    static tws_Job *Generate(const T& t)
-    {
-        Job<T, ExtraCont> tmp(t);
-        return tmp.transfer();
-    }
-};
+struct JobGenerator;
 
 // Wrapper around a tws_Job*
 class CheckedJobBase
@@ -402,7 +411,7 @@ public:
         return self();
     }
 
-    inline tws_Job *ptr() const { return me(); }
+    inline tws_Job *ptr() const { return this->me(); }
 };
 
 } // end namespace priv
@@ -477,7 +486,9 @@ class Job : public priv::JobMixin<Job<T, ExtraCont>, priv::CheckedJobBase>
 
     inline void _init()           { TWS_PLACEMENT_NEW(_pdata) T;    }
     inline void _init(const T& t) { TWS_PLACEMENT_NEW(_pdata) T(t); }
-    // TODO: move init
+#ifdef TWS_USE_CPP11
+    inline void _initMv(T&& t)      { TWS_PLACEMENT_NEW(_pdata) T(priv::Move(t)); }
+#endif
 
 public:
     typedef priv::Tag tws_operator_tag;
@@ -490,7 +501,11 @@ public:
     inline Job(tws_Job *parent, tws_Event *ev = 0)              : Base(newjob(parent, ev)) { _init(); }
     inline Job(const T& t, tws_Event *ev = 0)                   : Base(newjob(NULL,   ev)) { _init(t); }
     inline Job(const T& t, tws_Job *parent, tws_Event *ev = 0)  : Base(newjob(parent, ev)) { _init(t); }
-    // TODO: move T&&
+
+#ifdef TWS_USE_CPP11
+    inline Job(T&& t, tws_Event *ev = 0)                        : Base(newjob(NULL,   ev)) { _initMv(priv::Move(t)); }
+    inline Job(T&& t, tws_Job *parent, tws_Event *ev = 0)       : Base(newjob(parent, ev)) { _initMv(priv::Move(t)); }
+#endif
 
     template<typename J>
     inline Job(const J& parent, tws_Event *ev = 0)              : Base(newjob(asjob(parent), ev)) { _init(); }
@@ -536,7 +551,7 @@ struct has_run_method
 {
     typedef char yes[1];
     typedef char no[2];
-    template<typename T, void (T::*)(JobRef first)> struct SFINAE {};
+    template<typename T, void (T::*)(JobRef)> struct SFINAE {};
     template<typename T> static yes& Test(SFINAE<T, &T::run>*);
     template<typename T> static no&  Test(...);
     enum { value = sizeof(Test<A>(0)) == sizeof(yes) };
@@ -577,6 +592,16 @@ struct op_check
     };
 };
 
+struct JobGenerator
+{
+    template<typename T, unsigned short ExtraCont>
+    static inline typename Enable_if<has_run_method<T>::value, tws_Job*>::type Generate(const T& t)
+    {
+        Job<T, ExtraCont> tmp(t);
+        return tmp.transfer();
+    }
+};
+
 } // end namespace priv 
 //--------------------------------------------------------
 
@@ -597,6 +622,7 @@ typename priv::Enable_if<priv::op_check<A, B>::value, priv::JobOp>::type operato
     return priv::JobOp(a).operator>>(b);
 }
 
+
 } // end namespace operators
 //--------------------------------------------------
 
@@ -609,11 +635,12 @@ class Chain : public priv::AutoSubmitJobBase
 public:
     typedef priv::Tag tws_operator_tag;
     inline Chain(const priv::JobOp& o); // defined below
-    inline Chain(Chain& o) : Base(o.transfer()) {}
     inline Chain(const Chain& o) : Base(const_cast<Chain&>(o).transfer()) {}
 };
 
 namespace priv {
+
+class OperatorOverloads;
 
 // No regular methods accessible; convert to Chain to make end-user-friendly
 // It's especially important not to expose CheckedJobBase::transfer() so that our overload is used instead
@@ -646,14 +673,8 @@ private:
         return NotNull(tws_newJob(NULL, NULL, 0, 2, tws_TINY, NULL, ev));
     }
 
-    template<typename T>
-    static inline typename Enable_if<has_run_method<T>::value, tws_Job*>::type _Makejob(const T& t)
-    {
-        return JobGenerator::Generate<T, 2>(t);
-    }
-
     // Submit all jobs that are to be started in parallel
-    static void _SubmitPar(void *data, tws_Job *job, tws_Event *ev)
+    static void _SubmitPar(void *data, tws_Job *, tws_Event *)
     {
         tws_Job **par = static_cast<tws_Job**>(data);
         for(size_t i = 0; i < NumPar && par[i]; ++i)
@@ -704,6 +725,12 @@ public:
     {
     }
 
+#ifdef TWS_USE_CPP11
+    JobOp(JobOp&& j) : Base(j.finalize()), _tail(j._tail), _par(j._par), _paridx(j._paridx)
+    {
+    }
+#endif
+
     // --- Simple constructors for all supported types -- constructs a job out of the passed thing.
     JobOp(tws_Job *j)
         : Base(j), _tail(j)
@@ -711,26 +738,25 @@ public:
 
     template<typename T>
     JobOp(const T& t)
-        : Base(_Makejob(t)), _tail(this->_j)
+        : Base(JobGenerator::Generate<T, 2>(t)), _tail(Base::_j)
         , _par(NULL), _paridx(NULL) {}
 
     template<typename T, unsigned short ExtraCont>
     JobOp(Job<T, ExtraCont>& job)
-        : Base(job.transfer()), _tail(this->_j)
+        : Base(job.transfer()), _tail(Base::_j)
         , _par(NULL), _paridx(NULL) {}
 
     JobOp(Chain& c)
-        : Base(c.transfer()), _tail(this->_j)
+        : Base(c.transfer()), _tail(Base::_j)
         , _par(NULL), _paridx(NULL) {}
 
     JobOp(tws_Event *ev)
-        : Base(_Eventjob(ev)), _tail(this->_j)
+        : Base(_Eventjob(ev)), _tail(Base::_j)
         , _par(NULL), _paridx(NULL) {}
 
     JobOp(Event& ev)
-        : Base(_Eventjob(ev)), _tail(this->_j)
+        : Base(_Eventjob(ev)), _tail(Base::_j)
         , _par(NULL), _paridx(NULL) {}
-
 
     // HACK: this class is only ever used as a temporary. Therefore use const_cast to enforce "move semantics" on temporaries.
     tws_Job *finalize() const
@@ -772,11 +798,6 @@ inline Chain::Chain(const priv::JobOp& o) : Base(o.finalize())
 
 
 /* TODO:
-- fix tws_TINY warnings properly
-- autodetect TWS_USE_CPP11 (ok on gcc/clang, dumb on msvc)
-- C++11 move ctors for job data
-- add TWS_NOEXCEPT everywhere
-- add restrict everywhere
 - tws::ParallelFor + automatic splitting (add to tws.c using void*?)
 - tws::Promise<T>
 - make things work with lambdas as jobs
