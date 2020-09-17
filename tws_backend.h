@@ -223,7 +223,7 @@ static void tws_impl_sem_leave(tws_Sem *sem)
     ReleaseSemaphore(sem, 1, NULL);
 }
 
-/*typedef BOOL (WINAPI *pfnGetLogicalProcessorInformation)(PSYSTEM_LOGICAL_PROCESSOR_INFORMATION, PDWORD);
+typedef BOOL (WINAPI *pfnGetLogicalProcessorInformation)(PSYSTEM_LOGICAL_PROCESSOR_INFORMATION, PDWORD);
 static pfnGetLogicalProcessorInformation GetLogicalProcessorInformationFunc()
 {
     static pfnGetLogicalProcessorInformation f = NULL;
@@ -233,11 +233,11 @@ static pfnGetLogicalProcessorInformation GetLogicalProcessorInformationFunc()
     if(kernel32)
         f = (pfnGetLogicalProcessorInformation)GetProcAddress(kernel32, "GetLogicalProcessorInformation");
     return f;
-}*/
+}
 
 static inline unsigned tws_impl_getNumCPUs()
 {
-    // TODO: Use GetLogicalProcessorInformation() if present
+    // TODO: Use GetLogicalProcessorInformation() if present?
 
     // old method, works with win2k and up
     SYSTEM_INFO sysinfo;
@@ -248,13 +248,35 @@ static inline unsigned tws_impl_getNumCPUs()
 
 static inline unsigned tws_impl_getCPUCacheLineSize()
 {
-    // TODO: use this maybe.
-    /*pfnGetLogicalProcessorInformation proc = GetLogicalProcessorInformationFunc();
-    int sz = 0;
-    if(proc)
+    pfnGetLogicalProcessorInformation glpi = GetLogicalProcessorInformationFunc();
+    if(glpi)
     {
+        unsigned linesz = 0;
+        char stackbuf[4]; // Avoid VirtualAlloc() if possible
+        DWORD bufsz = 0;
+        glpi(NULL, &bufsz);
+        void *buf = bufsz < sizeof(stackbuf)
+            ? &stackbuf[0]
+            : VirtualAlloc(NULL, bufsz, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if(buf)
+        {
+            SYSTEM_LOGICAL_PROCESSOR_INFORMATION *buffer = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION *)buf;
+            glpi(&buffer[0], &bufsz);
+
+            const size_t n = bufsz / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
+            for (size_t i = 0; i < n; ++i)
+                if (buffer[i].Relationship == RelationCache && buffer[i].Cache.Level == 1)
+                    if( (linesz = buffer[i].Cache.LineSize) )
+                        break;
+        }
+
+        if(buf && buf != &stackbuf[0])
+            VirtualFree(buf, bufsz, MEM_DECOMMIT | MEM_RELEASE);
+
+        if(linesz)
+            return linesz;
     }
-    return sz > 0 ? sz : 64;*/
+
     return 64; // old x86 is 32, but 64 should be safe for now.
 }
 
