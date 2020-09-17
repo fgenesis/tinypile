@@ -10,6 +10,7 @@ Design goals:
 - No dependencies except tws.h. Uses libc <assert.h> unless you define your own.
 - Requires C++98 but can benefit from C++11
 - Safer and simpler than the tws.h C API.
+- Optional exceptions on allocation failure. Enabled by default, scroll down for compile config.
 
 License:
 - public domain, WTFPL, CC0, zlib, MIT, BSD, whatever.
@@ -34,6 +35,10 @@ struct DoStuff
     }
 };
 
+You want sizeof(DoStuff) to be as small as possible, ideally tws_Setup::jobSpace bytes or less, for performance.
+The struct is copied into a job, so you want the copy to be quick and cheap, too.
+Ideally your struct is just a few pointers and a size or so.
+
 Optional: To control work type and the number of continuations you will spawn in run(), derive from tws::JobData, like so:
 struct DoStuff : public tws::JobData<tws_TINY, 4>  // <work type, #continuations>
 (The default is tws_DEFAULT and 0 continuations.)
@@ -42,11 +47,12 @@ Create a job:
 
 // (There are multple constructors available)
 tws::Job<DoStuff> j;
-tws::Job<DoStuff [, ExtraCont = 0]> j([[parent,] event]); // Optionally specify a parent and an event
+tws::Job<DoStuff [, ExtraCont = 0]> j([[parent,] event]); // Optionally specify a parent job and an event
 // (ExtraCont is the number of continuations you will add externally.
 //  The total number passed to the C API is ExtraCont + DoStuff::Continuations).
-// The rationale is that you probably know how many continuations a job adds to itself (add that to the data struct)
-// and you know how many continuations you will add via .then(). Those numbers are separate to make it easier to use and more flexible.
+// The rationale is that you probably know how many continuations a job adds to itself (add that to the data struct classdef)
+// and you know how many continuations you will add externally via Job<>.then().
+// Those numbers are separate to make it easier to use and more flexible.
 
 // You can also pass an existing struct:
 DoStuff foo(...);
@@ -61,15 +67,18 @@ Think of it like a helium balloon, it won't fly while you still hold the rope.
 
 To a tws::Job<> (outside job) or tws::JobRef (inside job), you can add children and continuations:
 
-j.child(DoStuff(...) [, ev] ); // Add a child job with j as parent. Notify optional event ev when child is done.
+tws::Job<DoStuff> chj([...,] j [, ...]) // Create chj with j as parent.
+
+j.child(DoStuff(...) [, ev] ); // Add a child job with j as parent and submit it immediately. Notify optional event ev when child is done.
                                // .child() makes a copy of the parameter struct.
+
 
 j.then(DoStuff(...) [, ev]) ; // Create a continuation from a job struct. Notify optional event ev when continuation is done.
                               // .then() makes a copy of the parameter struct.
 
 j.then(otherJob) // Can also pass an already created job.
                  // otherJob job will be "destructed" in-place and won't be submitted when it goes out of scope.
-                 // This means you can pass a job to .then() exactly once.
+                 // This means you can pass a job to .then() exactly once. Second time fails an assert.
 
 ====== Events ======
 
@@ -85,18 +94,20 @@ Rule (3) implies that you need to be careful with construction/destruction order
     tws::Event ev;
     tws::Job<DoStuff> j(DoStuff(...));
     j.then(DoStuff(...), ev);
-} // ^ This is fine. Why? Destruction is in reverse order: ev ctor, j ctor, ~j (submits j which eventually notifies ev), ~ev (waits for j completion).
+} // ^ This is fine. Why? C++ standard says destruction happens in reverse order of construction:
+  //   ev ctor, j ctor, ~j (submits j which eventually notifies ev), ~ev (waits for j completion).
 
 {
     tws::Job<DoStuff> j(DoStuff(...));
     tws::Event ev;
     j.then(DoStuff(...), ev);
-} // ^ This is a deadlock. Why? j ctor, ev ctor, ~ev, ~j ---> ~ev blocks, ~j never happens so it is never submitted and can't notify ev.
+} // ^ This is a deadlock. Why?
+  //   j ctor, ev ctor, ~ev, ~j ---> ~ev blocks, ~j never happens so it is never submitted, and ultimately ev is never notified.
 
 Rule of thumb:
-- Always put tws::Event at the top of the scope it's supposed to guard.
-- Avoid scoped tws::Event. Better put it as a class member and wait() upon it whenever needed.
-  (Each construction of tws::Event is a call to tws_newEvent() and therefore the allocator. Avoid that if you can.)
+- Always put tws::Event at the top of the scope it's supposed to guard, before any tws::Job<>.
+- Just avoid locally scoped tws::Event. Better put it as a class member and wait() upon it whenever needed, so you use it multiple times.
+  (Each construction of tws::Event is a call to tws_newEvent() and therefore to the allocator. Avoid that if you can.)
 
 -------------------------------------------------------
 --- Alternative syntax that might be more intuitive ---
@@ -111,6 +122,7 @@ Job-like means:
 - tws_Job*
 - tws::Event
 - tws_Event*
+- tws::Chain (further down)
 
 A / B means start A and B in parallel.
 A >> B means run B after A is completed (as a continuation).
@@ -122,7 +134,7 @@ An example:
 
     DoStuff A, B, C, D, E, F;  // Imagine we init these with something
 
-    A/B >> C/D >> E >> F  // <-- This runs A and B in parallel, once both are completed C and D are started.
+    A/B >> C/D >> E >> F; // <-- This runs A and B in parallel, once both are completed C and D are started.
                           //     Once C and D are completed, E is started, and when that is done, F.
                           //     The chain is started and runs in background, but we don't know when it's all done.
                           //  !! Note that the values of A-F are captured and copied internally;
@@ -131,14 +143,14 @@ An example:
     // Adding events to notify:
     tws::Event ev, ex;
 
-    A/B >> (C/D >> ex) >> E >> F >> ev  // <-- Now ex is notified once C and D have completed, and ev is notified
+    A/B >> (C/D >> ex) >> E >> F >> ev; // <-- Now ex is notified once C and D have completed, and ev is notified
                                         // once F has completed (and therefore the entire chain).
-                                        // The event becomes unsignaled once incorporated into the chain and signaled once execution of the chain reaches it.
+                                        // The event becomes unsignaled/blocking upon chain construction and signaled once execution of the chain reaches it.
 
     // If you don't want to run the chain immediately but keep it for later:
-    tws::Chain c = <the entire thing>
-    // Don't use auto -- always assign to a tws::Chain object.
-    auto c = <the entire chain> // <-- DON'T do this.
+    tws::Chain c = <the entire thing>;
+    // Don't use auto (it technically works, but is complicated and messy) -- always assign to a tws::Chain object.
+    auto c = <the entire chain>; // <-- DON'T do this.
 
     // Once c goes out of scope or is destroyed, the chain is started.
 
@@ -147,7 +159,8 @@ An example:
     tws::Chain x = a/b >> c >> ev;
 
     // ... but you can't re-use them. Create a chain and run or attach it once.
-    // Don't do tws::Chain x = a >> a; to run a chain twice, that won't work. Using a chain in a chain has move semantics.
+    // Don't do tws::Chain x = a >> a; to run a chain twice, that won't work (and fails an assert).
+    // -> Using a chain or job in a chain has move semantics.
     // That's also why there is no submit() method or anything and everything is scope-based, like tws:Job<>.
 */
 
@@ -314,7 +327,6 @@ protected:
     tws_Job *_j;
 
     inline CheckedJobBase(tws_Job *j) : _j(AssertNotNull(j)) {}
-    //inline CheckedJobBase(TWS_MOVEREF(CheckedJobBase) j) : _j(j.transfer()) {}
     inline ~CheckedJobBase() { TWS_ASSERT(!_j, "_j not cleared, this is likely a resource leak"); }
     inline tws_Job *me() const { TWS_ASSERT(_j, "Job already submitted!"); return _j; }
     inline static tws_Job *asjob(const CheckedJobBase& base) { return base.me(); }
@@ -433,8 +445,8 @@ public:
 };
 
 // A not-yet-launched job. The job is submitted upon destruction of an instance.
-// C++ scoping rules enforce proper use and make sure your code won't compile
-// if there is a problem that would assert() at runtime.
+// C++ scoping rules enforce proper use and your code won't compile
+// if there is an ownership problem that would assert() or crash at runtime.
 template<typename T, unsigned short ExtraCont = 0>
 class Job : public priv::JobMixin<Job<T, ExtraCont>, priv::CheckedJobBase>
 {
@@ -469,7 +481,6 @@ class Job : public priv::JobMixin<Job<T, ExtraCont>, priv::CheckedJobBase>
 
 public:
     typedef priv::Tag tws_operator_tag;
-    //typedef priv::Tag tws_constructed_job_tag;
 
     // dtor submits a job unless it was added as a continuation somewhere
     inline ~Job() { if(this->_j) tws_submit(this->transfer(), NULL); }
@@ -542,23 +553,6 @@ struct has_operator_tag
     enum { value = sizeof(Test<A>(0)) == sizeof(yes) };
 };
 
-/*template<typename A>
-struct has_constructed_job_tag
-{
-    typedef char yes[1];
-    typedef char no[2];
-    template<typename T, typename Tag_> struct SFINAE {};
-    template<typename T> static yes& Test(SFINAE<T, typename T::tws_constructed_job_tag>*);
-    template<typename T> static no&  Test(...);
-    enum { value = sizeof(Test<A>(0)) == sizeof(yes) };
-};
-
-template<typename A>
-struct is_constructed_job : public has_constructed_job_tag<A> {};
-
-template<>
-struct is_constructed_job<tws_Job*> { enum { value = 1 }; };*/
-
 // Helper class to check whether A is usable in *global* operator overloads
 template<typename A>
 struct supports_ops
@@ -579,8 +573,7 @@ struct op_check
     {
         hasops = priv::supports_ops<A>::value && priv::supports_ops<B>::value,
         notAlreadyOp = !priv::Is_same<A, priv::JobOp>::value,
-        //notConstructedJob = !is_constructed_job<A>::value, // TODO?: Currently this is a limitation since we can't re-parent
-        value = hasops && notAlreadyOp /*&& notConstructedJob*/
+        value = hasops && notAlreadyOp
     };
 };
 
@@ -779,8 +772,17 @@ inline Chain::Chain(const priv::JobOp& o) : Base(o.finalize())
 
 
 /* TODO:
+- fix tws_TINY warnings properly
 - autodetect TWS_USE_CPP11 (ok on gcc/clang, dumb on msvc)
-- C++11 move ctors
+- C++11 move ctors for job data
 - add TWS_NOEXCEPT everywhere
 - add restrict everywhere
+- tws::ParallelFor + automatic splitting (add to tws.c using void*?)
+- tws::Promise<T>
+- make things work with lambdas as jobs
+- remove JobOp and move everything to Chain (make sure this doesn't break temporaries semantics).
+  right now chain >> chain doesn't append to end of first chain.
+  OR: add _tail member to Chain class and use that in JobOp ctor. actually no, make it all Chain: (a >> b) / c: c can be added to a._par?
+- make .then() accept Chain
+- tws.c: possible to detect if child of a job is added as a continuation to its parent? (deadlocks)
 */

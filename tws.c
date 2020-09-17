@@ -1146,7 +1146,7 @@ enum JobStatusBits
 // because there are too many memory spaces that a job pointer could originate from.
 typedef struct tws_Job
 {
-    NativeAtomic a_pending; // @+0 (assuming 64 bit atomics and pointers)
+    NativeAtomic a_pending; // @+0 (assuming 32 bit atomics and 64 bit pointers)
     NativeAtomic a_ncont;   // @+4
     tws_JobFunc f;          // @+8
     tws_Job *parent;        // @+16

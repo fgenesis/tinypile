@@ -75,7 +75,6 @@ extern unsigned tws_getLazyWorkerThreads();
 /*--- 8< -----------------------------------------------------------*/
 #ifdef TWS_BACKEND_IMPLEMENTATION
 
-#include "tws_backend.h"
 #include "tws.h"
 
 typedef void (*tws_RunFunc)(const void *opaque);
