@@ -1119,6 +1119,7 @@ inline static void _LeaveSem(tws_Sem *sem)
 
 inline static tws_PerType *_GetPerTypeData(tws_WorkType type)
 {
+    TWS_ASSERT(type != (tws_WorkType)tws_TINY, "should not be tiny here"); // in any case the assert in arr_ptr() would fail too, but this is more clear
     return (tws_PerType*)arr_ptr(&s_pool->forType, type);
 }
 
@@ -1272,6 +1273,9 @@ static tws_Job *AllocJob(void)
 // after that only from the worker thread that works on it
 static inline int _CheckNotSubmittedOrWorking(tws_Job *job)
 {
+    if(!(job->status & JB_INITED)) // not inited? uh oh. we've got a bad race condition somewhere.
+        return 0;
+
     if(!(job->status & JB_SUBMITTED)) // not yet submitted
         return 1;
     
@@ -1300,6 +1304,16 @@ static void _DeleteJob(tws_Job *job)
     // Return to global buffer
     fl_push(s_pool->jobStore, job);
     //_AtomicDec_Rel(&s_pool->jobStoreUsed);
+}
+
+int _tws_setParent(tws_Job* job, tws_Job* parent)
+{
+    TWS_ASSERT(!(job->status & JB_SUBMITTED), "job was already submitted. DO NOT CALL THIS FUNCTION.");
+    TWS_ASSERT(!(parent->status & JB_SUBMITTED), "parent was already submitted. DO NOT CALL THIS FUNCTION.");
+    TWS_ASSERT(job != parent, "RTFM: Job can't be its own parent");
+
+    job->parent = parent;
+    _AtomicInc_Acq(&parent->a_pending);
 }
 
 static void tws_incrEventCount(tws_Event *ev);
@@ -1499,17 +1513,22 @@ static void Submit(tws_Job *job)
 
     TWS_ASSERT(status & JB_INITED, "internal error: Job was not initialized");
     TWS_ASSERT(!(status & JB_SUBMITTED), "RTFM: Attempt to submit job more than once!");
-    TWS_ASSERT(!job->parent || _CheckNotSubmittedOrWorking(job->parent), "RTFM: Parent was submitted before child, this is wrong -- submit children first, then the parent");
+    //TWS_ASSERT(!job->parent || _CheckNotSubmittedOrWorking(job->parent), "RTFM: Parent was submitted before child, this is wrong -- submit children first, then the parent");
 
     job->status = status | JB_SUBMITTED;
 
     const tws_WorkType type = job->type;
+
+    // tiny jobs should be run immediately
+    if(type == (tws_WorkType)tws_TINY)
+        goto exec;
+
     tws_PerType *perType = _GetPerTypeData(type);
 
-    // tiny jobs with no active children can be run here for performance
     // jobs for which there is no worker thread MUST be run here else we'd deadlock
-    if(!perType->numThreads || _IsTinyJob(job))
+    if(!perType->numThreads)
     {
+        exec:
         Execute(job); // this will assert fail if this job is not tiny and we're the wrong thread type to run that job. But there's no way around that.
         return;
     }
@@ -1639,6 +1658,9 @@ static void AddCont(tws_Job *ancestor, tws_Job *continuation)
 void tws_submit(tws_Job *job, tws_Job *ancestor)
 {
     TWS_ASSERT(job, "RTFM: do not submit NULL job");
+    TWS_ASSERT(!(job->status & (JB_SUBMITTED | JB_ISCONT)), "RTFM: Don't submit a job twice");
+    TWS_ASSERT(job != ancestor, "RTFM: Job can't be its own ancestor");
+
     if(!ancestor)
         Submit(job);
     else
@@ -2164,6 +2186,13 @@ void tws_shutdown(void)
     _tws_clear(pool);
 }
 
+size_t _tws_getJobAvailSpace(unsigned short ncont)
+{
+   size_t space = s_pool->meminfo.jobTotalSize;
+   const size_t cc = TWS_CONTINUATION_COST * (size_t)ncont;
+   return space > cc ? space - cc : 0;
+}
+
 
 // ----------------------------------------------------------------------
 // -- Promises --
@@ -2241,6 +2270,21 @@ int tws_waitPromise(tws_Promise *pr)
     mr_waitAndHelp(&pr->mr);
     _Mfence();
     return pr->code;
+}
+
+void tws_memoryFence()
+{
+    _Mfence();
+}
+
+void tws_atomicIncRef(unsigned* pcount)
+{
+    _AtomicInc_Acq((NativeAtomic*)pcount);
+}
+
+int tws_atomicDecRef(unsigned* pcount)
+{
+    return !_AtomicDec_Rel((NativeAtomic*)pcount);
 }
 
 #define TWS_CHECK(cond) do { TWS_ASSERT((cond), "atomics test fail"); if(!(cond)) return 0; } while(0)

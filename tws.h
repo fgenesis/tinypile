@@ -225,8 +225,7 @@ void tws_shutdown(void);
 // Create a new job.
 // You can create child jobs and add continuations until the job is submitted.
 // When inside a job's work function, you may add more children and continuations to the currently running job.
-// 'data[0..size)' is copied into the job. If there is not enough space, a heap allocation is made.
-//    If that fails too, job creation will fail and return NULL.
+// 'data[0..size)' is copied into the job. If there is not enough space, an extra heap allocation is made.
 // 'maxcont' is the maximum number of continuations that you will ever add to this job.
 //    Must be known up-front. Adding less is ok. Adding more will assert() in debug mode.
 // 'type' specifies which threads can run this job.
@@ -236,6 +235,7 @@ void tws_shutdown(void);
 // Submitting a job may run it immediately. More importantly, parent jobs may be run anytime wrt. their children.
 // Parent-child relation is ONLY used for when to consider a job done (parent is done when all children are done);
 // to express dependencies, use continuations.
+// Returns NULL if (and only if) the underlying memory allocator fails.
 tws_Job *tws_newJob(tws_JobFunc f, const void *data, size_t size, unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev);
 
 // Similar to tws_newJob(), but does not copy any data into the job.
@@ -247,7 +247,7 @@ tws_Job *tws_newJobNoInit(tws_JobFunc f, void **pdata, size_t size, unsigned sho
 // Shortcut to add an empty job.
 // This is useful to set as parent for some other jobs that need to run first,
 // and for registering continuations that have to run when those child jobs are done.
-inline tws_Job *tws_newEmptyJob(unsigned maxcont)
+inline tws_Job *tws_newEmptyJob(unsigned short maxcont, tws_Event *ev)
 {
     return tws_newJob(NULL, NULL, 0, maxcont, tws_TINY, NULL, NULL);
 }
@@ -267,7 +267,7 @@ void tws_submit(tws_Job *job, tws_Job *ancestor /* = NULL */);
 // --- Event functions ---
 // Create an event to indicate job completion.
 // An event can be submitted along one or more jobs and can be queried whether all associated jobs have finished.
-// An event initially starts with a count of 0. Submitting an event increases the count by 1,
+// An event initially starts with a count of 0. Submitting a job with an attached event increases the count by 1,
 // completion of a job decreases the count by 1. An event is "done" when the count is 0.
 // Avoid creating and deleting events repeatedly, re-use them if possible.
 tws_Event *tws_newEvent(void);
@@ -296,7 +296,7 @@ void tws_waitEx(tws_Event *ev, tws_WorkType *help, size_t n);
 /* --- Promise API ---
 
 A promise provides an easy way of returning data from a job asynchronously.
-It's like an event except it's fully user controlled and can carry data.
+It's like a tws_Event except it's fully user controlled and can carry data.
 
 (NB: If you're used to promises in conjunction with futures: Doesn't exist here. Too complicated.
 This promise combines both concepts, which is simpler, easier, and equally powerful.)
@@ -379,6 +379,10 @@ int tws_waitPromise(tws_Promise *pr);
 
 // --- Utility functions ---
 
+void tws_memoryFence();
+
+void tws_atomicIncRef(unsigned *pcount);
+int tws_atomicDecRef(unsigned *pcount); // returns 1 when count == 0 after decrementing
 
 // --- Don't touch this unless you know what you're doing. ---
 // Control internal 'lightweight semaphore' spin count.
@@ -390,6 +394,13 @@ int tws_waitPromise(tws_Promise *pr);
 unsigned tws_getSemSpinCount(void);
 void tws_setSemSpinCount(unsigned spin);
 
+// Set parent of job. Returns 1 if parent was set, 0 if job already has a parent. Assert()s if either job has been submitted already.
+// Very unsafe to use, therefore DO NOT USE this function. It's intended for the C++ API, not for end users!
+int _tws_setParent(tws_Job *job, tws_Job *parent);
+
+// Free space for user data given ncont continuations, without requiring an extra allocation.
+// For the C++ API.
+size_t _tws_getJobAvailSpace(unsigned short ncont);
 
 #ifdef __cplusplus
 }
