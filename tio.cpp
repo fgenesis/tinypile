@@ -1,6 +1,3 @@
-// TODO: prefetch block of visible memory for mmio streams if enabled. have 2 blocks in flight.
-
-
 /* Tiny file I/O abstraction library.
 
 License:
@@ -11,20 +8,13 @@ Features:
 - File names and paths use UTF-8.
 - No heap allocations in the library (one exception on win32 where it makes sense. Ctrl+F VirtualAlloc)
 - Win32: Proper translation to wide UNC paths to avoid 260 chars PATH_MAX limit
-- 64 bit file sizes and offsets
+- 64 bit file sizes and offsets everywhere
 
 Dependencies:
-- Optionally libc for memcpy, memset, strlen unless you use your own
+- Optionally libc for memcpy, memset, strlen, <<TODO list>> unless you use your own
 - On POSIX platforms: libc for some POSIX wrappers around syscalls (open, close, posix_fadvise, ...)
 - C++(98) for some convenience features, destructors, struct member autodetection, and type safety
   (But no exceptions, STL, or the typical C++ bullshit)
-
-Thread safety:
-- There is no global state.
-  (Except a bunch of statics that are set on the first call to avoid further syscalls.)
-- The system wrapper APIs are as safe as guaranteed by the OS.
-  Usually you may open/close files, streams, mmio freely from multiple threads at once.
-- Individual tio_Stream, tio_MMIO need to be externally locked if used across multiple threads.
 
 Why not libc stdio?
 - libc has no concept of directories
@@ -37,6 +27,10 @@ Why not libc stdio?
 - Some functions like ungetc() should never have existed
 - Try to get the size of a file without seeking. Bonus points if the file is > 4 GB.
 - fopen() access modes are stringly typed and rather confusing. "r", "w", "r+", "w+"?
+- Especially "a" or "a+" are just weird and confusing if you think about it
+  ("a" ignores seeks; "a+" can seek but sets the file cursor always back to the end when writing.
+  Why does this need to be special-cased? We can just seek to the end and then write,
+  and actually respect seeks and not silently ignore them.)
 - fopen() in "text mode" does magic escaping of \n to \r\n,
   but only on windows, and may break when seeking
 
@@ -150,7 +144,7 @@ Origin:
 #  define TIO_NOINLINE
 #endif
 
-#if defined(_DEBUG) || defined(DEBUG) || !defined(NDEBUG)
+#if !defined(TIO_DEBUG) && (defined(_DEBUG) || defined(DEBUG) || !defined(NDEBUG))
 #  define TIO_DEBUG
 #endif
 
@@ -172,6 +166,13 @@ Origin:
 #  endif
 #endif
 
+#ifdef _MSC_VER
+// MSVC emits some dumb warnings when /ANALYZE is used
+#  pragma warning(disable: 6255) // warning C6255: _alloca indicates failure by raising a stack overflow exception.  Consider using _malloca instead.
+   // --> all calls to alloca() are bounds-checked, and _malloca() is a MS-specific extension
+#  pragma warning(disable: 26812) // warning C26812: The enum type '<...>' is unscoped. Prefer 'enum class' over 'enum' (Enum.3).
+   // --> enum class is C++11, not used on purpose for compatibility
+#endif
 
 // bounded, non-zero stack allocation
 #define tio__checked_alloca(n) (((n) && (n) <= TIO_MAX_STACK_ALLOC) ? tio__alloca(n) : NULL)
@@ -329,7 +330,7 @@ static void WIN_InitOptionalFuncs()
 
 #define WIN_ToWCHAR(wc, len, str, extrasize) \
     len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, str, -1, NULL, 0); \
-    wc = (LPWSTR)tio__checked_alloca((len + (extrasize)) * sizeof(WCHAR)); \
+    wc = len > 0 ? (LPWSTR)tio__checked_alloca((size_t(len) + (extrasize)) * sizeof(WCHAR)) : NULL; \
     AutoFreea _afw(wc); \
     if(wc) MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, str, -1, wc, len);
 
@@ -647,7 +648,7 @@ static size_t _os_mmioAlignment()
 
 static size_t os_mmioAlignment()
 {
-    static size_t aln = _os_mmioAlignment();
+    static const size_t aln = _os_mmioAlignment();
     return aln;
 }
 
@@ -1914,3 +1915,10 @@ TIO_EXPORT size_t tio_streamfail(tio_Stream *sm)
 }
 
 /* ---- End public API ---- */
+
+
+/* TODOs:
+- prefetch block of visible memory for mmio streams if enabled. have 2 blocks in flight.
+
+*/
+

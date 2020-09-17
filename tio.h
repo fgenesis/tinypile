@@ -23,6 +23,13 @@ Known/Intentional limitations:
 - Unlike STL/libc functions (fread() and friends, std::fstream), which are buffered,
   all tio calls are thin wrappers around system APIs.
   Means if you're requesting data byte-by-byte, syscall overhead will kill you.
+
+Thread safety:
+- There is no global state.
+  (Except few statics that are set on the first call to avoid further syscalls.)
+- The system wrapper APIs are as safe as guaranteed by the OS.
+  Usually you may open/close files, streams, mmio freely from multiple threads at once.
+- Individual tio_Stream, tio_MMIO need to be externally locked if used across multiple threads.
 */
 
 #pragma once
@@ -73,6 +80,7 @@ enum tio_Mode_
     tioM_MustExist = 0x20,    /* Fail if file doesn't exist */
     tioM_MustNotExist = 0x30, /* Fail if file already exists, create it if it doesn't. */
 
+    // TODO: KILL THIS
     /* Append flag */
     tio_A          = 0x40,   /* Write operations always append to end of file.
                                 Changes default flags:
@@ -345,7 +353,6 @@ struct tio_Stream
         union
         {
             void *ptr[10]; /* Opaque pointers, for use by Refill() and Close() */
-            uintptr_t uiptr[10];
             tio_MMIO mmio; /* If the stream is mmio-based, this is used instead */
             tio_Handle handle; /* And this is for file-handle-based streams */
         } u;
@@ -361,7 +368,7 @@ struct tio_Stream
    * any other number to try and read blocks of roughly this size.
    The actually used value will be rounded to a multiple of an OS-defined I/O block size
    and may be different from what was specified.
-   Note that you must refill the stream before you can read from it. */
+   Streams opened for reading have no initial data -- you must refill the stream first to get an initial batch of data. */
 TIO_EXPORT tio_error tio_sopen(tio_Stream *sm, const char *fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize);
 
 /* Close a stream and free associated resources. The stream will become invalid. */
@@ -372,11 +379,12 @@ inline static tio_error tio_sclose(tio_Stream *sm) { sm->Close(sm); return sm->e
      The memory region in [begin, end) may then be read by the caller.
      On EOF or I/O error, the error flag is set, and the stream will transition
      to the failure mode as previously set in tio_sopen().
+     Returns the number of bytes available for reading.
    - When writing, the block of memory in [begin, end) will be written to storage.
      If writing is not possible, the stream's error flag will be set,
      and further attempts to write are ignored.
      The stream's cursor, begin, end pointers will be unchanged after the call.
-   Returns the number of bytes available or written. */
+     Returns the number of bytes written. */
 inline static size_t tio_srefill(tio_Stream *sm) { return sm->Refill(sm); }
 
 /* Return number of bytes available for reading, in [cursor, end). */
@@ -393,7 +401,7 @@ TIO_EXPORT tiosize tio_swrite(tio_Stream *sm, const void *src, size_t bytes);
    Uses sm->cursor to keep track of partial transfers.
    Returns immediately if a stream has no data or if the error flag is set.
    Note that this function is provided for convenience but defeats the zero-copy advantage of a stream.
-   Use only if you need to copy a stream's data to a contiguous block of memory. */
+   Use only if you absolutely have to copy a stream's data to a contiguous block of memory. */
 TIO_EXPORT tiosize tio_sread(tio_Stream *sm, void *dst, size_t bytes);
 
 /* Close a valid stream and cleanly transition into the previously set failure state:
@@ -435,8 +443,8 @@ TIO_EXPORT tio_error tio_createdir(const char *path);
 - Condense multiple directory separators into one
 - Check if path makes sense ("C:\foo\..\.." does not -- goes above the root)
 - Adjust dir separators to current platform
-Will return error if the path is non-sensical or there's not enough space to write the result followed by '\0'.
-dstsize should be a few more bytes than strlen(path) to ensure the UNC prefix fits;
+Will return error if the path is non-sensical or there's not enough space to write the result and terminating '\0'.
+dstsize should be a few more bytes than strlen(path) to ensure the UNC prefix fits if we're on windows;
 aside from that the resulting path can not become longer than the input path. */
 TIO_EXPORT tio_error tio_cleanpath(char *dst, const char *path, size_t dstsize, int forcetrail);
 
