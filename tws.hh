@@ -784,5 +784,4 @@ inline Chain::Chain(const priv::JobOp& o) : Base(o.finalize())
   right now chain >> chain doesn't append to end of first chain.
   OR: add _tail member to Chain class and use that in JobOp ctor. actually no, make it all Chain: (a >> b) / c: c can be added to a._par?
 - make .then() accept Chain
-- tws.c: possible to detect if child of a job is added as a continuation to its parent? (deadlocks)
 */

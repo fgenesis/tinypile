@@ -249,7 +249,7 @@ tws_Job *tws_newJobNoInit(tws_JobFunc f, void **pdata, size_t size, unsigned sho
 // and for registering continuations that have to run when those child jobs are done.
 inline tws_Job *tws_newEmptyJob(unsigned short maxcont, tws_Event *ev)
 {
-    return tws_newJob(NULL, NULL, 0, maxcont, tws_TINY, NULL, NULL);
+    return tws_newJob(NULL, NULL, 0, maxcont, tws_TINY, NULL, ev);
 }
 
 // Submit a job. Submit children first, then the parent.

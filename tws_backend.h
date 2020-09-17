@@ -223,7 +223,7 @@ static void tws_impl_sem_leave(tws_Sem *sem)
     ReleaseSemaphore(sem, 1, NULL);
 }
 
-typedef BOOL (WINAPI *pfnGetLogicalProcessorInformation)(PSYSTEM_LOGICAL_PROCESSOR_INFORMATION, PDWORD);
+/*typedef BOOL (WINAPI *pfnGetLogicalProcessorInformation)(PSYSTEM_LOGICAL_PROCESSOR_INFORMATION, PDWORD);
 static pfnGetLogicalProcessorInformation GetLogicalProcessorInformationFunc()
 {
     static pfnGetLogicalProcessorInformation f = NULL;
@@ -233,7 +233,7 @@ static pfnGetLogicalProcessorInformation GetLogicalProcessorInformationFunc()
     if(kernel32)
         f = (pfnGetLogicalProcessorInformation)GetProcAddress(kernel32, "GetLogicalProcessorInformation");
     return f;
-}
+}*/
 
 static inline unsigned tws_impl_getNumCPUs()
 {
