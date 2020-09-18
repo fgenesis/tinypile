@@ -2274,6 +2274,10 @@ int tws_waitPromise(tws_Promise *pr)
     return pr->code;
 }
 
+// ----------------------------------------------------------------------
+// -- Utility --
+// ----------------------------------------------------------------------
+
 void tws_memoryFence()
 {
     _Mfence();
@@ -2288,6 +2292,111 @@ int tws_atomicDecRef(unsigned* pcount)
 {
     return !_AtomicDec_Rel((NativeAtomic*)pcount);
 }
+
+// ----------------------------------------------------------------------
+// -- Kernel dispatch --
+// ----------------------------------------------------------------------
+
+struct SplitData
+{
+    tws_Kernel k;
+    void *ud;
+    size_t begin;
+    size_t n;   // number of elements
+    size_t maxn; // max #elements per batch
+};
+typedef struct SplitData SplitData;
+
+static tws_Job *_splitOffRightSubset(tws_Job *job, const SplitData *data, size_t rightSize, size_t totalSize)
+{
+    SplitData *sp;
+    tws_Job *ch = tws_newJobNoInit(job->f, (void**)&sp, sizeof(SplitData), 0, job->type, job, NULL);
+    if(ch)
+    {
+        sp->k = data->k;
+        sp->ud = data->ud;
+        sp->begin = data->begin + (totalSize - rightSize); // start of right half
+        sp->n = rightSize;
+        sp->maxn = data->maxn;
+        tws_submit(ch, NULL);
+    }
+    return ch;
+}
+
+// tries to split into the same number of elements left and right
+static void _splitEvenThunk(SplitData *data, tws_Job *job, tws_Event *ev)
+{
+    (void)ev;
+    size_t n = data->n;
+    while(n > data->maxn)
+    {
+        // spawn right child
+        size_t righthalf = n / 2u;
+        if(!_splitOffRightSubset(job, data, righthalf, n))
+            break; // Can't alloc job? gotta finish the rest myself
+        n -= righthalf; // "loop-recurse" into left child
+    }
+
+    data->k(data->ud, data->begin, n);
+}
+
+// tries to maximize occupancy of right subset via uneven split
+static void _splitMaxThunk(SplitData *data, tws_Job *job, tws_Event *ev)
+{
+    (void)ev;
+    size_t n = data->n;
+    const size_t maxn = data->maxn;
+    job->f = (tws_JobFunc)_splitEvenThunk; // The right subset can be split evenly since a power of 2 is involved
+    while(n > maxn)
+    {
+        // Make it so that righthalf is always a power-of-2 multiple of maxn
+        size_t righthalf = maxn * RoundUpToPowerOfTwo((n / 2u + (maxn - 1)) / maxn);
+        if(!_splitOffRightSubset(job, data, righthalf, n))
+            break;
+        n -= righthalf;
+    }
+
+    data->k(data->ud, data->begin, n);
+}
+
+static tws_Job *_tws_splitGeneric(tws_JobFunc split, tws_Kernel k, void *ud, size_t n, size_t maxElems,
+    unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev)
+{
+    TWS_ASSERT(maxElems, "RTFM: maxElems == 0 makes no sense here, what are you even doing");
+    TWS_ASSERT(k, "RTFM: Pass a valid kernel. NULL is not valid.");
+    if(!(maxElems && k))
+        return NULL;
+    if(!n) // No elements is not an error.
+        return tws_newJob(NULL, NULL, 0, maxcont, tws_TINY, parent, ev);
+    SplitData *sp;
+    tws_Job *j = tws_newJobNoInit(split, (void**)&sp, sizeof(SplitData), maxcont, type, parent, ev);
+    if(j)
+    {
+        sp->k = k;
+        sp->ud = ud;
+        sp->begin = 0;
+        sp->n = n;
+        sp->maxn = maxElems;
+    }
+    return j;
+}
+
+tws_Job *tws_dispatchEven(tws_Kernel k, void *ud, size_t n, size_t maxElems,
+    unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev)
+{
+    return _tws_splitGeneric((tws_JobFunc)_splitEvenThunk, k, ud, n, maxElems, maxcont, type, parent, ev);
+}
+
+
+tws_Job *tws_dispatchMax (tws_Kernel k, void *ud, size_t n, size_t maxElems,
+    unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev)
+{
+    return _tws_splitGeneric((tws_JobFunc)_splitMaxThunk, k, ud, n, maxElems, maxcont, type, parent, ev);
+}
+
+// ----------------------------------------------------------------------
+// -- Debug tests --
+// ----------------------------------------------------------------------
 
 #define TWS_CHECK(cond) do { _Mfence(); TWS_ASSERT((cond), "atomics test fail"); if(!(cond)) return 0; } while(0)
 static int _tws_testAtomics(void)

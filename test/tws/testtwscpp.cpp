@@ -39,6 +39,11 @@ struct JobTest
     }
 };
 
+void checksize(void *ud, size_t first, size_t n)
+{
+    printf("size: %u\n", unsigned(n));
+}
+
 int main()
 {
     unsigned cache = tws_getCPUCacheLineSize();
@@ -62,6 +67,12 @@ int main()
         return 2;
 
     printf("Space in job given 2 continuations: %u bytes\n", (unsigned)_tws_getJobAvailSpace(2));
+
+    {
+        tws::Event ev;
+        tws_Job *j = tws_splitMax(checksize, NULL, 1507, 64, 0, tws_DEFAULT, NULL, ev);
+        tws_submit(j, NULL);
+    }
     
     /*{
         Event ev;
@@ -76,6 +87,7 @@ int main()
 
     //{ tws::Job<JobTest> j(JobTest(1000)); }
 
+    if(0)
     {
         Event ev;
         JobTest A(0);

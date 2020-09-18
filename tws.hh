@@ -331,6 +331,7 @@ class CheckedJobBase
 
     template<typename U, typename V> friend class JobMixin;
     friend struct JobGenerator;
+    friend class JobHandle;
 
 protected:
     tws_Job *_j;
@@ -457,9 +458,9 @@ public:
 // C++ scoping rules enforce proper use and your code won't compile
 // if there is an ownership problem that would assert() or crash at runtime.
 template<typename T, unsigned short ExtraCont = 0>
-class Job : public priv::JobMixin<Job<T, ExtraCont>, priv::CheckedJobBase>
+class Job : public priv::JobMixin<Job<T, ExtraCont>, priv::AutoSubmitJobBase>
 {
-    typedef priv::JobMixin<Job<T, ExtraCont>, priv::CheckedJobBase> Base;
+    typedef priv::JobMixin<Job<T, ExtraCont>, priv::AutoSubmitJobBase> Base;
     typedef Job<T, ExtraCont> Self;
     TWS_DELETE_METHOD(Job(const Job&));
     TWS_DELETE_METHOD(Self& operator=(const Self&));
@@ -493,11 +494,7 @@ class Job : public priv::JobMixin<Job<T, ExtraCont>, priv::CheckedJobBase>
 public:
     typedef priv::Tag tws_operator_tag;
 
-    // dtor submits a job unless it was added as a continuation somewhere
-    inline ~Job() { if(this->_j) tws_submit(this->transfer(), NULL); }
-
     inline Job()                                                : Base(newjob(NULL, NULL)) { _init(); }
-    inline Job(tws_Event *ev)                                   : Base(newjob(NULL,   ev)) { _init(); }
     inline Job(tws_Job *parent, tws_Event *ev = 0)              : Base(newjob(parent, ev)) { _init(); }
     inline Job(const T& t, tws_Event *ev = 0)                   : Base(newjob(NULL,   ev)) { _init(t); }
     inline Job(const T& t, tws_Job *parent, tws_Event *ev = 0)  : Base(newjob(parent, ev)) { _init(t); }
@@ -520,6 +517,19 @@ public:
     inline       T* operator->()       { return data(); }
     inline const T* operator->() const { return data(); }
 };
+
+// Job wrapper for an externally created job
+/*class JobHandle : public priv::JobMixin<JobHandle, priv::AutoSubmitJobBase>
+{
+    typedef priv::JobMixin<JobHandle, priv::AutoSubmitJobBase> Base;
+    TWS_DELETE_METHOD(JobHandle(const JobHandle&));
+    TWS_DELETE_METHOD(JobHandle& operator=(const JobHandle&));
+
+public:
+    typedef priv::Tag tws_operator_tag;
+    explicit inline JobHandle(tws_Job *j) : Base(j) {}
+    inline JobHandle(CheckedJobBase& j) : Base(j.transfer()) {}
+};*/
 
 // -----------------------------------------------------------
 // Overloaded operators || and >>
@@ -822,7 +832,9 @@ inline Chain::Chain(const priv::JobOp& o) : Base(o.finalize())
 
 
 /* TODO:
-- tws::ParallelFor + automatic splitting (add to tws.c using void*?)
+- JobHandle j = tws::transform<[worktype, ncont,] IN, OUT, OP> (first1, last1, result, op, [blocksize])
+- tws::for_each<...>(first1, last1, op, [blocksize])
+- tws::generate<> ... f(index)
 - tws::Promise<T>
 - make things work with lambdas as jobs
 - remove JobOp and move everything to Chain (make sure this doesn't break temporaries semantics).

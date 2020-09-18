@@ -376,6 +376,64 @@ void tws_fulfillPromise(tws_Promise *pr, int code);
 int tws_waitPromise(tws_Promise *pr);
 
 
+// --- Kernel dispatch ---
+
+// Helper functions to split work into bite-sized chunks, each of which is processed by a kernel.
+// The kernel function is called concurrently so that a dataset in 'ud'
+// is processed in small pieces. 'first' is your starting index, 'n' the number of elements to process.
+// It's like a 1D kernel launch if you're familiar with CUDA, OpenCL, compute shaders, or similar.
+
+typedef void (*tws_Kernel)(void *ud, size_t first, size_t n);
+
+/* How to use? Assume you have an array of floats:
+
+float array[N] = {...}; // assume N is Very Large
+
+// If you want to eg. add 1.0f to each element, you would write this:
+
+for(size_t i = 0; i < N; ++i) // A serial loop, single-core. Yawn!
+    array[i] += 1.0f;
+
+// Time to multithread all the things!
+// A simple kernel function could look like this:
+void addOne(void *ud, size_t first, size_t n) // ud is passed through, first and n changes per call.
+{
+    float *array = (float*)ud;
+    float *slice = &array[first]; // slice[0..n) is the part we're allowed to touch.
+    for(size_t i = 0; i < n; ++i) // Same loop as above except you're given a starting index and a smaller size.
+        slice[i] += 1.0f;
+}
+
+// -- Create a job: --
+tws_Job *j = tws_dispatchEven(addOne, array, N, 1024, ...job params); // process in 1024 element chunks
+
+// -- Submit it --
+// (add continuations and children to j if necessary)
+tws_submit(j, ...);
+// As j runs, it will spawn more jobs and subdivide until the kernel can be called with n <= 1024.
+*/
+
+// Creates a new job from a *kernel function*.
+// 'ud' will be passed through unchanged.
+// 'elems' is the total number of elements to process.
+// 'maxElems' is an upper limit for the chunk size thrown at your kernel.
+// The last 4 parameters (maxcont, type, parent, ev) are like in tws_newJob().
+// Returns NULL when out of memory aka the job can't be created.
+// Returns a valid (but empty) job if elems == 0.
+// Asserts that maxElems > 0 and kernel != NULL; with assertions off it'll return NULL in that case.
+// The function splits the size in half each subdivision, so when you pass elems=20 and maxElems=16,
+// you will get 2x 10 elements.
+tws_Job *tws_dispatchEven(tws_Kernel kernel, void *ud, size_t elems, size_t maxElems,
+    unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev);
+
+// Similar to the above function, but instead of splitting evenly, it will prefer an uneven split
+// and call your kernel repeatedly with exactly n == maxElems and once with (elems % maxElems) if this is not 0.
+// In the above example with elems=20 and maxElems=16 that would result in 16 and 4 elements.
+// The uneven split is useful for eg. processing as many elements as your L2 cache can fit, *hint hint*.
+tws_Job *tws_dispatchMax (tws_Kernel kernel, void *ud, size_t elems, size_t maxElems,
+    unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev);
+
+
 
 // --- Utility functions ---
 
@@ -399,7 +457,7 @@ void tws_setSemSpinCount(unsigned spin);
 int _tws_setParent(tws_Job *job, tws_Job *parent);
 
 // Free space for user data in a job given ncont continuations, without requiring an extra heap allocation.
-// For the C++ API.
+// For the C++ API. Returns 0 if there is no space or ncont is large enough to force a heap allocation.
 size_t _tws_getJobAvailSpace(unsigned short ncont);
 
 #ifdef __cplusplus
