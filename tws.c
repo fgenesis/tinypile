@@ -92,6 +92,8 @@ Some notes:
 #if defined(__clang__) || defined(__GNUC__)
 #  define TWS_HAS_GCC
      // TODO: TWS_NOTNULL
+#  define TWS_LIKELY(x)      __builtin_expect(!!(x), 1)
+#  define TWS_UNLIKELY(x)    __builtin_expect(!!(x), 0)
 #endif
 
 #define TWS_RESTRICT __restrict
@@ -141,8 +143,6 @@ Some notes:
 #  define COMPILER_BARRIER() asm volatile("" ::: "memory")
 #  define TWS_THREADLOCAL __thread
 #  define TWS_DECL_ATOMIC(x) __atomic x
-#  define TWS_LIKELY(x)      __builtin_expect(!!(x), 1)
-#  define TWS_UNLIKELY(x)    __builtin_expect(!!(x), 0)
 #elif defined(TWS_HAS_CPP11) // STL, but most likely all inline/intrinsics
 #  include <atomic>
 #  define TWS_USE_CPP11
@@ -2496,10 +2496,6 @@ typedef enum tws_Warn
 } tws_Warn;
 
 - possible to detect if child of a job is added as a continuation to its parent? (deadlocks)
-
-- get rid of lock in _fl_trypop(): link up only poisoned pointers (set lowest bit).
-    un-poison on pop. so when a pointer is put back in the meantime it won't have the low bit and the CAS will fail.
-    that should make it safe.
 
 - move tws_PerType::availJobs to other cache line? (shares with LWsem)
 */
