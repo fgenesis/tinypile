@@ -405,6 +405,7 @@ static void *lwsem_init(LWsem *ws, int count);
 static void lwsem_destroy(LWsem *ws);
 static void lwsem_enter(LWsem *ws);
 static void lwsem_leave(LWsem *ws);
+static void lwsem_leaveMax(LWsem *ws, tws_Atomic maxval);
 
 static inline unsigned IsPowerOfTwo(size_t v)
 { 
@@ -502,6 +503,25 @@ static void lwsem_leave(LWsem *ws)
 {
 #ifndef TWS_NO_SEMAPHORE_WRAPPER
     const tws_Atomic old = _AtomicInc_Rel(&ws->a_count) - 1;
+    const tws_Atomic toRelease = -old < 1 ? -old : 1;
+    if (toRelease > 0)
+#endif
+        _LeaveSem(ws->sem);
+}
+
+static void lwsem_leaveMax(LWsem *ws, tws_Atomic maxcount)
+{
+#ifndef TWS_NO_SEMAPHORE_WRAPPER
+    tws_Atomic old = _RelaxedGet(&ws->a_count);
+    tws_Atomic newval;
+    for(;;)
+    {
+        newval = old + 1;
+        if(newval > maxcount)
+            newval = maxcount;
+        if(_AtomicCAS_Weak_Rel(&ws->a_count, &old, newval)) // updates old if failed
+            break;
+    }
     const tws_Atomic toRelease = -old < 1 ? -old : 1;
     if (toRelease > 0)
 #endif
@@ -1055,6 +1075,7 @@ struct tws_TlsBlock
 // one entry per distinct tws_WorkType
 typedef struct tws_PerType
 {
+    NativeAtomic availJobs;// counter of how many jobs of this type are available right now (if there are none, all threads can go sleep)
     LWsem waiter;          // used to wait until work of that type is available
     unsigned firstThread;  // first threads' ID that works on this type
     unsigned numThreads;   // number of threads that work on this type
@@ -1440,15 +1461,21 @@ static tws_Job *_GetJobFromGlobalQueue(tws_WorkType type)
 static tws_Job *_GetJob_Worker(tws_TlsBlock *mytls)
 {
     tws_Job *job = jq_pop(&mytls->jq); // get from own queue
-    if(job)
-        return job;
-
     tws_WorkType type = mytls->worktype;
+    if(job)
+        goto success;
+
     job = _StealFromSomeone(&mytls->stealFromIdx, type, mytls->threadID);
     if(job)
-        return job;
-    
-    return _GetJobFromGlobalQueue(type);
+        goto success;
+
+    job = _GetJobFromGlobalQueue(type);
+    if(job)
+    {
+success:
+        _AtomicDec_Acq(&_GetPerTypeData(type)->availJobs);
+    }
+    return job;
 }
 
 // called by any external thread that is not a worker thread
@@ -1458,11 +1485,14 @@ static tws_Job *_GetJob_External(tws_WorkType type)
 
     // let the workers do their thing and try the global queue first
     tws_Job *job = _GetJobFromGlobalQueue(type);
+    if(!job)
+    {
+        unsigned idx = 0;
+        job = _StealFromSomeone(&idx, type, -1);
+    }
     if(job)
-        return job;
-
-    unsigned idx = 0;
-    return _StealFromSomeone(&idx, type, -1);
+        _AtomicDec_Acq(&_GetPerTypeData(type)->availJobs);
+    return job;
 }
 
 // called by any thread
@@ -1575,14 +1605,15 @@ retry:
             return;
         }
         
-        if(!_HelpWithWorkOnce(tws_DEFAULT)) // let someone else finish some stuff, that'll free a slot eventually
+        if(!_HelpWithWorkOnce(mytls ? mytls->worktype : tws_DEFAULT)) // let someone else finish some stuff, that'll free a slot eventually
             _Yield(); // if we couldn't help, at least yield a little
         goto retry;
     }
 
 success:
-    // poke one thread to work on the new job
-    lwsem_leave(poke);
+    // increase counter and poke one thread to work on the new job
+    _AtomicInc_Rel(&perType->availJobs);
+    lwsem_leaveMax(poke, perType->numThreads);
 }
 
 static void AddCont(tws_Job *ancestor, tws_Job *continuation)
@@ -1643,7 +1674,8 @@ static void AddCont(tws_Job *ancestor, tws_Job *continuation)
         }
 
         // OOM -> we're doomed. have to wait until some memory is relaimed, so get some other work done in the meantime.
-        if(_HelpWithWorkOnce(tws_DEFAULT)) // that'll free a slot eventually
+        tws_TlsBlock *mytls = tls;
+        if(_HelpWithWorkOnce(mytls ? mytls->worktype : tws_DEFAULT)) // that'll free a slot eventually
             _Yield(); // if we couldn't help, at least yield a little
 
         // -----
@@ -1950,7 +1982,8 @@ static void _tws_mainloop(void)
         tws_Job *job = _GetJob_Worker(mytls); // get whatever work is available
         if(job)
             Execute(job);
-        lwsem_enter(waiter); // wait until work is available
+        else if(!_AtomicGet_Seq(&perType->availJobs))
+            lwsem_enter(waiter); // wait until work is available
     }
 
     _AtomicDec_Rel(&s_pool->activeTh);
@@ -2096,6 +2129,7 @@ tws_Error _tws_init(const tws_Setup *cfg)
         unsigned n = cfg->threadsPerType[type];
         perType->firstThread = nth;
         perType->numThreads = n;
+        perType->availJobs.val = 0;
 
         if(!lwsem_init(&perType->waiter, 0))
             return tws_ERR_ALLOC_FAIL;
@@ -2463,7 +2497,9 @@ typedef enum tws_Warn
 
 - possible to detect if child of a job is added as a continuation to its parent? (deadlocks)
 
-- investigate parallelism degradation with small sem spin counts. idea:
-    - keep per-work-type counter of unfetched jobs, sleep when 0.
-    - make waiter a max-sem that doesn't count above the number of threads in that work group
+- get rid of lock in _fl_trypop(): link up only poisoned pointers (set lowest bit).
+    un-poison on pop. so when a pointer is put back in the meantime it won't have the low bit and the CAS will fail.
+    that should make it safe.
+
+- move tws_PerType::availJobs to other cache line? (shares with LWsem)
 */
