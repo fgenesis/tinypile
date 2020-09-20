@@ -70,7 +70,7 @@ int main()
 
     {
         tws::Event ev;
-        tws_Job *j = tws_splitMax(checksize, NULL, 1507, 64, 0, tws_DEFAULT, NULL, ev);
+        tws_Job *j = tws_dispatchMax(checksize, NULL, 1507, 64, 0, tws_DEFAULT, NULL, ev);
         tws_submit(j, NULL);
     }
     

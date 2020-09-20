@@ -42,7 +42,7 @@ static void work(void *data, tws_Job *curjob, tws_Event *ev)
 // recursive expansion
 static void work2c(void *data, tws_Job *curjob, tws_Event *ev)
 {
-    compute(256);
+    //compute(256);
     ++a_test;
 }
 static void work2b(void *data, tws_Job *curjob, tws_Event *ev)
