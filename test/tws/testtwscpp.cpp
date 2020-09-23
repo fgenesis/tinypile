@@ -39,9 +39,9 @@ struct JobTest
     }
 };
 
-void checksize(void *ud, size_t first, size_t n)
+void checksize(void *, size_t first, size_t n)
 {
-    printf("size: %u\n", unsigned(n));
+    printf("size: %u, first: %u\n", unsigned(n), unsigned(first));
 }
 
 int main()

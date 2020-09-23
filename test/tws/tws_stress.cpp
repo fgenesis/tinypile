@@ -98,8 +98,14 @@ static void *debugalloc(void *ud, void *ptr, size_t osize, size_t nsize)
     return ret;
 }
 
+static void warncb(tws_Warn what, size_t a, size_t b)
+{
+    printf("%u! (%u, %u)\n", what, (unsigned)a, (unsigned)b);
+}
+
 int main()
 {
+    tws_setDebugCallback(warncb);
     unsigned cache = tws_getCPUCacheLineSize();
     unsigned th0 = tws_getLazyWorkerThreads(); // Keep main thread free; the rest can do background work 
     //tws_setSemSpinCount(100);

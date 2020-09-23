@@ -45,6 +45,9 @@ Some notes:
 // If semaphores are not wrapped, tws_setSemSpinCount() will have no effect.
 //#define TWS_NO_SEMAPHORE_WRAPPER
 
+// Define this to permanently enable debug callbacks, even in release mode.
+//#define TWS_CALLBACKS_ALWAYS_ON
+
 // ---------------------------------------
 
 #if !defined(tws_memcpy) || !defined(tws_memzero)
@@ -355,6 +358,25 @@ static inline void _Yield(void) { _mm_pause(); }
 
 #endif
 
+// ---- Warning callback ----
+
+#if defined(TWS_CALLBACKS_ALWAYS_ON) || defined(TWS_DEBUG)
+
+static tws_DebugCallback s_warnCB;
+static inline void warn(tws_Warn what, size_t size1, size_t size2)
+{
+    if(s_warnCB)
+        s_warnCB(what, size1, size2);
+}
+tws_Error tws_setDebugCallback(tws_DebugCallback cb)
+{
+    s_warnCB = cb;
+    return tws_ERR_OK;
+}
+#else
+#define warn(a, b, c) do{}while(0)
+tws_Error tws_setDebugCallback(tws_DebugCallback cb) { (void)cb; return tws_ERR_UNSUPPORTED; }
+#endif
 
 // ---- Spinlock ----
 
@@ -1297,7 +1319,11 @@ static tws_Job *AllocJob(void)
         job = _AllocTLSJob(mytls); // fast but can fail (return NULL)
 
     if(!job)
+    {
+        if(mytls)
+            warn(TWS_WARN_JOB_SLOW_ALLOC, 0, 0);
         job = _AllocGlobalJob(); // slow, NULL only if out of memory
+    }
 
     return job;
 }
@@ -1373,6 +1399,7 @@ static tws_Job *NewJobWithoutData(tws_JobFunc f, size_t size, unsigned short max
 
         if(TWS_UNLIKELY(maxjobsize < reqsize)) // extra data too large to fit into job? alloc separately then.
         {
+            warn(TWS_WARN_JOB_REALLOCATED, maxjobsize, reqsize);
             tws_JobExt *xp = _AllocJobExt(job, size, maxcont1); // also stores the returned pointer in the job
             if(TWS_UNLIKELY(!xp))
             {
@@ -1582,6 +1609,7 @@ retry:
                 goto success;
 
             // queue is full, need to spill
+            warn(TWS_WARN_JOB_SPILLED, 0, 0);
         }
     }
     else // We're not a worker
@@ -2486,14 +2514,6 @@ static int _tws_testAtomics(void)
 /* IDEAS/TODO:
 - tws_drain() to wait for all the things to finish and also reset LQ top+bottom? and clears the freelist
 - add TWS_RESTRICT
-- TWS_CHECK_WARN() + add notification callback? (called when spilled, too large job is pushed, etc)
-
-typedef enum tws_Warn
-{
-    TWS_WARN_JOB_SPILLED,       // job was unexpectedly spilled to (slower) backup queue
-    TWS_WARN_JOB_REALLOCATED,   // could not store all data within the job; had to allocate an extra heap block
-    TWS_WARN_JOB_SLOW_ALLOC,    // job had to be allocated from the slow global heap instead of the fast per-worker storage
-} tws_Warn;
 
 - possible to detect if child of a job is added as a continuation to its parent? (deadlocks)
 

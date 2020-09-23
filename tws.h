@@ -59,7 +59,8 @@ typedef enum
     tws_ERR_FUNCPTRS_INCOMPLETE = -2,   // the set of function pointers passed is not usable. RTFM and go fix your init code.
     tws_ERR_PARAM_ERROR         = -3,   // some passed parameters are not usable. RTFM.
     tws_ERR_THREAD_SPAWN_FAIL   = -4,   // backend can't spawn a thread.
-    tws_ERR_THREAD_INIT_FAIL    = -5    // If you get this, your code signaled failure in your tws_Setup::runThread function.
+    tws_ERR_THREAD_INIT_FAIL    = -5,   // If you get this, your code signaled failure in your tws_Setup::runThread function.
+    tws_ERR_UNSUPPORTED         = -6    // Platform or build config doesn't support this.
 } tws_Error_;
 
 typedef int tws_Error;
@@ -252,7 +253,7 @@ inline tws_Job *tws_newEmptyJob(unsigned short maxcont, tws_Event *ev)
     return tws_newJob(NULL, NULL, 0, maxcont, tws_TINY, NULL, ev);
 }
 
-// Submit a job. Submit children first, then the parent.
+// Submit a job. Parent and children can be submitted in any order.
 // The job may or may not run immediately once submitted. The job may finish before this call returns.
 // Once a job is submitted it is undefined behavior to use the job pointer outside of the running job function itself.
 // (Treat the job pointer as if it was free()'d)
@@ -433,6 +434,27 @@ tws_Job *tws_dispatchEven(tws_Kernel kernel, void *ud, size_t elems, size_t maxE
 tws_Job *tws_dispatchMax (tws_Kernel kernel, void *ud, size_t elems, size_t maxElems,
     unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev);
 
+
+
+// --- Optional debug callback ---
+
+// Warnings for common cases of performance degradation.
+// These are really just warnings and the pool will operate fine regardless.
+// Don't mind those unless you're looking for performance issues.
+typedef enum tws_Warn
+{
+    TWS_WARN_JOB_SPILLED,       // job was unexpectedly spilled to (slower) backup queue (overload; TLS queue was full)
+    TWS_WARN_JOB_REALLOCATED,   // could not store all data within the job; had to allocate an extra heap block (too large payload)
+    TWS_WARN_JOB_SLOW_ALLOC,    // job had to be allocated from the slower global freelist instead of the fast per-worker storage (overload; too many jobs in flight)
+} tws_Warn;
+
+// Debug callback. The two size parameters will be set if appropriate.
+typedef void (*tws_DebugCallback)(tws_Warn what, size_t size1, size_t size2);
+
+// Register a debug callback that will be called whenever the internals have something to report.
+// NULL to disable. Disabled by default.
+// Returns tws_ERR_UNSUPPORTED when debug callbacks are compiled out and won't be called.
+tws_Error tws_setDebugCallback(tws_DebugCallback cb);
 
 
 // --- Utility functions ---
