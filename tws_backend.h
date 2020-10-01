@@ -252,7 +252,7 @@ static inline unsigned tws_impl_getCPUCacheLineSize()
     if(glpi)
     {
         unsigned linesz = 0;
-        char stackbuf[4]; // Avoid VirtualAlloc() if possible
+        char stackbuf[4096]; // Avoid VirtualAlloc() if possible
         DWORD bufsz = 0;
         glpi(NULL, &bufsz);
         void *buf = bufsz < sizeof(stackbuf)
@@ -480,7 +480,12 @@ unsigned tws_getLazyWorkerThreads() { unsigned cpus = tws_getNumCPUs(); return c
 #endif /* TWS_BACKEND_IMPLEMENTATION */
 
 
-// TODO detect C++20 and use this?
-/*#if defined(__cpp_lib_semaphore)
+/* TODO:
+- detect C++20 and use this?
+#if defined(__cpp_lib_semaphore)
 #  include <semaphore>
-#endif*/
+#endif
+
+- allow user to select a backend manually via a #define
+
+*/

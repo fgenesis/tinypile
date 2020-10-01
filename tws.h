@@ -337,16 +337,19 @@ tws_destroyPromise(pr);
 
 typedef struct tws_Promise tws_Promise;
 
-// Allocate a new promise with 'space' bytes for data.
-// Alignment is optional and may be set if the promise's internal memory must be aligned to a certain size.
-// Alignment must be power of 2, or pass 0 if you don't care.
-tws_Promise *tws_newPromise(size_t space, size_t alignment);
+// Create a promise from a pointer and a size.
+// Both parameters are totally up to you, the memory is never used or touched.
+tws_Promise *tws_newPromise(void *p, size_t size);
 
-// Delete a previously allocated promise.
-// Deleting an in-flight promise is undefined behavior.
+// Allocate promise together with a data area of 'size' bytes.
+// You can specify a power-of-2 alignment of the data area if you need it. Specify 0 if you don't care.
+tws_Promise *tws_allocPromise(size_t size, size_t alignment);
+
+// Delete a previously created promise.
+// Deleting an in-flight promise is undefined behavior and will probably crash.
 void tws_destroyPromise(tws_Promise *pr);
 
-// Reset a promise to unfulfilled state, allowing to use it again without re-allocating.
+// Reset a promise to unfulfilled state so that it can be used again.
 // Same rules as tws_destroyPromise() apply, don't reset an in-flight promise!
 // Resetting an already reset promise again has no effect.
 void tws_resetPromise(tws_Promise *pr);
@@ -354,28 +357,23 @@ void tws_resetPromise(tws_Promise *pr);
 // Non-blocking; returns 1 when a promise was fulfilled, 0 when it was not.
 int tws_isDonePromise(const tws_Promise *pr);
 
-// Get pointer into the internal promise memory region reserved for return data.
-// psize is set to capacity if passed, ignored if NULL.
-// This function is needed at least twice:
-//    First time to set the data (copy data into the returned pointer),
-//    Second after tws_waitPromise() returns, to get a pointer to the returned data.
-// You can store any data inside the promise; the memory is not touched and will not get cleared on reset.
-// You may also retrieve the pointer just once and keep it around; it never changes during the promise's lifetime.
-void *tws_getPromiseData(tws_Promise *pr, size_t *psize);
+// Get pointer and size that were passed to tws_newPromise() earlier,
+// or allocated via tws_allocPromise().
+// psize is ignored if NULL.
+void *tws_getPromiseData(const tws_Promise *pr, size_t *psize);
 
 // Fulfill (or fail) a promise. 'Code' is up to you and will be returned by tws_waitPromise().
 // You must call this function exactly once per promise.
 // You may call this function again after resetting the promise.
 // Order of operations:
-//  - Call tws_getPromiseData() first and copy whatever you want to return
-//  - Afterwards, call this function.
+//  - Call tws_getPromiseData() first and copy whatever you want to return.
+//  - Afterwards, call this function. Threads waiting on the promise will wake up and continue.
 void tws_fulfillPromise(tws_Promise *pr, int code);
 
 // Wait until promise is done, and return the code passed to tws_fulfillPromise().
-// After this function returns, you may use tws_getPromiseData() to get a pointer to the return data.
-// Like tws_wait(), this helps with unfinished work while waiting.
+// If tws_isDonePromise() is true, this call is non-blocking.
+// Like tws_wait(), this helps with other unfinished work while waiting.
 int tws_waitPromise(tws_Promise *pr);
-
 
 // --- Kernel dispatch ---
 
@@ -474,6 +472,9 @@ int tws_atomicDecRef(unsigned *pcount); // returns 1 when count == 0 after decre
 unsigned tws_getSemSpinCount(void);
 void tws_setSemSpinCount(unsigned spin);
 
+
+// --- Internals -- For the C++ API -- Functions may disappear without notice ---
+
 // Set parent of job. Returns 1 if parent was set, 0 if job already has a parent. Assert()s if either job has been submitted already.
 // Very unsafe to use, therefore DO NOT USE this function. It's intended for the C++ API, not for end users!
 int _tws_setParent(tws_Job *job, tws_Job *parent);
@@ -481,6 +482,9 @@ int _tws_setParent(tws_Job *job, tws_Job *parent);
 // Free space for user data in a job given ncont continuations, without requiring an extra heap allocation.
 // For the C++ API. Returns 0 if there is no space or ncont is large enough to force a heap allocation.
 size_t _tws_getJobAvailSpace(unsigned short ncont);
+
+// For the C++ API
+void _tws_promiseIncRef(tws_Promise *pr);
 
 #ifdef __cplusplus
 }

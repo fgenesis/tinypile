@@ -179,6 +179,11 @@ An example:
 // Define this to remove the operator code completely if you don't want/need it.
 //#define TWS_NO_OPERATOR_OVERLOADS
 
+// You may define this to 0 to force C++98-compliance or to 1 to always enable C++11.
+// If it's not defined C++11 compliance will be autodetected.
+// As a result, this macro will be defined if C++11 is enabled and not defined otherwise.
+//#define TWS_USE_CPP11 0
+
 // ------------------------------------------------------------
 // Don't touch anything below here
 
@@ -227,7 +232,9 @@ class Job;
 
 class Chain;
 
-struct AllocFailed {}; // for exceptions
+// for exceptions
+struct AllocFailed {};
+struct PromiseFailed {};
 
 namespace priv {
 
@@ -286,6 +293,60 @@ struct GetWorkType
 {
     enum { value = GetWorkTypeImpl<T, has_WorkType<T>::value>::value };
 };
+
+// -- Alignment --
+#ifdef TWS_USE_CPP11
+#define tws__alignof(a) alignof(a) /* The simple case */
+#else /* The mad case */
+// via http://www.wambold.com/Martin/writings/alignof.html
+// alignof (T) must be a power of two which is a factor of sizeof (T).
+template <typename U>
+struct _Alignof1
+{
+    enum { s = sizeof(U), value = s ^ (s & (s - 1)) };
+};
+// Put T in a struct, keep adding chars until a "quantum jump" in
+// the size occurs.
+template <typename U> struct _Alignof2;
+
+template <int size_diff>
+struct helper
+{
+    template <typename U> struct Val { enum { value = size_diff }; };
+};
+
+template <>
+struct helper<0>
+{
+    template <typename U> struct Val { enum { value = _Alignof2<U>::value }; };
+};
+
+template <typename U>
+struct _Alignof2
+{
+    struct Big { U x; char c; };
+
+    enum
+    {
+        diff = sizeof (Big) - sizeof (U),
+        value = helper<diff>::template Val<Big>::value
+    };
+};
+}
+
+template<typename T>
+struct Alignof
+{
+    enum
+    {
+        _1 = _align::_Alignof1<T>::value,
+        _2 = _align::_Alignof2<T>::value,
+        value = (unsigned)_1 < (unsigned)_2 ? _1 : _2
+    };
+};
+
+#define tws__alignof(a) (tws::priv::Alignof<a>::value)
+#endif
 
 #ifdef TWS_USE_CPP11
 template <typename T> struct Remove_ref            { typedef T type; };
@@ -505,7 +566,7 @@ public:
 #endif
 
     template<typename J>
-    inline Job(const J& parent, tws_Event *ev = 0)              : Base(newjob(asjob(parent), ev)) { _init(); }
+    inline Job(const J& parent, tws_Event *ev = 0)              : Base(newjob(Base::asjob(parent), ev)) { _init(); }
 
 
     inline       T *data()       { return static_cast<      T*>(_pdata); }
@@ -763,6 +824,8 @@ public:
     JobOp(JobOp&& j) : Base(j.finalize()), _tail(j._tail), _par(j._par)
     {
     }
+
+    // TODO: perfect forward ctor
 #endif
 
     // --- Simple constructors for all supported types -- constructs a job out of the passed thing.
@@ -828,6 +891,136 @@ inline Chain::Chain(const priv::JobOp& o) : Base(o.finalize())
 #endif // #ifndef TWS_NO_OPERATOR_OVERLOADS
 //----------------------------------------------------------
 
+// ---- Promises ----
+
+template<typename T>
+class Promise
+{
+    mutable tws_Promise *_pr;
+
+    struct Data
+    {
+        T obj;
+        bool valid;
+    };
+
+    static tws_Promise *AllocPr()
+    {
+        return priv::NotNull(tws_allocPromise(sizeof(T) + 1, tws__alignof(T)));
+    }
+
+    inline Data *dataptr()
+    {
+        return static_cast<Data*>(tws_getPromiseData(_pr, NULL));
+    }
+
+    inline T *objptr() const
+    {
+        return &static_cast<Data*>(tws_getPromiseData(_pr, NULL))->obj;
+    }
+
+    void _destroy()
+    {
+        Data *d = dataptr();
+        if(d->valid)
+        {
+            d->obj.~T();
+            d->valid = false;
+        }
+    }
+
+public:
+    inline Promise() : _pr(AllocPr()) { dataptr()->valid = false; }
+    inline ~Promise()
+    {
+        if(_pr)
+        {
+            tws_waitPromise(_pr);
+            _destroy();
+            tws_destroyPromise(_pr);
+        }
+    }
+
+    Promise(const Promise& o) : _pr(o._pr)
+    {
+        _tws_promiseIncRef(o._pr);
+    }
+
+    Promise& operator=(const Promise& o)
+    {
+        tws_promiseIncRef(o._pr);
+        tws_destroyPromise(_pr);
+        _pr = o._pr;
+        return *this;
+    }
+
+#ifdef TWS_USE_CPP11
+    inline Promise(Promise&& o) : _pr(o._pr)
+    {
+        o._pr = NULL;
+    }
+
+    inline Promise& operator=(Promise&& o)
+    {
+        _pr = o._pr;
+        o._pr = NULL
+        return *this;
+    }
+
+    // Move-assign external object and fulfill promise
+    inline Promise& operator=(T&& obj)
+    {
+        Data *d = dataptr();
+        TWS_PLACEMENT_NEW(&d->obj) T(priv::Move(obj));
+        d->valid = true;
+        tws_fulfillPromise(_pr, 1);
+        return *this;
+    }
+#endif
+
+    // Assign external object and fulfill promise
+    Promise& operator=(const T& obj)
+    {
+        Data *d = dataptr();
+        TWS_PLACEMENT_NEW(&d->obj) T(obj);
+        d->valid = true;
+        tws_fulfillPromise(_pr, 1);
+        _markvalid();
+        return *this;
+    }
+
+    // Re-arm promise to be usable again. Destroys the object.
+    inline void reset() { tws_resetPromise(_pr); _destroy(); }
+
+    // Fail promise without assigning valid object
+    inline void fail() { tws_fulfillPromise(_pr, 0); }
+
+    // Check if done; never blocks.
+    inline bool done() const { return !!tws_isDonePromise(_pr); }
+
+    // Blocks until promise is fulfilled, then returns true on success, false on failure
+    inline bool wait() const { return !!tws_waitPromise(_pr); }
+
+    // Wait, then get pointer to valid object or NULL
+    inline T *getp() const { return wait() ? objptr() : NULL; }
+
+    // Wait, then get ref to valid object or throw
+    inline T& getOrThrow() const
+    {
+        if(wait())
+            return *objptr();
+        throw PromiseFailed();
+    }
+
+    // Performs no checks. If the promise is still in-flight
+    // you'll get an undefined/uninitialized value.
+    // Safe to call if you've checked that wait() returned true.
+    inline       T& getUnsafe()          { return *objptr(); }
+    inline const T& getUnsafe()    const { return *objptr(); }
+    inline       T* getUnsafePtr()       { return objptr(); }
+    inline const T* getUnsafePtr() const { return objptr(); }
+};
+
 } // end namespace tws
 
 
@@ -835,7 +1028,6 @@ inline Chain::Chain(const priv::JobOp& o) : Base(o.finalize())
 - JobHandle j = tws::transform<[worktype, ncont,] IN, OUT, OP> (first1, last1, result, op, [blocksize])
 - tws::for_each<...>(first1, last1, op, [blocksize])
 - tws::generate<> ... f(index)
-- tws::Promise<T>
 - make things work with lambdas as jobs
 - remove JobOp and move everything to Chain (make sure this doesn't break temporaries semantics).
   right now chain >> chain doesn't append to end of first chain.

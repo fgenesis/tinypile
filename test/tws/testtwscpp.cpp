@@ -39,6 +39,16 @@ struct JobTest
     }
 };
 
+struct PromiseTest
+{
+    PromiseTest(tws::Promise<int>& p) : prom(p) {}
+    tws::Promise<int> &prom;
+    void run(JobRef)
+    {
+        prom = 42;
+    }
+};
+
 void checksize(void *, size_t first, size_t n)
 {
     printf("size: %u, first: %u\n", unsigned(n), unsigned(first));
@@ -72,6 +82,14 @@ int main()
         tws::Event ev;
         tws_Job *j = tws_dispatchMax(checksize, NULL, 1507, 64, 0, tws_DEFAULT, NULL, ev);
         tws_submit(j, NULL);
+    }
+
+    {
+        tws::Promise<int> prom;
+        {
+            Job<PromiseTest> prt((PromiseTest(prom)));
+        }
+        printf("prom = %u\n", prom.getOrThrow());
     }
     
     /*{

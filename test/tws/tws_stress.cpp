@@ -9,6 +9,7 @@
 #include <chrono>
 
 static std::atomic<unsigned> a_test;
+static std::atomic<unsigned> n_test;
 
 enum TestLimits
 {
@@ -51,6 +52,7 @@ static void work2b(void *data, tws_Job *curjob, tws_Event *ev)
     //if(a < TEST2LIMIT)
     {
         const unsigned lim = rand() & 0xff;
+        n_test += lim;
         for(unsigned i = 0; i < lim; ++i)
         {
             tws_Job *job = tws_newJob(work2c, NULL, 0, 0, tws_DEFAULT, NULL, ev);
@@ -67,6 +69,7 @@ static void work2a(void *data, tws_Job *curjob, tws_Event *ev)
     //if(a < TEST2LIMIT)
     {
         const unsigned lim = rand() & 0xffff;
+        n_test += lim;
         for(unsigned i = 0; i < lim; ++i)
         {
             tws_Job *job = tws_newJob(work2b, NULL, 0, 0, tws_DEFAULT, NULL, ev);
@@ -105,7 +108,7 @@ static void warncb(tws_Warn what, size_t a, size_t b)
 
 int main()
 {
-    tws_setDebugCallback(warncb);
+    //tws_setDebugCallback(warncb);
     unsigned cache = tws_getCPUCacheLineSize();
     unsigned th0 = tws_getLazyWorkerThreads(); // Keep main thread free; the rest can do background work 
     //tws_setSemSpinCount(100);
@@ -121,7 +124,7 @@ int main()
     ts.cacheLineSize = cache;
     ts.semFn = tws_backend_sem;
     ts.threadFn = tws_backend_thread;
-    ts.jobsPerThread = 1024;
+    ts.jobsPerThread = 1024*32;
 
     if(tws_init(&ts) != tws_ERR_OK)
         return 2;
@@ -143,6 +146,7 @@ int main()
     for(;;)
     {
         a_test = 0;
+        n_test = 0;
         job = tws_newJob(work2a, NULL, 0, 0, tws_DEFAULT, NULL, ev);
         tws_submit(job, NULL);
         std::chrono::high_resolution_clock::time_point t0 = std::chrono::high_resolution_clock::now();
@@ -150,8 +154,9 @@ int main()
         std::chrono::high_resolution_clock::time_point t1 = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> td = std::chrono::duration_cast<std::chrono::duration<double> >(t1 - t0);
         unsigned val = a_test;
-        printf("value = %u, mem = %u, time = %f ms, job avg = %f ms\n",
-            val, (unsigned)totalmem, td.count()*1000, td.count() / double(val) * 1000);
+        double persec = n_test / td.count();
+        printf("value = %u, mem = %u, time = %f ms, job avg = %f ms, per sec = %f\n",
+            val, (unsigned)totalmem, td.count()*1000, td.count() / double(val) * 1000, persec);
     }
 
 

@@ -1958,7 +1958,7 @@ static void fillmeminfo(const tws_Setup *cfg, tws_MemInfo *mem)
     unsigned evsz = sizeof(tws_Event);
     if(evsz < cfg->cacheLineSize)
         evsz = cfg->cacheLineSize;
-    mem->eventAllocSize = RoundUpToPowerOfTwo(evsz);
+    mem->eventAllocSize = evsz;
 }
 
 tws_Error tws_check(const tws_Setup *cfg, tws_MemInfo *mem)
@@ -2265,43 +2265,74 @@ size_t _tws_getJobAvailSpace(unsigned short ncont)
 struct tws_Promise
 {
     MREvent mr;
-    void *data; // points to user space area after the struct
-    size_t allocsize;
+    NativeAtomic refcount;
+    void *data;
     size_t datasize;
+    size_t allocsize;
     int code;
-    // <padding to requested alignment>
-    // <user area, datasize bytes>
 };
 
-tws_Promise *tws_newPromise(size_t space, size_t alignment)
+tws_Promise *_allocPromise(size_t sz)
 {
-    TWS_ASSERT(!alignment || IsPowerOfTwo(alignment), "alignment must be 0 or power of 2");
+    tws_Promise *pr = (tws_Promise*)_Alloc(sz);
+    if(!pr)
+        return NULL;
+    if(!mr_init(&pr->mr, 0))
+    {
+        _Free(pr, sz);
+        return NULL;
+    }
+    pr->refcount.val = 1;
+    pr->allocsize = sz;
+    return pr;
+}
+
+tws_Promise *tws_newPromise(void *p, size_t size)
+{
+    // make sure it's aligned to cache line boundaries
+    size_t sz = s_pool->meminfo.eventAllocSize;
+    if(sz < sizeof(tws_Promise))
+        sz = sizeof(tws_Promise);
+
+    tws_Promise *pr = _allocPromise(sz);
+    if(!pr)
+        return NULL;
+    pr->data = p;
+    pr->datasize = size;
+    return pr;
+}
+
+tws_Promise *tws_allocPromise(size_t space, size_t alignment)
+{
+    TWS_ASSERT(!alignment || IsPowerOfTwo(alignment), "RTFM: alignment must be 0 or power of 2");
     if(alignment < TWS_MIN_ALIGN)
         alignment = TWS_MIN_ALIGN;
 
     size_t allocsz = sizeof(tws_Promise) + (alignment - 1) + space;
-    char *mem = (char*)_Alloc(allocsz);
-    if(!mem)
+    // TODO: pad allocsz to cache line size to make sure that no false sharing can occur?
+    tws_Promise *pr = _allocPromise(allocsz);
+    if(!pr)
         return NULL;
-    tws_Promise *pr = (tws_Promise*)mem;
-    if(!mr_init(&pr->mr, 0))
-    {
-        _Free(mem, allocsz);
-        return NULL;
-    }
-    pr->data = (void*)AlignUp((intptr_t)(mem + sizeof(tws_Promise)), alignment);
-    pr->allocsize = allocsz;
-    pr->datasize = space;
 
+    pr->data = (void*)AlignUp((intptr_t)(pr + 1), alignment);
+    pr->datasize = space;
     TWS_ASSERT(IsAligned((intptr_t)pr->data, alignment), "should be aligned as requested");
-    TWS_ASSERT((char*)pr->data + space <= mem + allocsz, "would stomp memory");
+    TWS_ASSERT((char*)pr->data + space <= ((char*)pr) + allocsz, "would stomp memory");
     return pr;
+}
+
+void _tws_promiseIncRef(tws_Promise *pr)
+{
+    _AtomicInc_Acq(&pr->refcount);
 }
 
 void tws_destroyPromise(tws_Promise *pr)
 {
-    mr_destroy(&pr->mr);
-    _Free(pr, pr->allocsize);
+    if(!_AtomicDec_Rel(&pr->refcount))
+    {
+        mr_destroy(&pr->mr);
+        _Free(pr, pr->allocsize);
+    }
 }
 
 void tws_resetPromise(tws_Promise *pr)
@@ -2314,7 +2345,7 @@ int tws_isDonePromise(const tws_Promise *pr)
     return mr_isset(&pr->mr);
 }
 
-void *tws_getPromiseData(tws_Promise *pr, size_t *psize)
+void *tws_getPromiseData(const tws_Promise *pr, size_t *psize)
 {
     if(psize)
         *psize = pr->datasize;
@@ -2518,4 +2549,8 @@ static int _tws_testAtomics(void)
 - possible to detect if child of a job is added as a continuation to its parent? (deadlocks)
 
 - move tws_PerType::availJobs to other cache line? (shares with LWsem)
+
+- warn if idle in a wait() call -- if no work can get done and we're pausing hard
+
+- add lockfree, fixed-size freelist cache for allocated tws_Event & tws_Promise?
 */
