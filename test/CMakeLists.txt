@@ -7,13 +7,14 @@ add_library(tinypile
     ../jps.hh
     ../tio.cpp
     ../tio.h
-    ../tio_vfs.cpp
-    ../tio_vfs.h
+    #../tio_vfs.cpp
+    #../tio_vfs.h
     ../ustrpool.cpp
     ../ustrpool.h
     ../tws.c
     ../tws.h
     ../tws.hh
+    ../tws_async.h
     ../tws_backend.c
     ../tws_backend.h
 )

@@ -132,6 +132,7 @@ Some notes:
 #  define TWS_THREADLOCAL _Thread_local
 #  define TWS_DECL_ATOMIC(x) _Atomic x
 #  define COMPILER_BARRIER() atomic_signal_fence(memory_order_seq_cst)
+#  define TWS_STATIC_ASSERT(x) _Static_assert(x, #x)
 #elif defined(TWS_HAS_MSVC) // intrinsics
 #  include <intrin.h>
 #  include <emmintrin.h>
@@ -152,6 +153,7 @@ Some notes:
 #  define TWS_THREADLOCAL thread_local
 #  define TWS_DECL_ATOMIC(x) std::atomic<x>
 #  define COMPILER_BARRIER() atomic_signal_fence(memory_order_seq_cst)
+#  define TWS_STATIC_ASSERT(x) static_assert(x, #x)
 #else
 #  error Unsupported compiler; missing support for atomic instrinsics
 #endif
@@ -162,6 +164,10 @@ Some notes:
 
 #ifndef TWS_LIKELY
 #define TWS_LIKELY(x) x
+#endif
+
+#ifndef TWS_STATIC_ASSERT
+#  define TWS_STATIC_ASSERT(cond) switch((int)!!(cond)){case 0:;case(!!(cond)):;}
 #endif
 
 #ifdef TWS_HAS_S64_TYPE
@@ -434,14 +440,16 @@ static inline unsigned IsPowerOfTwo(size_t v)
     return v != 0 && (v & (v - 1)) == 0;
 }
 
-static unsigned RoundUpToPowerOfTwo(unsigned v)
+static size_t RoundUpToPowerOfTwo(size_t v)
 {
+    TWS_STATIC_ASSERT(sizeof(v) <= 8); // This supports up to 64bit size_t
     v--;
     v |= v >> 1u;
     v |= v >> 2u;
     v |= v >> 4u;
     v |= v >> 8u;
     v |= v >> 16u;
+    v |= v >> 32u;
     v++;
     return v;
 }
@@ -962,7 +970,7 @@ typedef struct tws_LQ
 static void *lq_init(tws_LQ *q, size_t initialcap)
 {
     TWS_ASSERT(initialcap, "internal error: LQ needs cap > 0");
-    initialcap = RoundUpToPowerOfTwo((unsigned)initialcap);
+    initialcap = RoundUpToPowerOfTwo(initialcap);
     tws_Job **p = (tws_Job**)_Alloc(initialcap * sizeof(tws_Job*));
     q->jobs = p;
     if(TWS_UNLIKELY(!p))
@@ -2295,29 +2303,34 @@ tws_Promise *tws_newPromise(void *p, size_t size)
         sz = sizeof(tws_Promise);
 
     tws_Promise *pr = _allocPromise(sz);
-    if(!pr)
-        return NULL;
-    pr->data = p;
-    pr->datasize = size;
+    if(pr)
+    {
+        pr->data = p;
+        pr->datasize = size;
+    }
     return pr;
 }
 
 tws_Promise *tws_allocPromise(size_t space, size_t alignment)
 {
     TWS_ASSERT(!alignment || IsPowerOfTwo(alignment), "RTFM: alignment must be 0 or power of 2");
-    if(alignment < TWS_MIN_ALIGN)
-        alignment = TWS_MIN_ALIGN;
+    
+    size_t allocsz = sizeof(tws_Promise) + space;
 
-    size_t allocsz = sizeof(tws_Promise) + (alignment - 1) + space;
+    if(alignment)
+        allocsz += (alignment - 1);
+
     // TODO: pad allocsz to cache line size to make sure that no false sharing can occur?
     tws_Promise *pr = _allocPromise(allocsz);
-    if(!pr)
-        return NULL;
-
-    pr->data = (void*)AlignUp((intptr_t)(pr + 1), alignment);
-    pr->datasize = space;
-    TWS_ASSERT(IsAligned((intptr_t)pr->data, alignment), "should be aligned as requested");
-    TWS_ASSERT((char*)pr->data + space <= ((char*)pr) + allocsz, "would stomp memory");
+    if(pr)
+    {
+        pr->datasize = space;
+        pr->data = alignment
+            ? (void*)AlignUp((intptr_t)(pr + 1), alignment)
+            : pr + 1;
+        TWS_ASSERT(!alignment || IsAligned((intptr_t)pr->data, alignment), "should be aligned as requested");
+        TWS_ASSERT((char*)pr->data + space <= ((char*)pr) + allocsz, "would stomp memory");
+    }
     return pr;
 }
 
@@ -2365,6 +2378,17 @@ int tws_waitPromise(tws_Promise *pr)
     mr_waitAndHelp(&pr->mr);
     _Mfence();
     return pr->code;
+}
+
+int _tws_waitPromiseCopyAndDestroy(tws_Promise *pr, void *dst, size_t sz)
+{
+    if(!pr)
+        return 0;
+    TWS_ASSERT(sz <= pr->datasize, "attempt to copy more data out of the promise than stored");
+    int res = tws_waitPromise(pr);
+    tws_memcpy(dst, pr->data, sz);
+    tws_destroyPromise(pr);
+    return res;
 }
 
 // ----------------------------------------------------------------------

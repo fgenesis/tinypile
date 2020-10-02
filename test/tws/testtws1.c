@@ -2,6 +2,7 @@
 #include <string.h>
 #include "tws.h"
 #include "tws_backend.h"
+#include "tws_async.h"
 
 static void work(void *data, tws_Job *job, tws_Event *ev)
 {
@@ -37,9 +38,7 @@ static void largeprint(void *data, tws_Job *job, tws_Event *ev)
     puts((char*)data); // access memory stored in the job
 }
 
-
-
-int main()
+static int init()
 {
     unsigned cache = tws_getCPUCacheLineSize();
     unsigned th0 = tws_getLazyWorkerThreads(); // Keep main thread free; the rest can do background work 
@@ -72,7 +71,11 @@ int main()
         return 2;
 
     printf("---\n");
+    return 0;
+}
 
+void test1()
+{
     tws_Event *ev = tws_newEvent();
     void *wrk = (void*)(uintptr_t)(0xf00000); // just to pass some pointer that the splitting is easily visible
 
@@ -95,6 +98,40 @@ int main()
     printf("done!\n");
 
     tws_destroyEvent(ev);
+}
+
+
+static double testFunc(int a, int b)
+{
+    printf("test: %d %d\n", a, b);
+    return a+b;
+}
+// Make the above function async-callable
+tws_MAKE_ASYNC(double, testFunc, (a, b), int a, int b)
+
+void test2()
+{
+    int x = 42, y = 23; // Limitation: must be able to take the address of each parameter
+
+    // Normal call
+    double ret = testFunc(x, y);
+    printf("result: %f\n", ret);
+
+    // Async call
+    tws_ARET(double) ra = tws_async(testFunc, x, y);
+    /* ... do other work in the meantime ... */
+    double *r = tws_awaitPtr(ra); // NULL if async spawn failed, otherwise points to memory in reta
+    printf("await: %f\n", *r);
+}
+
+int main()
+{
+    int ini = init();
+    if(ini)
+        return ini;
+
+    //test1();
+    test2();
 
     tws_shutdown();
 

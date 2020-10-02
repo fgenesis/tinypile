@@ -182,7 +182,7 @@ An example:
 // You may define this to 0 to force C++98-compliance or to 1 to always enable C++11.
 // If it's not defined C++11 compliance will be autodetected.
 // As a result, this macro will be defined if C++11 is enabled and not defined otherwise.
-//#define TWS_USE_CPP11 0
+#define TWS_USE_CPP11 0
 
 // ------------------------------------------------------------
 // Don't touch anything below here
@@ -205,13 +205,13 @@ inline void* operator new(size_t, TWS__NewDummy, void* ptr) { return ptr; }
 inline void  operator delete(void*, TWS__NewDummy, void*)       {}
 #define TWS_PLACEMENT_NEW(p) new(TWS__NewDummy(), p)
 
-// Visual studio 2015 and up don't set __cplusplus correctly but should support the features we're using here
 // Make it so that the user can still define TWS_USE_CPP11=0 via build system to have C++11 support disabled for whatever reason.
 #ifdef TWS_USE_CPP11
-#  if !TWS_USE_CPP11
+#  if !(TWS_USE_CPP11)
 #    undef TWS_USE_CPP11
 #  endif
-#else
+#else // Autodetect
+// Visual studio 2015 and up don't set __cplusplus correctly but should support the features we're using here
 #  if (__cplusplus >= 201103L) || (defined(_MSC_VER) && _MSC_VER >= 1800)
 #    define TWS_USE_CPP11
 #  endif
@@ -223,7 +223,6 @@ namespace tws {
 #ifdef TWS_USE_CPP11
 #  define TWS_DELETE_METHOD(mth) mth = delete /* will lead to a compile error if used */
 #else /* We don't have C++11 */
-
 #  define TWS_DELETE_METHOD(mth) mth /* will lead to a linker error if used */
 #endif
 
@@ -332,15 +331,14 @@ struct _Alignof2
         value = helper<diff>::template Val<Big>::value
     };
 };
-}
 
 template<typename T>
 struct Alignof
 {
     enum
     {
-        _1 = _align::_Alignof1<T>::value,
-        _2 = _align::_Alignof2<T>::value,
+        _1 = _Alignof1<T>::value,
+        _2 = _Alignof2<T>::value,
         value = (unsigned)_1 < (unsigned)_2 ? _1 : _2
     };
 };
@@ -985,7 +983,6 @@ public:
         TWS_PLACEMENT_NEW(&d->obj) T(obj);
         d->valid = true;
         tws_fulfillPromise(_pr, 1);
-        _markvalid();
         return *this;
     }
 
@@ -1033,4 +1030,8 @@ public:
   right now chain >> chain doesn't append to end of first chain.
   OR: add _tail member to Chain class and use that in JobOp ctor. actually no, make it all Chain: (a >> b) / c: c can be added to a._par?
 - make .then() accept Chain
+- Promise<T> = async(f, params...) + T await(Promise<T>)
+  - better? async(f)(params...)
+  - req invoke(f, tuple<>), result_of(f)
+
 */

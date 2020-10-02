@@ -143,6 +143,7 @@ typedef struct tws_Event  tws_Event;  // opaque, job completion notification
 // * ev is the (optional) event that will be notified when the job is complete.
 //    - you may pass this to additional spawned continuations to make sure those
 //      are finished as well before the event is signaled.
+// * If you're in C++, this function must never throw. If you're using exceptions, handle them internally.
 typedef void (*tws_JobFunc)(void *data, tws_Job *job, tws_Event *ev);
 
 enum
@@ -485,6 +486,11 @@ size_t _tws_getJobAvailSpace(unsigned short ncont);
 
 // For the C++ API
 void _tws_promiseIncRef(tws_Promise *pr);
+
+// For tws_async.h. pr == NULL is ok, does nothing, and immediately returns 0.
+// Copy out sz bytes into dst, then destroy the promise.
+// Returns the promise's result code.
+int _tws_waitPromiseCopyAndDestroy(tws_Promise *pr, void *dst, size_t sz);
 
 #ifdef __cplusplus
 }
