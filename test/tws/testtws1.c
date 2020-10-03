@@ -104,7 +104,7 @@ void test1()
 static double testFunc(int a, int b)
 {
     printf("test: %d %d\n", a, b);
-    return a+b;
+    return (double)a+b;
 }
 // Make the above function async-callable
 tws_MAKE_ASYNC(double, testFunc, (a, b), int a, int b)
@@ -118,10 +118,10 @@ void test2()
     printf("result: %f\n", ret);
 
     // Async call
-    tws_ARET(double) ra = tws_async(testFunc, x, y);
+    tws_ARET(testFunc) ra = tws_async(testFunc, x, y);
     /* ... do other work in the meantime ... */
     double *r = tws_awaitPtr(ra); // NULL if async spawn failed, otherwise points to memory in reta
-    printf("await: %f\n", *r);
+    printf("await: %f\n", *(double*)r);
 }
 
 int main()

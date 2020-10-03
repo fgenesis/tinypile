@@ -63,15 +63,19 @@ Eventually, you need the result. Do this:
 
 double *rp = tws_awaitPtr(ra); // Get a pointer to the return value if successful. NULL if failed.
                                // The backing memory is in 'ra'. Keep it while you use the pointer.
-or this:
+--or this--:
 double r = tws_awaitDefault(ra, -1) // Get the return value if successful, or a default if failed.
 
-or this:
+--or this--(checks that r has the correct size):
 double r;
 if(tws_awaitCopy(&r, ra)) // check if successful and copy the data out.
     success(r now has the return value);
 else
     fail(r unchanged; in this case: uninitialized)
+
+--or this--(omits checks; raw copy to void*):
+void *dst = ...
+if(tws_awaitCopyRaw(dst, ra)) ....
 
 You MUST await() an async result exactly once, unless tws_canAwait(ra) returns zero! (more below)
 If you don't, it's a resource leak.
@@ -153,6 +157,7 @@ _tws_X_EXPAND(_tws_X_GET_NTH_ARG(__VA_ARGS__, _tws_X_arg_16, _tws_X_arg_15, _tws
 //#define _tws_X_DECL_STRUCT(...) { _tws_X_CALL_MACRO_FOR_EACH(_tws_X_DECL, __VA_ARGS__) }
 
 // Naming helpers
+#define _tws_X_AR_NAME(F) _tws_X_EXPAND(_tws_async_ ## F ## _ARet)
 #define _tws_X_FN_NAME(F) _tws_X_EXPAND(_tws_async_ ## F ## _Forward)
 #define _tws_X_PS_NAME(F) _tws_X_EXPAND(_tws_async_ ## F ## _Params)
 #define _tws_X_DP_NAME(F) _tws_X_EXPAND(_tws_async_ ## F ## _Dispatch)
@@ -174,7 +179,7 @@ inline static tws_Promise *_tws_allocAsyncPromiseHelper(size_t sz, tws_JobFunc f
     return pr;
 }
 
-inline static int _tws_finalizeAsyncPromiseHelper(tws_Promise **ppr, void* dst, size_t sz)
+inline static int _tws_finalizeAsyncPromiseHelper(tws_Promise **ppr, void *dst, size_t sz)
 {
     tws_Promise *pr = *ppr;
     *ppr = NULL;
@@ -182,14 +187,6 @@ inline static int _tws_finalizeAsyncPromiseHelper(tws_Promise **ppr, void* dst, 
 }
 
 // --- Public API begin ---
-
-/* Async result wrapper.
-   If your function returns type T, then your async call will return tws_ARET(T).
-   The call is in-flight or available when the promise pointer is set.
-   Any of the await()-functions clear and destroy the promise.
-   The tag is auxiliary and required for type/size deduction,
-   but also used as temporary storage by some await() functions. */
-#define tws_ARET(T) struct { tws_Promise *_x_prom; T _x_tag; }
 
 /* Prerequisites for an async call.
    1) Create a struct to hold params and the returned result.
@@ -206,9 +203,16 @@ inline static int _tws_finalizeAsyncPromiseHelper(tws_Promise **ppr, void* dst, 
    The dummy is never used either but ensures the size is > sizeof(int). This is checked below.
    2) Create a stub function that unwraps the struct and calls the original function.
       The unwrapping follows the same memory layout that is used when packing it
-      (ie. everything is rounded up to pointer size)
+      (ie. everything is rounded up to pointer size). The result is stored in the promise..
+   3) The last stub function spawns f as a job that returns its result in a promise.
+      In order to save space, the promise is used to carry params over to the actual
+      function call and also receives the result of the call later, overwriting the params.
+      The static assert enforces that the type is known.
+      (We know that _x_Args::_dummy_ is already larger than an int,
+      so if C says the size is the same as int we know something is up.)
 */
 #define tws_MAKE_ASYNC(ret, F, args, ...) \
+typedef struct _tws_X_AR_NAME(F) { tws_Promise *_x_prom; ret _x_tag; } _tws_X_AR_NAME(F); \
 union _tws_X_PS_NAME(F) { \
     struct names { _tws_X_CALL_MACRO_FOR_EACH(_tws_X_DECL, __VA_ARGS__) } *_names_; \
     char parambuf[1 _tws_X_EXPAND(_tws_X_PARAMARRAYSIZE args)]; \
@@ -239,21 +243,35 @@ static tws_Promise * _tws_X_DP_NAME(F) (__VA_ARGS__) \
     return _x_prom; \
 }
 
-/* Spawn f as a job that returns its result in a promise.
-   In order to save space, the promise is used to carry params over to the actual
-   function call and also receives the result of the call later, overwriting the params.
-   The static assert enforces that the type is known.
-   (We know that _x_Args::_dummy_ is already larger than an int,
-   so if C says the size is the same as int we know something is up.) */
+/* Async result wrapper. The macro parameter is the name of your function.
+   The call is in-flight or available when the promise pointer is set.
+   Any of the await()-functions clear and destroy the promise.
+   The tag is auxiliary and required for type/size deduction,
+   but also used as temporary storage by some await() functions. */
+#define tws_ARET(f) \
+    _tws_X_AR_NAME(f)
+
+/* Begin an async call of f(...).
+   Note that this actually returns an incomplete tws_ARET(T) struct, in case your compiler warns about this. */
 #define tws_async(f, ...) \
     { _tws_X_DP_NAME(f)(__VA_ARGS__) }
-
 
 //_tws_async_static_assert(sizeof((as)._x_tag) == sizeof(*(dst)));
 
 /* Await async result. dst must be a pointer to the memory that will receive the result.
-   Returns 1 on success, 0 if the corresponding tws_async() failed to allocate resources. */
+   Returns 1 on success, 0 if the corresponding tws_async() failed to allocate resources.
+   Contains a compile-time check that
+   (1) dst is a pointer
+   (2) *dst and the return value from the async call are at least the same size.
+       (plain-C doesn't allow to check for type equality but this is better than nothing)
+*/
 #define tws_awaitCopy(dst, as) \
+    _tws_finalizeAsyncPromiseHelper(&(as)._x_prom, \
+    sizeof(int[sizeof((as)._x_tag) == sizeof(*(dst)) ? 1 : -1]) ? (dst) : NULL, \
+    sizeof((as)._x_tag))
+
+/* Same as tws_awaitCopy() but intended to take a void*. So no type/size checks. */
+#define tws_awaitCopyRaw(dst, as) \
     _tws_finalizeAsyncPromiseHelper(&(as)._x_prom, (dst), sizeof((as)._x_tag))
 
 /* Shortcut for direct assignment. If all was good return value in as,

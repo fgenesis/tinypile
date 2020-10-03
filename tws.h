@@ -17,7 +17,7 @@ Design goals:
 - No memory allocations during regular operation unless you spam & overload the pool
 - Safe operation even if grossly overloaded
 
-For example code and usage information, see the end of this file.
+For example code and usage infor0mation, see the end of this file.
 
 License: WTFPL because lawyers suck. except netpoet. hi netpoet! <3
 
