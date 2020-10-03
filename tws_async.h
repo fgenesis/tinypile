@@ -118,26 +118,26 @@ the same async result should not be shared between multiple threads.
 // Via https://codecraft.co/2014/11/25/variadic-macros-tricks/
 #define _tws_X_EXPAND(x) x
 #define _tws_X_GET_NTH_ARG(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, N, ...) N
-#define _twx_X_arg_0(_call, ...)
-#define _twx_X_arg_1(_call, x) _call(x)
-#define _twx_X_arg_2(_call, x, ...) _call(x) _twx_X_arg_1(_call, __VA_ARGS__)
-#define _twx_X_arg_3(_call, x, ...) _call(x) _tws_X_EXPAND(_twx_X_arg_2(_call, __VA_ARGS__))
-#define _twx_X_arg_4(_call, x, ...) _call(x) _tws_X_EXPAND(_twx_X_arg_3(_call, __VA_ARGS__))
-#define _twx_X_arg_5(_call, x, ...) _call(x) _tws_X_EXPAND(_twx_X_arg_4(_call, __VA_ARGS__))
-#define _twx_X_arg_6(_call, x, ...) _call(x) _tws_X_EXPAND(_twx_X_arg_5(_call, __VA_ARGS__))
-#define _twx_X_arg_7(_call, x, ...) _call(x) _tws_X_EXPAND(_twx_X_arg_6(_call, __VA_ARGS__))
-#define _twx_X_arg_8(_call, x, ...) _call(x) _tws_X_EXPAND(_twx_X_arg_7(_call, __VA_ARGS__))
-#define _twx_X_arg_9(_call, x, ...) _call(x) _tws_X_EXPAND(_twx_X_arg_8(_call, __VA_ARGS__))
-#define _twx_X_arg_10(_call, x, ...) _call(x) _tws_X_EXPAND(_twx_X_arg_9(_call, __VA_ARGS__))
-#define _twx_X_arg_11(_call, x, ...) _call(x) _tws_X_EXPAND(_twx_X_arg_10(_call, __VA_ARGS__))
-#define _twx_X_arg_12(_call, x, ...) _call(x) _tws_X_EXPAND(_twx_X_arg_11(_call, __VA_ARGS__))
-#define _twx_X_arg_13(_call, x, ...) _call(x) _tws_X_EXPAND(_twx_X_arg_12(_call, __VA_ARGS__))
-#define _twx_X_arg_14(_call, x, ...) _call(x) _tws_X_EXPAND(_twx_X_arg_13(_call, __VA_ARGS__))
-#define _twx_X_arg_15(_call, x, ...) _call(x) _tws_X_EXPAND(_twx_X_arg_14(_call, __VA_ARGS__))
-#define _twx_X_arg_16(_call, x, ...) _call(x) _tws_X_EXPAND(_twx_X_arg_15(_call, __VA_ARGS__))
+#define _tws_X_arg_0(_call, ...)
+#define _tws_X_arg_1(_call, x) _call(x)
+#define _tws_X_arg_2(_call, x, ...) _call(x) _tws_X_arg_1(_call, __VA_ARGS__)
+#define _tws_X_arg_3(_call, x, ...) _call(x) _tws_X_EXPAND(_tws_X_arg_2(_call, __VA_ARGS__))
+#define _tws_X_arg_4(_call, x, ...) _call(x) _tws_X_EXPAND(_tws_X_arg_3(_call, __VA_ARGS__))
+#define _tws_X_arg_5(_call, x, ...) _call(x) _tws_X_EXPAND(_tws_X_arg_4(_call, __VA_ARGS__))
+#define _tws_X_arg_6(_call, x, ...) _call(x) _tws_X_EXPAND(_tws_X_arg_5(_call, __VA_ARGS__))
+#define _tws_X_arg_7(_call, x, ...) _call(x) _tws_X_EXPAND(_tws_X_arg_6(_call, __VA_ARGS__))
+#define _tws_X_arg_8(_call, x, ...) _call(x) _tws_X_EXPAND(_tws_X_arg_7(_call, __VA_ARGS__))
+#define _tws_X_arg_9(_call, x, ...) _call(x) _tws_X_EXPAND(_tws_X_arg_8(_call, __VA_ARGS__))
+#define _tws_X_arg_10(_call, x, ...) _call(x) _tws_X_EXPAND(_tws_X_arg_9(_call, __VA_ARGS__))
+#define _tws_X_arg_11(_call, x, ...) _call(x) _tws_X_EXPAND(_tws_X_arg_10(_call, __VA_ARGS__))
+#define _tws_X_arg_12(_call, x, ...) _call(x) _tws_X_EXPAND(_tws_X_arg_11(_call, __VA_ARGS__))
+#define _tws_X_arg_13(_call, x, ...) _call(x) _tws_X_EXPAND(_tws_X_arg_12(_call, __VA_ARGS__))
+#define _tws_X_arg_14(_call, x, ...) _call(x) _tws_X_EXPAND(_tws_X_arg_13(_call, __VA_ARGS__))
+#define _tws_X_arg_15(_call, x, ...) _call(x) _tws_X_EXPAND(_tws_X_arg_14(_call, __VA_ARGS__))
+#define _tws_X_arg_16(_call, x, ...) _call(x) _tws_X_EXPAND(_tws_X_arg_15(_call, __VA_ARGS__))
 
 #define _tws_X_CALL_MACRO_FOR_EACH(x, ...) \
-_tws_X_EXPAND(_tws_X_GET_NTH_ARG(__VA_ARGS__, _twx_X_arg_16, _twx_X_arg_15, _twx_X_arg_14, _twx_X_arg_13, _twx_X_arg_12, _twx_X_arg_11, _twx_X_arg_10, _twx_X_arg_9, _twx_X_arg_8, _twx_X_arg_7, _twx_X_arg_6, _twx_X_arg_5, _twx_X_arg_4, _twx_X_arg_3, _twx_X_arg_2, _twx_X_arg_1, _twx_X_arg_0)(x, __VA_ARGS__))
+_tws_X_EXPAND(_tws_X_GET_NTH_ARG(__VA_ARGS__, _tws_X_arg_16, _tws_X_arg_15, _tws_X_arg_14, _tws_X_arg_13, _tws_X_arg_12, _tws_X_arg_11, _tws_X_arg_10, _tws_X_arg_9, _tws_X_arg_8, _tws_X_arg_7, _tws_X_arg_6, _tws_X_arg_5, _tws_X_arg_4, _tws_X_arg_3, _tws_X_arg_2, _tws_X_arg_1, _tws_X_arg_0)(x, __VA_ARGS__))
 
 // "Callables" for iteration (uses local context @ callsite)
 #define _tws_X_ALN_TO_PTRSIZE(x) ((x) + (((size_t)(-(intptr_t)(x))) & (sizeof(void*) - 1)))
@@ -147,16 +147,49 @@ _tws_X_EXPAND(_tws_X_GET_NTH_ARG(__VA_ARGS__, _twx_X_arg_16, _twx_X_arg_15, _twx
 #define _tws_X_DECL(decl) decl;
 
 // Extra macros using special concatenation rules with a single parameter that expands to a parameter list
-#define _tws_X_FILLPARAMS(...) _tws_X_CALL_MACRO_FOR_EACH(_tws_X_COPY_PARAM_OUT, __VA_ARGS__)
+#define _tws_X_COPYPARAMSOUT(...) _tws_X_CALL_MACRO_FOR_EACH(_tws_X_COPY_PARAM_OUT, __VA_ARGS__)
+#define _tws_X_COPYPARAMSIN(...) _tws_X_CALL_MACRO_FOR_EACH(_tws_X_COPY_PARAM_IN, __VA_ARGS__)
 #define _tws_X_PARAMARRAYSIZE(...) _tws_X_CALL_MACRO_FOR_EACH(_tws_X_PLUS_SIZEOF_ALIGNED, __VA_ARGS__)
-#define _tws_X_DECL_ALL(...) { _tws_X_CALL_MACRO_FOR_EACH(_tws_X_DECL, __VA_ARGS__) }
+//#define _tws_X_DECL_STRUCT(...) { _tws_X_CALL_MACRO_FOR_EACH(_tws_X_DECL, __VA_ARGS__) }
 
 // Naming helpers
 #define _tws_X_FN_NAME(F) _tws_X_EXPAND(_tws_async_ ## F ## _Forward)
 #define _tws_X_PS_NAME(F) _tws_X_EXPAND(_tws_async_ ## F ## _Params)
+#define _tws_X_DP_NAME(F) _tws_X_EXPAND(_tws_async_ ## F ## _Dispatch)
 
+inline static tws_Promise *_tws_allocAsyncPromiseHelper(size_t sz, tws_JobFunc f, tws_Job **jdst)
+{
+    tws_Promise *pr = tws_allocPromise(sz, 0);
+    if (pr)
+    {
+        tws_Job *j = tws_newJob(f, &pr, sizeof(pr), 0, tws_DEFAULT, NULL, NULL);
+        if (j)
+            *jdst = j;
+        else
+        {
+            tws_destroyPromise(pr);
+            pr = NULL;
+        }
+    }
+    return pr;
+}
+
+inline static int _tws_finalizeAsyncPromiseHelper(tws_Promise **ppr, void* dst, size_t sz)
+{
+    tws_Promise *pr = *ppr;
+    *ppr = NULL;
+    return _tws_waitPromiseCopyAndDestroy(pr, (dst), sz);
+}
 
 // --- Public API begin ---
+
+/* Async result wrapper.
+   If your function returns type T, then your async call will return tws_ARET(T).
+   The call is in-flight or available when the promise pointer is set.
+   Any of the await()-functions clear and destroy the promise.
+   The tag is auxiliary and required for type/size deduction,
+   but also used as temporary storage by some await() functions. */
+#define tws_ARET(T) struct { tws_Promise *_x_prom; T _x_tag; }
 
 /* Prerequisites for an async call.
    1) Create a struct to hold params and the returned result.
@@ -177,7 +210,7 @@ _tws_X_EXPAND(_tws_X_GET_NTH_ARG(__VA_ARGS__, _twx_X_arg_16, _twx_X_arg_15, _twx
 */
 #define tws_MAKE_ASYNC(ret, F, args, ...) \
 union _tws_X_PS_NAME(F) { \
-    struct names _tws_X_DECL_ALL(__VA_ARGS__) *_names_; \
+    struct names { _tws_X_CALL_MACRO_FOR_EACH(_tws_X_DECL, __VA_ARGS__) } *_names_; \
     char parambuf[1 _tws_X_EXPAND(_tws_X_PARAMARRAYSIZE args)]; \
     ret retval; \
     struct { int o_O, O_o; } _dummy_; \
@@ -188,18 +221,23 @@ static void _tws_X_FN_NAME(F) (void *ud, tws_Job *j, tws_Event *ev) { \
     _x_Args *_x_arg = (_x_Args*)tws_getPromiseData(_x_prom, NULL); \
     intptr_t _x_ptr = (intptr_t)_x_arg; \
     _tws_X_CALL_MACRO_FOR_EACH(_tws_X_DECL, __VA_ARGS__) \
-    _tws_X_EXPAND(_tws_X_FILLPARAMS args) \
+    _tws_X_EXPAND(_tws_X_COPYPARAMSOUT args) \
     _x_arg->retval = F args; \
     tws_fulfillPromise(_x_prom, 1); \
+} \
+static tws_Promise * _tws_X_DP_NAME(F) (__VA_ARGS__) \
+{ \
+    typedef union _tws_X_PS_NAME(F) _x_Args; \
+    _tws_async_static_assert(sizeof(_x_Args) > sizeof(int)); \
+    tws_Job *_x_j; \
+    tws_Promise *_x_prom = _tws_allocAsyncPromiseHelper(sizeof(_x_Args), _tws_X_FN_NAME(F), &_x_j ); \
+    if (_x_prom) { \
+        intptr_t _x_ptr = (intptr_t)tws_getPromiseData(_x_prom, NULL); \
+        _tws_X_EXPAND(_tws_X_COPYPARAMSIN args) \
+        tws_submit(_x_j, NULL); \
+    } \
+    return _x_prom; \
 }
-
-/* Async result wrapper.
-   If your function returns type T, then your async call will return tws_ARET(T).
-   The call is in-flight or available when the promise pointer is set.
-   Any of the await()-functions clear and destroy the promise.
-   The tag is auxiliary and required for type/size deduction,
-   but also used as temporary storage by some await() functions. */
-#define tws_ARET(T) struct { tws_Promise *_x_prom; T _x_tag; }
 
 /* Spawn f as a job that returns its result in a promise.
    In order to save space, the promise is used to carry params over to the actual
@@ -208,27 +246,15 @@ static void _tws_X_FN_NAME(F) (void *ud, tws_Job *j, tws_Event *ev) { \
    (We know that _x_Args::_dummy_ is already larger than an int,
    so if C says the size is the same as int we know something is up.) */
 #define tws_async(f, ...) \
-{(({ \
-    typedef union _tws_X_PS_NAME(f) _x_Args; \
-    _tws_async_static_assert(sizeof(_x_Args) > sizeof(int)); \
-    tws_Promise *_x_prom = tws_allocPromise(sizeof(_x_Args), 0); \
-    tws_Job *_x_j = _x_prom ? tws_newJob(_tws_X_FN_NAME(f), &_x_prom, sizeof(_x_prom), 0, tws_DEFAULT, NULL, NULL) : NULL; \
-    if(_x_j) { \
-        intptr_t _x_ptr = (intptr_t)tws_getPromiseData(_x_prom, NULL); \
-        _tws_X_CALL_MACRO_FOR_EACH(_tws_X_COPY_PARAM_IN, __VA_ARGS__); \
-        tws_submit(_x_j, NULL); \
-    } else if(_x_prom) { tws_destroyPromise(_x_prom); _x_prom = NULL; } \
-    _x_prom; \
-})), 0}
+    { _tws_X_DP_NAME(f)(__VA_ARGS__) }
+
+
+//_tws_async_static_assert(sizeof((as)._x_tag) == sizeof(*(dst)));
 
 /* Await async result. dst must be a pointer to the memory that will receive the result.
    Returns 1 on success, 0 if the corresponding tws_async() failed to allocate resources. */
 #define tws_awaitCopy(dst, as) \
-(({ \
-    _tws_async_static_assert(sizeof((as)._x_tag) == sizeof(*(dst))); \
-    tws_Promise *_x_prom = (as)._x_prom; (as)._x_prom = NULL; \
-    _tws_waitPromiseCopyAndDestroy(_x_prom, (dst), sizeof((as)._x_tag)); \
-}))
+    _tws_finalizeAsyncPromiseHelper(&(as)._x_prom, (dst), sizeof((as)._x_tag))
 
 /* Shortcut for direct assignment. If all was good return value in as,
    otherwise return default. */

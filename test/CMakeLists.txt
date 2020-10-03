@@ -9,8 +9,8 @@ add_library(tinypile
     ../tio.h
     #../tio_vfs.cpp
     #../tio_vfs.h
-    ../ustrpool.cpp
-    ../ustrpool.h
+    #../ustrpool.cpp
+    #../ustrpool.h
     ../tws.c
     ../tws.h
     ../tws.hh
