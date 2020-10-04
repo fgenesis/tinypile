@@ -20,8 +20,8 @@ License:
   whatever is available in your country.
 
 Dependencies:
-  C99, libc for memcpy(). Define tws_memcpy() to use your own.
-  Requires my tws library.
+  C99 (but no libc).
+  Requires my tws library. (See https://github.com/fgenesis/tinypile/)
   This is for plain old C. Don't use this for C++. Use tws_async.hh instead. 
 
 --
@@ -50,13 +50,12 @@ tws_MAKE_ASYNC(double, myFunc,   (a,b,c), int a, int b, float c)
                in this case.
                Put in brackets so that this is one macro parameter.
 
-Then you can call it asynchonously. tws_async() will queue a background task
-but will otherwise return immediately.
+Then you can call it asynchonously. Parameters to tws_async() are copied by value.
+If you pass pointers, make sure the memory stays available until the function is done.
+tws_async() queues a background task but will otherwise return immediately.
 
-int a = 1, b = 2;
-float c = 3.0f;
-tws_ARET(myFunc)   ra     = tws_async(myFunc, a, b, c);
-    ^              ^        ^         ^       ^^^^^^^
+tws_ARET(myFunc)   ra     = tws_async(myFunc, 1, 2, 3.0f);
+    ^              ^        ^         ^       ^^^^^^^^^^
     Return type,   Opaque   Magic     Func    Params to func
     magic struct.  result   sauce     name    as usual
 
@@ -111,13 +110,6 @@ the same tws_ARET should not be shared between multiple threads.
 
 #include "tws.h"
 
-// memcpy(), or use your own
-#if !defined(tws_memcpy)
-#  include <string.h>
-#  define tws_memcpy(dst, src, n) memcpy((dst), (src), (n))
-#endif
-
-
 // --- Magic macro sauce begin ---
 // --- Here be dragons! Scroll down to the public API part. ---
 
@@ -149,17 +141,14 @@ the same tws_ARET should not be shared between multiple threads.
 _tws_X_EXPAND(_tws_X_GET_NTH_ARG(__VA_ARGS__, _tws_X_arg_16, _tws_X_arg_15, _tws_X_arg_14, _tws_X_arg_13, _tws_X_arg_12, _tws_X_arg_11, _tws_X_arg_10, _tws_X_arg_9, _tws_X_arg_8, _tws_X_arg_7, _tws_X_arg_6, _tws_X_arg_5, _tws_X_arg_4, _tws_X_arg_3, _tws_X_arg_2, _tws_X_arg_1, _tws_X_arg_0)(x, __VA_ARGS__))
 
 // "Callables" for iteration (uses local context @ callsite)
-#define _tws_X_ALN_TO_PTRSIZE(x) ((x) + (((size_t)(-(intptr_t)(x))) & (sizeof(void*) - 1)))
-#define _tws_X_COPY_PARAM_IN(x)  tws_memcpy((void*)_x_ptr, &x, sizeof(x)); _x_ptr += _tws_X_ALN_TO_PTRSIZE(sizeof(x));
-#define _tws_X_COPY_PARAM_OUT(x) tws_memcpy(&x, (const void*)_x_ptr, sizeof(x)); _x_ptr += _tws_X_ALN_TO_PTRSIZE(sizeof(x));
-#define _tws_X_PLUS_SIZEOF_ALIGNED(x) +_tws_X_ALN_TO_PTRSIZE(sizeof(((struct names*)NULL)->x))
+#define _tws_X_COPY_PARAM_IN(x) _x_arg->params.x = x;
+#define _tws_X_COPY_PARAM_OUT(x) x = _x_arg->params.x;
 #define _tws_X_DECL(decl) decl;
 
 // Extra macros using special concatenation rules with a single parameter that expands to a parameter list
 #define _tws_X_COPYPARAMSOUT(...) _tws_X_CALL_MACRO_FOR_EACH(_tws_X_COPY_PARAM_OUT, __VA_ARGS__)
 #define _tws_X_COPYPARAMSIN(...) _tws_X_CALL_MACRO_FOR_EACH(_tws_X_COPY_PARAM_IN, __VA_ARGS__)
 #define _tws_X_PARAMARRAYSIZE(...) _tws_X_CALL_MACRO_FOR_EACH(_tws_X_PLUS_SIZEOF_ALIGNED, __VA_ARGS__)
-//#define _tws_X_DECL_STRUCT(...) { _tws_X_CALL_MACRO_FOR_EACH(_tws_X_DECL, __VA_ARGS__) }
 
 // Naming helpers
 #define _tws_X_AR_NAME(F) _tws_X_EXPAND(_tws_async_ ## F ## _ARet)
@@ -198,24 +187,11 @@ inline static int _tws_finalizeAsyncPromiseHelper(tws_Promise **ppr, void *dst, 
       Any of the await()-functions clear and destroy the promise.
       The tag is auxiliary and required for type/size deduction,
       but also used as temporary storage by some await() functions.
-   2) Create a struct to hold params and the returned result.
-      The inner names struct exists so that we can dump decls ("int i")
-      and do sizeof() on them. sizeof(i) won't work since i isn't defined,
-      sizeof(int i) doesn't work because it's a syntax error, but if we have
-          struct names { int i; }
-      then we can do
-          sizeof(((struct names*)NULL)->i)
-      and that will give us the size without actually creating any variables.
-      The older standards don't like anonymous structs, so we need to give it a name.
-      And to make sure it's not in the way and doesn't change the size of the final
-      union, the names struct is actually just an (unused) pointer.
-      The dummy is never used either but ensures the size is > sizeof(int). This is checked below.
-      This struct uses a custom memory layout for the parambuf[] memory block
-      so that everything is pointer-aligned.
+   2) Create a union to hold params to go in and the returned result to go out.
+      The dummy is never used but ensures the size is > sizeof(int). This is checked below.
    3) Create a stub function that unwraps the struct and calls the original function.
-      The unwrapping follows the same memory layout that is used when packing it
-      (ie. everything is rounded up to pointer size). The result is stored in the promise.
-   4) The last stub function spawns f as a job that returns its result in a promise.
+      The returned result is then stored in the promise.
+   4) The last stub function spawns f as a job that returns a promise.
       In order to save space, the promise is used to carry params over to the actual
       function call and also receives the result of the call later, overwriting the params.
       The static assert enforces that the type is known.
@@ -225,8 +201,7 @@ inline static int _tws_finalizeAsyncPromiseHelper(tws_Promise **ppr, void *dst, 
 #define _tws_X_EMIT_MAGIC_WRAPPER(ret, F, args, ...) \
 typedef struct _tws_X_AR_NAME(F) { tws_Promise *_x_prom; ret _x_tag; } _tws_X_AR_NAME(F); \
 union _tws_X_PS_NAME(F) { \
-    struct names { _tws_X_CALL_MACRO_FOR_EACH(_tws_X_DECL, __VA_ARGS__) } *_names_; \
-    char parambuf[1 _tws_X_EXPAND(_tws_X_PARAMARRAYSIZE args)]; \
+    struct { _tws_X_CALL_MACRO_FOR_EACH(_tws_X_DECL, __VA_ARGS__) } params; \
     ret retval; \
     struct { int o_O, O_o; } _dummy_; \
 }; \
@@ -234,7 +209,6 @@ static void _tws_X_FN_NAME(F) (void *ud, tws_Job *j, tws_Event *ev) { \
     typedef union _tws_X_PS_NAME(F) _x_Args; \
     tws_Promise *_x_prom = *(tws_Promise**)ud; \
     _x_Args *_x_arg = (_x_Args*)tws_getPromiseData(_x_prom, NULL); \
-    intptr_t _x_ptr = (intptr_t)_x_arg; \
     _tws_X_CALL_MACRO_FOR_EACH(_tws_X_DECL, __VA_ARGS__) \
     _tws_X_EXPAND(_tws_X_COPYPARAMSOUT args) \
     _x_arg->retval = F args; \
@@ -247,7 +221,7 @@ static tws_Promise * _tws_X_DP_NAME(F) (tws_WorkType _x_wt, __VA_ARGS__) \
     tws_Job *_x_j; \
     tws_Promise *_x_prom = _tws_allocAsyncPromiseHelper(&_x_j, _tws_X_FN_NAME(F), sizeof(_x_Args), _x_wt); \
     if (_x_prom) { \
-        intptr_t _x_ptr = (intptr_t)tws_getPromiseData(_x_prom, NULL); \
+        _x_Args *_x_arg = (_x_Args*)tws_getPromiseData(_x_prom, NULL); \
         _tws_X_EXPAND(_tws_X_COPYPARAMSIN args) \
         tws_submit(_x_j, NULL); \
     } \
@@ -285,7 +259,7 @@ static tws_Promise * _tws_X_DP_NAME(F) (tws_WorkType _x_wt, __VA_ARGS__) \
 /* Await async result. dst must be a pointer to the memory that will receive the result.
    Returns 1 on success, 0 if the corresponding tws_async() failed to allocate resources.
    Contains a compile-time check that
-   (1) dst is a pointer
+   (1) dst is a pointer that can be dereferenced
    (2) *dst and the return value from the async call are the same size.
        (plain-C doesn't allow to check for type equality but this is better than nothing)
 */
