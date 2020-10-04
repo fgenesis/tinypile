@@ -31,24 +31,24 @@ In this example we'll use 'double' as return type but it can be anything.
 
 double myFunc(int a, int b, float c) { return a+b+c; }
 
-You would call the function like this:
+You would normally call the function like this:
 
 double r = myFunc(1, 2, 3.0f);
 
 In order to make this function asynchronously callable,
-add the following macro below the function declaration.
+add the following macro somewhere below the function definition.
 (The macro expands to 2 hidden structs and 2 inline functions,
 so you can add this in a header as well.)
 
-tws_MAKE_ASYNC(double, myFunc,   (a,b,c), int a, int b, float c)
-               ^       ^          ^       ^^^^^^^^^^^^^^^^^^^^^
-               Return  Func       |       All remaining params:
-               type    name       |       parameter declarations
-                                  |       as usual. Must match names
-               How the function --´       in the previous parameter,
-               is called: f(a,b,c)        ie. (a,b,c) in this case.
-               in this case.
-               Put in brackets so that this is one macro parameter.
+tws_MAKE_ASYNC(double, myFunc, (a,b,c), int a, int b, float c)
+               ^       ^        ^       ^^^^^^^^^^^^^^^^^^^^^
+               Return  Func     |       All remaining params:
+               type    name     |       parameter declarations
+                                |       as usual. Must match names
+             How the function --´       in the previous parameter,
+             is called: myFunc(a,b,c)   ie. (a,b,c) in this case.
+             in this case.
+             Put in brackets so that this is one macro parameter.
 
 Then you can call it asynchonously. Parameters to tws_async() are copied by value.
 If you pass pointers, make sure the memory stays available until the function is done.
@@ -68,7 +68,7 @@ double *rp = tws_awaitPtr(ra); // Get a pointer to the return value if successfu
 --or this--:
 double r = tws_awaitDefault(ra, -1) // Get the return value if successful, or a default if failed.
 
---or this--(checks that r has the correct size):
+--or this--(has a compile-time check that r has the correct size):
 double r;
 if(tws_awaitCopy(&r, ra)) // check if successful and copy the data out.
     success(r now has the return value);
@@ -81,7 +81,7 @@ if(tws_awaitCopyRaw(dst, ra)) ....
 
 You MUST await() a tws_ARET exactly once, unless tws_canAwait(ra) returns zero! (more below)
 If you don't, it's a resource leak.
-Calling await() more than once is safe, but the second and all subsequent awaits
+Calling any await() more than once is safe, but the second and all subsequent awaits
 on the same result will fail.
 
 There is one reason why an await() can fail on the first call: resource exhaustion.
@@ -96,7 +96,7 @@ But note that this is just to check whether an async call was started.
 If you're trying to open a file that is not there your async call will be "successful",
 but you need to handle that kind of failure yourself.
 If the result of your function is a pointer, use this:
-    Result *res = (Result*)tws_awaitDefault(ra, NULL);
+    Result *res = tws_awaitDefault(ra, NULL);
 That will give NULL in both failure cases.
 
 You can check if an await() would block:
@@ -256,38 +256,42 @@ static tws_Promise * _tws_X_DP_NAME(F) (tws_WorkType _x_wt, __VA_ARGS__) \
 #define tws_asyncType(wt, f, ...) \
     { _tws_X_DP_NAME(f)(wt, __VA_ARGS__) }
 
-/* Await async result. dst must be a pointer to the memory that will receive the result.
-   Returns 1 on success, 0 if the corresponding tws_async() failed to allocate resources.
+/* Await async result (ra is a tws_ARET).
+   dst must be a pointer to an object that will receive the result.
+   Returns 1 on success. Returns 0 on failure, aka if:
+   (1) The corresponding tws_async() failed to allocate resources.
+   (2) You've previously called an await()-function on the same ra.
    Contains a compile-time check that
    (1) dst is a pointer that can be dereferenced
    (2) *dst and the return value from the async call are the same size.
        (plain-C doesn't allow to check for type equality but this is better than nothing)
 */
-#define tws_awaitCopy(dst, as) \
-    _tws_finalizeAsyncPromiseHelper(&(as)._x_prom, \
-    sizeof(int[sizeof((as)._x_tag) == sizeof(*(dst)) ? 1 : -1]) ? (dst) : NULL, \
-    sizeof((as)._x_tag))
+#define tws_awaitCopy(dst, ra) \
+    _tws_finalizeAsyncPromiseHelper(&(ra)._x_prom, \
+    sizeof(int[sizeof((ra)._x_tag) == sizeof(*(dst)) ? 1 : -1]) ? (dst) : NULL, \
+    sizeof((ra)._x_tag))
 
 /* Same as tws_awaitCopy() but intended to take a void*. So no type/size checks. */
-#define tws_awaitCopyRaw(dst, as) \
-    _tws_finalizeAsyncPromiseHelper(&(as)._x_prom, (dst), sizeof((as)._x_tag))
+#define tws_awaitCopyRaw(dst, ra) \
+    _tws_finalizeAsyncPromiseHelper(&(ra)._x_prom, (dst), sizeof((ra)._x_tag))
 
-/* Shortcut for direct assignment. If all was good, return value in as,
+/* Shortcut for direct assignment. If all was good, return value in ra,
    otherwise return default. */
-#define tws_awaitDefault(as, def) \
-    ( (tws_awaitCopy(&(as)._x_tag, as)) ? ((as)._x_tag) : (def) )
+#define tws_awaitDefault(ra, def) \
+    ( (tws_awaitCopy(&(ra)._x_tag, ra)) ? ((ra)._x_tag) : (def) )
 
-/* Returns a pointer to a valid result in as, or NULL if failed. */
-#define tws_awaitPtr(as) \
-    ( (tws_awaitCopy(&(as)._x_tag, as)) ? (&(as)._x_tag) : NULL )
+/* Returns a pointer to a valid result in ra, or NULL if failed.
+   Make sure ra stays alive while you use the pointer. */
+#define tws_awaitPtr(ra) \
+    ( (tws_awaitCopy(&(ra)._x_tag, ra)) ? (&(ra)._x_tag) : NULL )
 
 /* Check if await() would succeed. No cleanup required if this returns 0. */
-#define tws_canAwait(as) \
-    (!!(as)._x_prom)
+#define tws_canAwait(ra) \
+    (!!(ra)._x_prom)
 
 /* Check if await() would not block. */
-#define tws_isAwaitReady(as) \
-    (!(as)._x_prom || tws_isDonePromise((as)._x_prom))
+#define tws_isAwaitReady(ra) \
+    (!(ra)._x_prom || tws_isDonePromise((ra)._x_prom))
 
 
 
