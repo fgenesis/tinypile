@@ -100,7 +100,6 @@ void test1()
     tws_destroyEvent(ev);
 }
 
-
 static double testFunc(int a, int b)
 {
     printf("test: %d %d\n", a, b);
@@ -111,14 +110,12 @@ tws_MAKE_ASYNC(double, testFunc, (a, b), int a, int b)
 
 void test2()
 {
-    int x = 42, y = 23; // Limitation: must be able to take the address of each parameter
-
     // Normal call
-    double ret = testFunc(x, y);
+    double ret = testFunc(42, 23);
     printf("result: %f\n", ret);
 
     // Async call
-    tws_ARET(testFunc) ra = tws_async(testFunc, x, y);
+    tws_ARET(testFunc) ra = tws_async(testFunc, 42, 23);
     /* ... do other work in the meantime ... */
     double *r = tws_awaitPtr(ra); // NULL if async spawn failed, otherwise points to memory in reta
     printf("await: %f\n", *(double*)r);

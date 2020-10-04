@@ -45,10 +45,6 @@ tws_MAKE_ASYNC(double, myFunc,   (a,b,c), int a, int b, float c)
 
 Then you can call it asynchonously. tws_async() will queue a background task
 but will otherwise return immediately.
-Due to implementation details, params to tws_async()
-require that their address can be taken. That means variables,
-values from arrays, members of structs, ... are all ok.
-Function return values or literals will cause a compile error.
 
 int a = 1, b = 2;
 float c = 3.0f;
@@ -251,7 +247,7 @@ static tws_Promise * _tws_X_DP_NAME(F) (__VA_ARGS__) \
 #define tws_ARET(f) \
     _tws_X_AR_NAME(f)
 
-/* Begin an async call of f(...).
+/* Store an in-flight async call of f(...).
    Note that this actually returns an incomplete tws_ARET(T) struct, in case your compiler warns about this. */
 #define tws_async(f, ...) \
     { _tws_X_DP_NAME(f)(__VA_ARGS__) }
@@ -294,6 +290,5 @@ static tws_Promise * _tws_X_DP_NAME(F) (__VA_ARGS__) \
 
 
 /* TODO:
-- make it work on MSVC // https://devblogs.microsoft.com/cppblog/msvc-preprocessor-progress-towards-conformance/
 - fix some race or MT problem with a promise being already fulfilled? happens every now and then
 */
