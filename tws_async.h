@@ -5,8 +5,15 @@
 Why?
   Multithreading is hard. Async/await is the new hot shit (look it up!).
   Async spawns a function call in background, await gets the result.
-  This is safe multithreading if done right.
+  If the result isn't available yet, get some other work done in the meantime.
   Turns out it can be sort-of done in C, but it's ugly. Hence this library.
+  Note that this "library" does excessive macro abuse and works in conjunction
+  with a thread pool. So it's neither coroutine emulation, nor does it spawn one
+  thread per task. It's pretty efficient for what it is, but if you really want
+  to maximize efficiency, go and manage your own threads (or just use tws directly).
+  If you want a quick hack with minimal effort, just enough syntax sugar to make
+  multithreading bearable, and stick to plain C, then this is the right file for you.
+  I have created a monster. I'm sorry.
 
 License:
   Public domain, WTFPL, CC0 or your favorite permissive license;
@@ -30,7 +37,7 @@ double r = myFunc(1, 2, 3.0f);
 
 In order to make this function asynchronously callable,
 add the following macro below the function declaration.
-(The macro expands to a hidden struct and an inline function,
+(The macro expands to 2 hidden structs and 2 inline functions,
 so you can add this in a header as well.)
 
 tws_MAKE_ASYNC(double, myFunc,   (a,b,c), int a, int b, float c)
@@ -48,7 +55,7 @@ but will otherwise return immediately.
 
 int a = 1, b = 2;
 float c = 3.0f;
-tws_ARET(double)   ra     = tws_async(myFunc, a, b, c);
+tws_ARET(myFunc)   ra     = tws_async(myFunc, a, b, c);
     ^              ^        ^         ^       ^^^^^^^
     Return type,   Opaque   Magic     Func    Params to func
     magic struct.  result   sauce     name    as usual
@@ -73,7 +80,7 @@ else
 void *dst = ...
 if(tws_awaitCopyRaw(dst, ra)) ....
 
-You MUST await() an async result exactly once, unless tws_canAwait(ra) returns zero! (more below)
+You MUST await() a tws_ARET exactly once, unless tws_canAwait(ra) returns zero! (more below)
 If you don't, it's a resource leak.
 Calling await() more than once is safe, but the second and all subsequent awaits
 on the same result will fail.
@@ -82,14 +89,14 @@ There is one reason why an await() can fail on the first call: resource exhausti
 It's unlikely but possible. Treat it like cases where malloc() returns NULL.
 If you're super lazy about it you might get away without checking for failure.
 
-You can call tws_canAwait(ra) to check if an async result will be available later.
+You can call tws_canAwait(ra) to check if a tws_ARET will be available later.
 This returns zero for failed or already awaited results, non-zero if it's in-flight or available.
 Conveniently, you can check this right after calling tws_async() and exit early on fail,
 no cleanup required.
 But note that this is just to check whether an async call was started.
 If you're trying to open a file that is not there your async call will be "successful",
 but you need to handle that kind of failure yourself.
-If the result of your function is a pointer (possibly NULL), use this:
+If the result of your function is a pointer, use this:
     Result *res = (Result*)tws_awaitDefault(ra, NULL);
 That will give NULL in both failure cases.
 
@@ -97,9 +104,9 @@ You can check if an await() would block:
 tws_isAwaitReady(ra) returns zero when still in-flight,
 non-zero when the result is available or failed.
 
-You can move an async result to a different thread than the one that started the async call.
-But note that functions operating on an async result are not thread safe, ie.
-the same async result should not be shared between multiple threads.
+You can move a tws_ARET to a different thread than the one that started the async call.
+But note that functions operating on tws_ARET are not thread safe, ie.
+the same tws_ARET should not be shared between multiple threads.
 */
 
 #include "tws.h"
@@ -110,9 +117,11 @@ the same async result should not be shared between multiple threads.
 #  define tws_memcpy(dst, src, n) memcpy((dst), (src), (n))
 #endif
 
-#define _tws_async_static_assert(cond) switch((int)!!(cond)){case 0:;case(!!(cond)):;}
 
 // --- Magic macro sauce begin ---
+// --- Here be dragons! Scroll down to the public API part. ---
+
+#define _tws_async_static_assert(cond) switch((int)!!(cond)){case 0:;case(!!(cond)):;}
 
 // foreach()-macro-style over variadic macro parameter lists. Up to 16 args.
 // Via https://codecraft.co/2014/11/25/variadic-macros-tricks/
@@ -158,12 +167,12 @@ _tws_X_EXPAND(_tws_X_GET_NTH_ARG(__VA_ARGS__, _tws_X_arg_16, _tws_X_arg_15, _tws
 #define _tws_X_PS_NAME(F) _tws_X_EXPAND(_tws_async_ ## F ## _Params)
 #define _tws_X_DP_NAME(F) _tws_X_EXPAND(_tws_async_ ## F ## _Dispatch)
 
-inline static tws_Promise *_tws_allocAsyncPromiseHelper(size_t sz, tws_JobFunc f, tws_Job **jdst)
+inline static tws_Promise *_tws_allocAsyncPromiseHelper(tws_Job **jdst, tws_JobFunc f, size_t sz, tws_WorkType wt)
 {
     tws_Promise *pr = tws_allocPromise(sz, 0);
     if (pr)
     {
-        tws_Job *j = tws_newJob(f, &pr, sizeof(pr), 0, tws_DEFAULT, NULL, NULL);
+        tws_Job *j = tws_newJob(f, &pr, sizeof(pr), 0, wt, NULL, NULL);
         if (j)
             *jdst = j;
         else
@@ -182,32 +191,38 @@ inline static int _tws_finalizeAsyncPromiseHelper(tws_Promise **ppr, void *dst, 
     return _tws_waitPromiseCopyAndDestroy(pr, (dst), sz);
 }
 
-// --- Public API begin ---
-
-/* Prerequisites for an async call.
-   1) Create a struct to hold params and the returned result.
-   The inner names struct exists so that we can dump decls ("int i")
-   and do sizeof() on them. sizeof(i) won't work since i isn't defined,
-   sizeof(int i) doesn't work because it's a syntax error, but if we have
-       struct names { int i; }
-   then we can do
-       sizeof(((struct names*)NULL)->i)
-   and that will give us the size.
-   The older standards don't like anonymous structs, so we need to give it a name.
-   And to make sure it's not in the way and doesn't change the size of the final
-   union, the names struct is actually just an (unused) pointer.
-   The dummy is never used either but ensures the size is > sizeof(int). This is checked below.
-   2) Create a stub function that unwraps the struct and calls the original function.
+/* Infrastructure for an async call.
+   1) The async-call-return struct. Stores a promise and has enough space
+      to store a return value, which may or may not be utilized (hence "tag").
+      The call is in-flight or available when the promise pointer is set.
+      Any of the await()-functions clear and destroy the promise.
+      The tag is auxiliary and required for type/size deduction,
+      but also used as temporary storage by some await() functions.
+   2) Create a struct to hold params and the returned result.
+      The inner names struct exists so that we can dump decls ("int i")
+      and do sizeof() on them. sizeof(i) won't work since i isn't defined,
+      sizeof(int i) doesn't work because it's a syntax error, but if we have
+          struct names { int i; }
+      then we can do
+          sizeof(((struct names*)NULL)->i)
+      and that will give us the size without actually creating any variables.
+      The older standards don't like anonymous structs, so we need to give it a name.
+      And to make sure it's not in the way and doesn't change the size of the final
+      union, the names struct is actually just an (unused) pointer.
+      The dummy is never used either but ensures the size is > sizeof(int). This is checked below.
+      This struct uses a custom memory layout for the parambuf[] memory block
+      so that everything is pointer-aligned.
+   3) Create a stub function that unwraps the struct and calls the original function.
       The unwrapping follows the same memory layout that is used when packing it
-      (ie. everything is rounded up to pointer size). The result is stored in the promise..
-   3) The last stub function spawns f as a job that returns its result in a promise.
+      (ie. everything is rounded up to pointer size). The result is stored in the promise.
+   4) The last stub function spawns f as a job that returns its result in a promise.
       In order to save space, the promise is used to carry params over to the actual
       function call and also receives the result of the call later, overwriting the params.
       The static assert enforces that the type is known.
       (We know that _x_Args::_dummy_ is already larger than an int,
       so if C says the size is the same as int we know something is up.)
 */
-#define tws_MAKE_ASYNC(ret, F, args, ...) \
+#define _tws_X_EMIT_MAGIC_WRAPPER(ret, F, args, ...) \
 typedef struct _tws_X_AR_NAME(F) { tws_Promise *_x_prom; ret _x_tag; } _tws_X_AR_NAME(F); \
 union _tws_X_PS_NAME(F) { \
     struct names { _tws_X_CALL_MACRO_FOR_EACH(_tws_X_DECL, __VA_ARGS__) } *_names_; \
@@ -225,12 +240,12 @@ static void _tws_X_FN_NAME(F) (void *ud, tws_Job *j, tws_Event *ev) { \
     _x_arg->retval = F args; \
     tws_fulfillPromise(_x_prom, 1); \
 } \
-static tws_Promise * _tws_X_DP_NAME(F) (__VA_ARGS__) \
+static tws_Promise * _tws_X_DP_NAME(F) (tws_WorkType _x_wt, __VA_ARGS__) \
 { \
     typedef union _tws_X_PS_NAME(F) _x_Args; \
     _tws_async_static_assert(sizeof(_x_Args) > sizeof(int)); \
     tws_Job *_x_j; \
-    tws_Promise *_x_prom = _tws_allocAsyncPromiseHelper(sizeof(_x_Args), _tws_X_FN_NAME(F), &_x_j ); \
+    tws_Promise *_x_prom = _tws_allocAsyncPromiseHelper(&_x_j, _tws_X_FN_NAME(F), sizeof(_x_Args), _x_wt); \
     if (_x_prom) { \
         intptr_t _x_ptr = (intptr_t)tws_getPromiseData(_x_prom, NULL); \
         _tws_X_EXPAND(_tws_X_COPYPARAMSIN args) \
@@ -239,26 +254,39 @@ static tws_Promise * _tws_X_DP_NAME(F) (__VA_ARGS__) \
     return _x_prom; \
 }
 
-/* Async result wrapper. The macro parameter is the name of your function.
-   The call is in-flight or available when the promise pointer is set.
-   Any of the await()-functions clear and destroy the promise.
-   The tag is auxiliary and required for type/size deduction,
-   but also used as temporary storage by some await() functions. */
+// --- Magic macro sauce end ---
+
+
+// ------------------------
+// --- Public API begin ---
+// ------------------------
+
+/* Create the necessary infrastructure to call a function f asynchronously.
+   Read the explanation at the top of this file on how to use this.
+   (...) supports up to 16 parameters. If you need more, extend the macro hell above.
+   Or maybe actually organize your code. This isn't FORTRAN. */
+#define tws_MAKE_ASYNC(ret, f, args, ...) \
+    _tws_X_EMIT_MAGIC_WRAPPER(ret, f, args, __VA_ARGS__)
+
+/* Async result wrapper. f is the name of the function called asynchronously. */
 #define tws_ARET(f) \
     _tws_X_AR_NAME(f)
 
 /* Store an in-flight async call of f(...).
-   Note that this actually returns an incomplete tws_ARET(T) struct, in case your compiler warns about this. */
+   Note that this actually returns an incomplete tws_ARET(f) struct,
+   in case your compiler warns about this. */
 #define tws_async(f, ...) \
-    { _tws_X_DP_NAME(f)(__VA_ARGS__) }
+    { _tws_X_DP_NAME(f)(tws_DEFAULT, __VA_ARGS__) }
 
-//_tws_async_static_assert(sizeof((as)._x_tag) == sizeof(*(dst)));
+/* Same as above, but accepts a tws_WorkType as first parameter. */
+#define tws_asyncType(wt, f, ...) \
+    { _tws_X_DP_NAME(f)(wt, __VA_ARGS__) }
 
 /* Await async result. dst must be a pointer to the memory that will receive the result.
    Returns 1 on success, 0 if the corresponding tws_async() failed to allocate resources.
    Contains a compile-time check that
    (1) dst is a pointer
-   (2) *dst and the return value from the async call are at least the same size.
+   (2) *dst and the return value from the async call are the same size.
        (plain-C doesn't allow to check for type equality but this is better than nothing)
 */
 #define tws_awaitCopy(dst, as) \
@@ -270,7 +298,7 @@ static tws_Promise * _tws_X_DP_NAME(F) (__VA_ARGS__) \
 #define tws_awaitCopyRaw(dst, as) \
     _tws_finalizeAsyncPromiseHelper(&(as)._x_prom, (dst), sizeof((as)._x_tag))
 
-/* Shortcut for direct assignment. If all was good return value in as,
+/* Shortcut for direct assignment. If all was good, return value in as,
    otherwise return default. */
 #define tws_awaitDefault(as, def) \
     ( (tws_awaitCopy(&(as)._x_tag, as)) ? ((as)._x_tag) : (def) )
