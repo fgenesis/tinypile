@@ -12,12 +12,12 @@ TL;DR:
 
 Design goals:
 - Plain C API, KISS.
-- Bring your own threading & semaphores (6 function pointers in total) -- the code is completely API and OS agnostic.
+- Bring your own threading & semaphores (6 function pointers in total) -- the code is API and OS agnostic.
 - As many debug assertions as possible to catch user error (if it says RTFM, do that)
 - No memory allocations during regular operation unless you spam & overload the pool
 - Safe operation even if grossly overloaded
 
-For example code and usage infor0mation, see the end of this file.
+For example code and usage information, see the end of this file.
 
 License: WTFPL because lawyers suck. except netpoet. hi netpoet! <3
 
@@ -123,7 +123,7 @@ typedef void (*tws_RunThread)(int threadID, tws_WorkType worktype, void *userdat
 // Cases to handle:
 //   ptr == NULL, nsize > 0:  return malloc(newsize);  // ignore oldsize
 //   ptr != NULL, nsize == 0: free(ptr); // oldsize is size of allocation
-//   ptr != NULL, nsize != 0: return realloc(ptr, newsize); // oldsize = current size
+//   ptr != NULL, nsize != 0: return realloc(ptr, newsize); // oldsize = current size // <-- Currently tws never does this
 // The returned pointer must be aligned to max(atomic int64 size, pointer size).
 // The allocator must be threadsafe as it might be called by multiple threads at once.
 typedef void* (*tws_AllocFn)(void *allocUser, void *ptr, size_t oldsize, size_t newsize);
@@ -145,11 +145,6 @@ typedef struct tws_Event  tws_Event;  // opaque, job completion notification
 //      are finished as well before the event is signaled.
 // * If you're in C++, this function must never throw. If you're using exceptions, handle them internally.
 typedef void (*tws_JobFunc)(void *data, tws_Job *job, tws_Event *ev);
-
-enum
-{
-    TWS_CONTINUATION_COST = sizeof(tws_Job*)
-};
 
 // ---- Setup config ----
 
@@ -175,15 +170,16 @@ typedef struct tws_Setup
 
     tws_WorkType threadsPerTypeSize; // # of entries in the threadsPerType array.
 
-    unsigned jobSpace;      // How many bytes to make available for userdata in a job.
+    unsigned jobSpace;      // How many bytes to make available for userdata in a job. Must be > 0.
+                            // TL;DR if you have no idea what to put here, set this to the same value as cacheLineSize.
+                            // Long version:
                             // Set this to the maximum number of bytes you will typically need, but keep it as small as possible.
-                            // Each continuation added to a job costs TWS_CONTINUATION_COST bytes.
+                            // Each continuation added to a job costs sizeof(void*) bytes extra.
                             // A job will always allocate space for at least 1 continuation.
-                            // So this number should be the sum of user data and space typically needed for continuations.
+                            // So this number should be the size of typical user data PLUS space typically needed for continuations.
                             // The actually used value is extended so that the end of the job data is also the end of a cache line;
                             // the resulting size can be retrieved in tws_MemInfo::jobSpace.
                             // If job data and number of continuations for a job exceed this space, extra memory is allocated from the heap.
-                            // TL;DR if you have no idea what to put here, set this to the same value as cacheLineSize.
 
     unsigned cacheLineSize; // The desired alignment of most internal structs, in bytes.
                             // Should be equal to or a multiple of the CPU's L1 cache line size to avoid false sharing.
@@ -193,7 +189,7 @@ typedef struct tws_Setup
     unsigned jobsPerThread; // How many in-flight jobs one thread can hold. If you push more jobs into the system than it can handle
                             // it will push jobs into internal spillover queues that are rather slow in comparison to the usual lockfree operation.
                             // Recommended: 1024 for starters. Increase as needed. Internally rounded up to a power of 2.
-                            // (Required memory: threads * jobsPerThread * (jobTotalSize + sizeof(tws_Job*))
+                            // (Required static memory: threads * jobsPerThread * (jobTotalSize + sizeof(tws_Job*))
 } tws_Setup;
 
 typedef struct tws_MemInfo
@@ -342,11 +338,12 @@ typedef struct tws_Promise tws_Promise;
 // Both parameters are totally up to you, the memory is never used or touched.
 tws_Promise *tws_newPromise(void *p, size_t size);
 
-// Allocate promise together with a data area of 'size' bytes.
+// Allocate promise together with a data area of 'size' bytes, in one allocation.
 // You can specify a power-of-2 alignment of the data area if you need it. Specify 0 if you don't care.
 tws_Promise *tws_allocPromise(size_t size, size_t alignment);
 
 // Delete a previously created promise.
+// If it was allocated via tws_allocPromise() this deleted both the promise and the data.
 // Deleting an in-flight promise is undefined behavior and will probably crash.
 void tws_destroyPromise(tws_Promise *pr);
 
@@ -364,7 +361,7 @@ int tws_isDonePromise(const tws_Promise *pr);
 void *tws_getPromiseData(const tws_Promise *pr, size_t *psize);
 
 // Fulfill (or fail) a promise. 'Code' is up to you and will be returned by tws_waitPromise().
-// You must call this function exactly once per promise.
+// Call this function only once! Fulfilling a promise again is an error and will assert().
 // You may call this function again after resetting the promise.
 // Order of operations:
 //  - Call tws_getPromiseData() first and copy whatever you want to return.
@@ -375,6 +372,7 @@ void tws_fulfillPromise(tws_Promise *pr, int code);
 // If tws_isDonePromise() is true, this call is non-blocking.
 // Like tws_wait(), this helps with other unfinished work while waiting.
 int tws_waitPromise(tws_Promise *pr);
+
 
 // --- Kernel dispatch ---
 
@@ -405,7 +403,7 @@ void addOne(void *ud, size_t first, size_t n) // ud is passed through, first and
 }
 
 // -- Create a job: --
-tws_Job *j = tws_dispatchEven(addOne, array, N, 1024, ...job params); // process in 1024 element chunks
+tws_Job *j = tws_dispatchEven(addOne, array, N, 1024, ...job params); // process in up to 1024 element chunks
 
 // -- Submit it --
 // (add continuations and children to j if necessary)
@@ -421,16 +419,16 @@ tws_submit(j, ...);
 // Returns NULL when out of memory aka the job can't be created.
 // Returns a valid (but empty) job if elems == 0.
 // Asserts that maxElems > 0 and kernel != NULL; with assertions off it'll return NULL in that case.
-// The function splits the size in half each subdivision, so when you pass elems=20 and maxElems=16,
+// The function splits the size in half each subdivision, so when you pass size=20 and maxElems=16,
 // you will get 2x 10 elements.
-tws_Job *tws_dispatchEven(tws_Kernel kernel, void *ud, size_t elems, size_t maxElems,
+tws_Job *tws_dispatchEven(tws_Kernel kernel, void *ud, size_t size, size_t maxElems,
     unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev);
 
 // Similar to the above function, but instead of splitting evenly, it will prefer an uneven split
-// and call your kernel repeatedly with exactly n == maxElems and once with (elems % maxElems) if this is not 0.
-// In the above example with elems=20 and maxElems=16 that would result in 16 and 4 elements.
+// and call your kernel repeatedly with exactly n == maxElems and once with (size % maxElems) if this is not 0.
+// In the above example with size=20 and maxElems=16 that would result in 16 and 4 elements.
 // The uneven split is useful for eg. processing as many elements as your L2 cache can fit, *hint hint*.
-tws_Job *tws_dispatchMax (tws_Kernel kernel, void *ud, size_t elems, size_t maxElems,
+tws_Job *tws_dispatchMax (tws_Kernel kernel, void *ud, size_t size, size_t maxElems,
     unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev);
 
 
@@ -443,15 +441,20 @@ tws_Job *tws_dispatchMax (tws_Kernel kernel, void *ud, size_t elems, size_t maxE
 typedef enum tws_Warn
 {
     TWS_WARN_JOB_SPILLED,       // job was unexpectedly spilled to (slower) backup queue (overload; TLS queue was full)
-    TWS_WARN_JOB_REALLOCATED,   // could not store all data within the job; had to allocate an extra heap block (too large payload)
+    TWS_WARN_JOB_EXTRALARGE,    // could not store all data within the job; had to allocate an extra heap block (too large payload)
     TWS_WARN_JOB_SLOW_ALLOC,    // job had to be allocated from the slower global freelist instead of the fast per-worker storage (overload; too many jobs in flight)
+    TWS_WARNX_SPILLQ_FULL,      // out of memory when submitting job: Need to spill job but can't, spillover queue is full and failed to reallocate.
+                                // (may follow after TWS_WARN_JOB_SPILLED). Handled internally but if you ever get this it's a sign of massive overload.
+    TWS_WARNX_CANT_ALLOC_JOB,   // out of memory when creating job: failed all attempts to alloc a job.
+                                // (may follow after TWS_WARN_JOB_SLOW_ALLOC or TWS_WARN_JOB_EXTRALARGE). You'll get a NULL tws_Job pointer.
+
 } tws_Warn;
 
 // Debug callback. The two size parameters will be set if appropriate.
 typedef void (*tws_DebugCallback)(tws_Warn what, size_t size1, size_t size2);
 
 // Register a debug callback that will be called whenever the internals have something to report.
-// NULL to disable. Disabled by default.
+// NULL to disable. Disabled by default. This is a global setting independent of the pool instance.
 // Returns tws_ERR_UNSUPPORTED when debug callbacks are compiled out and won't be called.
 tws_Error tws_setDebugCallback(tws_DebugCallback cb);
 
@@ -468,7 +471,7 @@ int tws_atomicDecRef(unsigned *pcount); // returns 1 when count == 0 after decre
 // Most internal semaphores use a short spin loop before falling back to the system semaphore,
 // as wait times are usually short and using syscalls for short waits usually impacts performance negatively.
 // It's set to a reasonable default but can be changed if you have to. Benchmark & profile if you do.
-// Note that this is a global setting and applies to ALL sempahores used internally.
+// Note that this is a global setting independent of the pool instance and applies to ALL sempahores used internally.
 // (There's a #define in tws.c to turn off the spinning completely)
 unsigned tws_getSemSpinCount(void);
 void tws_setSemSpinCount(unsigned spin);
@@ -481,7 +484,7 @@ void tws_setSemSpinCount(unsigned spin);
 int _tws_setParent(tws_Job *job, tws_Job *parent);
 
 // Free space for user data in a job given ncont continuations, without requiring an extra heap allocation.
-// For the C++ API. Returns 0 if there is no space or ncont is large enough to force a heap allocation.
+// For the C++ API. Returns 0 if there is no space or if ncont is large enough to force a heap allocation.
 size_t _tws_getJobAvailSpace(unsigned short ncont);
 
 // For the C++ API
@@ -509,14 +512,14 @@ static const tws_SemFn semfn = { <your function pointers> };
 // -- init threadpool --
 tws_Setup ts; // This can be allocated on the stack; it's no longer needed after tws_init().
 memset(&ts, 0, sizeof(ts)); // we're not using optional fields here, make sure those are cleared
+ts.threadFn = &thfn;       // link up backend (thread funcs)
+ts.semFn = &semfn;         // link up backend (semaphore funcs)
 ts.cacheLineSize = 64;     // <-- whatever fits your target architecture
 ts.jobSpace = 64;          // <-- whatever size you need
 ts.jobsPerThread = 1024;   // <-- each thread gets this many slots for jobs to queue
-unsigned threads[] = {4};  // <-- might be a good idea to auto-detect this
+unsigned threads[] = {4};  // <-- 1 work type using 4 threads; might be a good idea to auto-detect the number of cores on the system
 ts.threadsPerType = &threads; // <-- Can specify more than one work type if needed, e.g. an extra disk I/O thread
 ts.threadsPerTypeSize = 1;    // <-- #entries in that array
-ts.threadFn = &thfn;       // link up backend (thread funcs)
-ts.semFn = &semfn;         // link up backend (semaphore funcs)
 if(tws_init(&ts) != tws_ERR_OK)  // start up threadpool
     gtfo("threadpool init failed");
 // now ready to submit jobs
@@ -597,5 +600,5 @@ Rules of thumb:
 - Set your tws_Setup::jobSpace high enough that job data and continuations you will add fit in there.
   It is no problem if once in a while a large data block has to be added,
   but this will fall back to a heap allocation every time, which you want to avoid.
-  Or just pass a pointer to your data and ensure the memory stays valid while jobs work on it.
+  Or just pass a pointer to your jobs and ensure the memory stays valid while jobs work on it.
 */

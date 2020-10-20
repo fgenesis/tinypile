@@ -1,5 +1,7 @@
 # tinypile
 
+### [Warning: This is the work-in-progress branch. Don't use this in production!]
+
 Pile of various tiny (single- or two-file) libs.
 
 - [x] Cross-platform C/C++.
@@ -15,6 +17,7 @@ Pile of various tiny (single- or two-file) libs.
 |tws|[.c](tws.c) + [.h](tws.h)|**C99**, C++98|Tiny work scheduler, threading, and [job system](https://blog.molecular-matters.com/2016/04/04/job-system-2-0-lock-free-work-stealing-part-5-dependencies/)|Experimental<sup>2</sup>
 |tws.hh|[.hh](tws.hh) |**C++98**/11|Optional C++ wrapper for **tws**<br />(requires [tws.h](tws.h))|WIP, don't use!
 |tws_backend<sup>1</sup>|[.h](tws_backend.h)|**C99**, C++98|Optional backend for **tws**<br />(requires [tws.h](tws.h))|WIP, don't use!
+|tws_async|[.h](tws_async.h) or [.hh](tws_async.hh) | **C99** or **C++98**/11|Optional [async/await](https://en.wikipedia.org/wiki/Async/await) extension for **tws** <br />(requires [tws.h](tws.h))|WIP, don't use!
 |tio<sup>1</sup>|[.cpp](tio.cpp) + [.h](tio.h)|C++98, **C-only .h**|File/Path-I/O (and *fopen()* on steroids)|WIP, don't use!
 |tio_vfs|[.cpp](tio_vfs.cpp) + [.h](tio_vfs.h)|C++98, **C-only .h**|Virtual file system add-on for **tio**<br />(requires [tio.h](tio.h))|WIP, don't use!
 

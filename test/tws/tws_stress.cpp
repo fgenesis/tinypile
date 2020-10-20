@@ -124,7 +124,8 @@ int main()
     ts.cacheLineSize = cache;
     ts.semFn = tws_backend_sem;
     ts.threadFn = tws_backend_thread;
-    ts.jobsPerThread = 1024*32;
+    ts.jobsPerThread = 1024;
+    ts.jobSpace = cache;
 
     if(tws_init(&ts) != tws_ERR_OK)
         return 2;

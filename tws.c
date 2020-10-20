@@ -9,7 +9,7 @@ Dependencies:
   Compiles as C99 or oldschool C++ code, but can benefit from C11 or if compiled as C++11
   Requires libc for memcpy() & memset() but you can use your own by replacing tws_memcpy() & tws_memzero() defines
   Optionally requires libc for realloc()/free(), if the default allocator is used
-  Requires compiler/library support for 32bit atomics and pointer compare-and-swap (CAS).
+  Requires compiler/library support for 32bit atomics, pointer compare-and-swap (CAS), and a yield/pause opcode.
   Requires some 64bit atomics support (write, read, CAS); works with 32bit in theory but this risks overflow [link #4 below]
 
 Origin:
@@ -142,11 +142,15 @@ Some notes:
 #  define TWS_THREADLOCAL __declspec(thread)
 #  define TWS_DECL_ATOMIC(x) volatile x
 #elif defined(TWS_HAS_GCC) // intrinsics
-#  include <emmintrin.h>
-#  define TWS_USE_GCC
 #  define COMPILER_BARRIER() asm volatile("" ::: "memory")
 #  define TWS_THREADLOCAL __thread
-#  define TWS_DECL_ATOMIC(x) __atomic x
+#  if 0 // TODO: check since when gcc supports __atomic_*
+#    define TWS_USE_GCC_ATOMICS
+#    define TWS_DECL_ATOMIC(x) __atomic x
+#  else
+#    define TWS_USE_GCC_SYNC
+#    define TWS_DECL_ATOMIC(x) x
+#  endif
 #elif defined(TWS_HAS_CPP11) // STL, but most likely all inline/intrinsics
 #  include <atomic>
 #  define TWS_USE_CPP11
@@ -157,6 +161,8 @@ Some notes:
 #else
 #  error Unsupported compiler; missing support for atomic instrinsics
 #endif
+
+// Support macros
 
 #ifndef TWS_UNLIKELY
 #define TWS_UNLIKELY(x) x
@@ -170,13 +176,43 @@ Some notes:
 #  define TWS_STATIC_ASSERT(cond) switch((int)!!(cond)){case 0:;case(!!(cond)):;}
 #endif
 
+// -- Processor yield, per-platform --
+// Used as a hint to yield a tiny bit after failing to grab a spinlock.
+// On CPUs that use hyperthreading this may switch to a different hyperthread to do something useful in the meantime.
+// Refer to https://sourceforge.net/p/predef/wiki/Architectures/ for platform defines.
+
+// x86 / x86_64 has _mm_pause(), supported universally across compilers
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__x86_64) || defined(__i386__) || defined(__X86__) || defined(_X86_)
+# include <immintrin.h>
+static inline void _Yield(void) { _mm_pause(); }
+// ARM has the 'yield' instruction...
+#elif defined(_M_ARM) || defined(_M_ARM64) || defined(__arm__) || defined(__aarch64__)
+# ifdef _MSC_VER
+#   include <intrin.h>
+    static inline void _Yield(void) { __yield(); } // ... MSVC has an intrinsic for that ...
+# else
+    static inline void _Yield(void) { asm volatile("yield"); } // ... gcc doesn't, apparently. clang? definitely not in older versions.
+# endif
+// Windows has a macro that works. But we check this late to avoid including this gruesome header unless absolutely necessary.
+#elif defined(_WIN32) || defined(_WIN64) || defined(_WINDOWS)
+# define WIN32_LEAN_AND_MEAN
+# define WIN32_NOMINMAX
+# include <Windows.h>
+static inline void _Yield(void) { YieldProcessor(); }
+#else
+# error Need to implement yield opcode for your platform! It will work without but may be less efficient. Comment out this #error to continue anyway.
+static inline void _Yield(void) { /* Do nothing for a few cycles */ }
+#endif
+
+// 64 bit atomic types
+
 #ifdef TWS_HAS_S64_TYPE
 typedef s64 tws_Atomic64;
 #else
 typedef long tws_Atomic64; // This will work for a while but it's dangerous (see link #4 at the top)
 #endif
 
-typedef long tws_Atomic;
+typedef int tws_Atomic;
 
 // Native atomic type, wrapped in a struct to prevent accidental non-atomic access
 typedef struct NativeAtomic
@@ -228,8 +264,7 @@ static inline int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void **expected, void *newv
 
 // explicit memory fence
 static inline void _Mfence(void);
-// pause cpu for a tiny bit, if possible
-static inline void _Yield(void);
+
 
 #ifndef COMPILER_BARRIER
 #  error need COMPILER_BARRIER
@@ -261,7 +296,6 @@ static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x) { COMPILER_BAR
 static inline int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void **expected, void *newval) { return atomic_compare_exchange_weak(x, expected, newval); }
 
 static inline void _Mfence() { COMPILER_BARRIER(); atomic_thread_fence(memory_order_seq_cst); }
-static inline void _Yield() { __builtin_ia32_pause(); } // TODO: does this work on ARM?
 
 #endif
 
@@ -346,21 +380,94 @@ static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x) { COMPILER_BAR
 
 static inline int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void **expected, void *newval) { return _msvc_casptr_x86(x, expected, newval); }
 
-
 static inline void _Mfence(void) { COMPILER_BARRIER(); _mm_mfence(); }
-static inline void _Yield(void) { _mm_pause(); }
+
 
 #endif
 
-#ifdef TWS_USE_GCC
+#ifdef TWS_USE_GCC_ATOMICS
+#error TODO: gcc __atomic not yet implemented
+#endif
 
-// TODO
+#ifdef TWS_USE_GCC_SYNC
+
+// Old gcc atomics with __sync prefix -- warning: Less efficient. Should be used only as a last resort.
+
+static inline int _sync_cas32(tws_Atomic *x, tws_Atomic *expected, tws_Atomic newval)
+{
+    int expectedVal = *expected;
+    int prev = __sync_val_compare_and_swap(x, expectedVal, newval);
+    if (prev == expectedVal)
+        return 1;
+    *expected = prev;
+    _Mfence();
+    return 0;
+}
+
+static inline tws_Atomic _AtomicInc_Acq(NativeAtomic* x) { return __sync_add_and_fetch(&x->val, 1); }
+static inline tws_Atomic _AtomicInc_Rel(NativeAtomic* x) { return __sync_add_and_fetch(&x->val, 1); }
+static inline tws_Atomic _AtomicDec_Acq(NativeAtomic* x) { return __sync_sub_and_fetch(&x->val, 1); }
+static inline tws_Atomic _AtomicDec_Rel(NativeAtomic* x) { return __sync_sub_and_fetch(&x->val, 1); }
+static inline int _AtomicCAS_Acq(NativeAtomic* x, tws_Atomic* expected, tws_Atomic newval) { return _sync_cas32(&x->val, expected, newval); }
+static inline int _AtomicCAS_Rel(NativeAtomic* x, tws_Atomic* expected, tws_Atomic newval) { return _sync_cas32(&x->val, expected, newval); }
+static inline int _AtomicCAS_Weak_Acq(NativeAtomic* x, tws_Atomic* expected, tws_Atomic newval) { return _sync_cas32(&x->val, expected, newval); }
+static inline int _AtomicCAS_Weak_Rel(NativeAtomic* x, tws_Atomic* expected, tws_Atomic newval) { return _sync_cas32(&x->val, expected, newval); }
+static inline void _AtomicSet_Seq(NativeAtomic* x, tws_Atomic newval) { _Mfence(); x->val = newval; _Mfence(); }
+static inline void _AtomicSet_Rel(NativeAtomic* x, tws_Atomic newval) { _Mfence(); x->val = newval; _Mfence(); }
+static inline tws_Atomic _AtomicExchange_Acq(NativeAtomic* x, tws_Atomic newval)
+{
+    tws_Atomic prev = x->val;
+    for (;;)
+    {
+        tws_Atomic old = __sync_val_compare_and_swap(&x->val, prev, newval);
+        if (old == prev)
+            return old;
+        prev = old;
+    }
+}
+static inline tws_Atomic _AtomicGet_Seq(const NativeAtomic* x) { return __sync_add_and_fetch(&((NativeAtomic*)x)->val, 0); }
+static inline tws_Atomic _RelaxedGet(const NativeAtomic* x) { return x->val; }
+
+static inline int _Atomic64CAS_Seq(NativeAtomic64* x, tws_Atomic64* expected, tws_Atomic64 newval)
+{
+    tws_Atomic64 expectedVal = *expected;
+    tws_Atomic64 prev = __sync_val_compare_and_swap(&x->val, expectedVal, newval);
+    if (prev == expectedVal)
+        return 1;
+    *expected = prev;
+    _Mfence();
+    return 0;
+}
+static inline void _Atomic64Set_Seq(NativeAtomic64* x, tws_Atomic64 newval)
+{
+    tws_Atomic64 old = x->val;
+    do
+        old = __sync_val_compare_and_swap(&x->val, old, newval);
+    while (old != newval);
+}
+static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64* x)
+{
+    return __sync_add_and_fetch(&((NativeAtomic64*)x)->val, 0);
+}
+
+static inline int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void** expected, void* newval)
+{
+    void* expectedVal = *expected;
+    void* prev = __sync_val_compare_and_swap(x, expectedVal, newval);
+    if (prev == expectedVal)
+        return 1;
+    *expected = prev;
+    _Mfence();
+    return 0;
+}
+
+static inline void _Mfence() { COMPILER_BARRIER(); __sync_synchronize(); }
 
 #endif
 
 #ifdef TWS_USE_CPP11
 
-// TODO
+#error TODO: C++11 atomics not yet implemented
 
 #endif
 
@@ -539,6 +646,20 @@ static void lwsem_leave(LWsem *ws)
         _LeaveSem(ws->sem);
 }
 
+// Variant for thread yielding.
+// The idea is that the semaphore value is only increased up to the total number of threads
+// using this semaphore simultaneously.
+// This is correct since threads only enter the semaphore when there is definitely no work available,
+// in that case we want the thread to go to sleep rather quickly.
+// Compare this with what would happen otherwise, without maxcount:
+//   Each time work is added, the semaphore is incremented (lwsem_leave()). Now add HUGE_VAL work units.
+//   The first few times a waiting thread will wake up and run off with the work.
+//   After all threads are busy, the semaphore count will go up all the way.
+//   Threads will continue working on all added jobs and not touch the semaphore.
+//   Once they are out of work, they will all start hitting the semaphore and spin like
+//   crazy while slowly draining the count to 0. Only then they will go to sleep.
+// Adding an upper bound prevents that scenario.
+// (We *might* get away by hardcoding maxcount == 1, but i am not 100% sure this would work 100% of the time.)
 static void lwsem_leaveMax(LWsem *ws, tws_Atomic maxcount)
 {
 #ifndef TWS_NO_SEMAPHORE_WRAPPER
@@ -595,6 +716,7 @@ static inline void mtx_unlock(tws_Mutex *mtx)
 }
 
 // ---- Freelist ----
+// (Mostly lockfree; supports concurrent push/pop/extend)
 
 typedef struct FreelistBlock FreelistBlock;
 typedef FreelistBlock* FreelistBlockPtr;
@@ -680,7 +802,7 @@ static void *_fl_extend(Freelist *fl, size_t memsize, void **plast)
     char *p = (char*)AlignUp((intptr_t)mem + off, fl->alignment);
     TWS_ASSERT(p < end, "buffer too small for chosen alignment");
     *plast = fl_format(p, end, stride, fl->alignment);
-    //fl->head = p; // We don't want to link this up just yet! Other threads might be executing _fl_trypop()/fl_push() right now.
+    //fl->head = p; // We don't want to link this up just yet! Other threads may modify fl->head concurrently.
 
     FreelistBlock *blk = (FreelistBlock*)mem;
     blk->size = memsize;
@@ -754,8 +876,6 @@ static void *fl_pop(Freelist *fl, size_t extendSize)
                 // failed race. fl->head may or may not be NULL.
                 // whatever it is, cur is updated and must be linked to the end of the freelist extension
             }
-            // now fl->head is set and we can finally unlock the mutex.
-            // (if that was done too early, some other thread would see fl->head == NULL and proceed to extend)
         }
     }
 
@@ -1138,7 +1258,7 @@ struct tws_Pool
 
 inline static void *_Alloc(size_t bytes)
 {
-    void *p = s_pool->alloc(s_pool->allocUser, 0, 0, bytes);
+    void *p = s_pool->alloc(s_pool->allocUser, NULL, 0, bytes);
     TWS_ASSERT(IsAligned((uintptr_t)p, TWS_MIN_ALIGN), "RTFM: allocator delivered memory that's not properly aligned");
     return p;
 }
@@ -1401,24 +1521,25 @@ static tws_Job *NewJobWithoutData(tws_JobFunc f, size_t size, unsigned short max
     unsigned short maxcont1 = maxcont ? maxcont : 1;
     const size_t reqsize = _GetJobReqSize(size, maxcont1);
     tws_Job *job = AllocJob();
-    if(TWS_LIKELY(job))
+    if (TWS_LIKELY(job))
     {
         TWS_ASSERT(!(job->status & ~JB_GLOBALMEM), "allocated job still in use"); // all other flags must be absent
 
-        if(TWS_UNLIKELY(maxjobsize < reqsize)) // extra data too large to fit into job? alloc separately then.
+        if (TWS_UNLIKELY(maxjobsize < reqsize)) // extra data too large to fit into job? alloc separately then.
         {
-            warn(TWS_WARN_JOB_REALLOCATED, maxjobsize, reqsize);
-            tws_JobExt *xp = _AllocJobExt(job, size, maxcont1); // also stores the returned pointer in the job
-            if(TWS_UNLIKELY(!xp))
+            warn(TWS_WARN_JOB_EXTRALARGE, maxjobsize, reqsize);
+            tws_JobExt* xp = _AllocJobExt(job, size, maxcont1); // also stores the returned pointer in the job
+            if (TWS_UNLIKELY(!xp))
             {
                 _DeleteJob(job);
-                return NULL;
+                job = NULL;
+                goto fail;
             }
         }
 
-        if(ev)
+        if (ev)
             tws_incrEventCount(ev);
-        if(parent)
+        if (parent)
             _AtomicInc_Acq(&parent->a_pending);
 
         job->status |= JB_INITED;
@@ -1431,6 +1552,11 @@ static tws_Job *NewJobWithoutData(tws_JobFunc f, size_t size, unsigned short max
         job->event = ev;
 
         _GetJobContinuationArrayStart(job)[0] = NULL; // first continuation pointer must be NULL if unused
+    }
+    else
+    {
+fail:
+        warn(TWS_WARNX_CANT_ALLOC_JOB, size, reqsize);
     }
     return job;
 }
@@ -1631,8 +1757,8 @@ retry:
     // we need to hit the spillover queue of the right work type.
     if(TWS_UNLIKELY(!lq_push(spill, job)))
     {
-        // Bad, spillover queue is full and failed to reallocate
-        TWS_ASSERT(0, "tws_submit: spillover queue is full and failed to reallocate");
+        // Bad, but not critical
+        warn(TWS_WARNX_SPILLQ_FULL, 0, 0); // tried to spill job, but spillover queue is full and failed to reallocate
 
         const int mine = mytls && areWorkTypesCompatible(mytls->worktype, type);
         if(mine) // easy case. we can just run it.
@@ -1946,6 +2072,7 @@ static tws_Error checksetup(const tws_Setup *cfg)
     || (cfg->jobsPerThread == 0)
     || !IsPowerOfTwo(cfg->cacheLineSize)
     || (cfg->cacheLineSize < TWS_MIN_ALIGN)
+    || (cfg->jobSpace == 0)
         )
         return tws_ERR_PARAM_ERROR;
 
@@ -1963,10 +2090,7 @@ static void fillmeminfo(const tws_Setup *cfg, tws_MemInfo *mem)
     TWS_ASSERT(mem->jobSpace >= TWS_MIN_ALIGN, "internal error: Not enough space behind a job struct");
 
     // Make sure there's only one tws_Event per cache line
-    unsigned evsz = sizeof(tws_Event);
-    if(evsz < cfg->cacheLineSize)
-        evsz = cfg->cacheLineSize;
-    mem->eventAllocSize = evsz;
+    mem->eventAllocSize = AlignUp(sizeof(tws_Event), cfg->cacheLineSize);
 }
 
 tws_Error tws_check(const tws_Setup *cfg, tws_MemInfo *mem)
@@ -2261,7 +2385,7 @@ void tws_shutdown(void)
 size_t _tws_getJobAvailSpace(unsigned short ncont)
 {
    size_t space = s_pool->meminfo.jobSpace;
-   const size_t cc = TWS_CONTINUATION_COST * (size_t)ncont;
+   const size_t cc = sizeof(tws_Job*) * (size_t)ncont;
    return space > cc ? space - cc : 0;
 }
 
@@ -2298,9 +2422,7 @@ tws_Promise *_allocPromise(size_t sz)
 tws_Promise *tws_newPromise(void *p, size_t size)
 {
     // make sure it's aligned to cache line boundaries
-    size_t sz = s_pool->meminfo.eventAllocSize;
-    if(sz < sizeof(tws_Promise))
-        sz = sizeof(tws_Promise);
+    size_t sz = AlignUp(sizeof(tws_Promise), s_pool->meminfo.eventAllocSize);
 
     tws_Promise *pr = _allocPromise(sz);
     if(pr)
@@ -2320,7 +2442,9 @@ tws_Promise *tws_allocPromise(size_t space, size_t alignment)
     if(alignment)
         allocsz += (alignment - 1);
 
-    // TODO: pad allocsz to cache line size to make sure that no false sharing can occur?
+    // pad to cache line size to make sure that no false sharing can occur
+    allocsz = AlignUp(allocsz, s_pool->meminfo.eventAllocSize);
+
     tws_Promise *pr = _allocPromise(allocsz);
     if(pr)
     {
@@ -2402,11 +2526,14 @@ void tws_memoryFence()
 
 void tws_atomicIncRef(unsigned* pcount)
 {
+    TWS_STATIC_ASSERT(sizeof(*pcount) == sizeof(NativeAtomic));
+    TWS_ASSERT(IsAligned((uintptr_t)pcount, sizeof(unsigned)), "atomic int is not aligned, this won't work on most platforms");
     _AtomicInc_Acq((NativeAtomic*)pcount);
 }
 
 int tws_atomicDecRef(unsigned* pcount)
 {
+    TWS_ASSERT(IsAligned((uintptr_t)pcount, sizeof(unsigned)), "atomic int is not aligned, this won't work on most platforms");
     return !_AtomicDec_Rel((NativeAtomic*)pcount);
 }
 
@@ -2568,6 +2695,8 @@ static int _tws_testAtomics(void)
 
 /* IDEAS/TODO:
 - tws_drain() to wait for all the things to finish and also reset LQ top+bottom? and clears the freelist
++ tws_drainType()?
+
 - add TWS_RESTRICT
 
 - possible to detect if child of a job is added as a continuation to its parent? (deadlocks)
@@ -2577,4 +2706,10 @@ static int _tws_testAtomics(void)
 - warn if idle in a wait() call -- if no work can get done and we're pausing hard
 
 - add lockfree, fixed-size freelist cache for allocated tws_Event & tws_Promise?
+
+- separate per-thread queue size from per-type storage size
+
+- https://gcc.gnu.org/onlinedocs/gcc/_005f_005fatomic-Builtins.html#g_t_005f_005fatomic-Builtins
+
+- more intuitive example at the bottom of the .h
 */

@@ -36,7 +36,7 @@ You would normally call the function like this:
 double r = myFunc(1, 2, 3.0f);
 
 In order to make this function asynchronously callable,
-add the following macro somewhere below the function definition.
+add the following macro somewhere below the function declaration.
 (The macro expands to 2 hidden structs and 2 inline functions,
 so you can add this in a header as well.)
 
@@ -51,6 +51,7 @@ tws_MAKE_ASYNC(double, myFunc, (a,b,c), int a, int b, float c)
              Put in brackets so that this is one macro parameter.
 
 Then you can call it asynchonously. Parameters to tws_async() are copied by value.
+Note that the function can NOT be a function pointer or a macro.
 If you pass pointers, make sure the memory stays available until the function is done.
 tws_async() queues a background task but will otherwise return immediately.
 
