@@ -338,6 +338,7 @@ static inline unsigned tws_impl_getCPUCacheLineSize()
 #elif defined(_PTHREAD_H) || defined(PTHREAD_H) || defined(_POSIX_THREADS)
 // --------------------------------------------------------
 #include <semaphore.h>
+#include <unistd.h> // for sysconf()
 
 // pthread_t and sem_t size isn't defined by the posix standard, so we need to heap-allocate those
 #include <stdlib.h>
@@ -351,11 +352,11 @@ static inline unsigned tws_impl_getCPUCacheLineSize()
 
 static tws_Thread *tws_impl_thread_create(unsigned id, const void *opaque, void (*run)(const void *opaque))
 {
-    pthread_t *pth = tws_malloc(sizeof(pthread_t));
+    pthread_t *pth = (pthread_t*)tws_malloc(sizeof(pthread_t));
     if(!pth)
         return NULL;
-    int err = pthread_create(pth, NULL, (void (*)(void*))run, opaque);
-    return !err ? pth : NULL;
+    int err = pthread_create(pth, NULL, (void *(*)(void*))run, (void*)opaque);
+    return !err ? (tws_Thread*)pth : NULL;
 }
 
 static void tws_impl_thread_join(tws_Thread *th)
@@ -399,7 +400,7 @@ static inline unsigned tws_impl_getNumCPUs()
 static inline unsigned tws_impl_getCPUCacheLineSize()
 {
     int sz = sysconf(_SC_LEVEL1_DCACHE_LINESIZE);
-    if sz > 0 ? sz : 64;
+    return sz > 0 ? sz : 64;
 }
 
 

@@ -1,3 +1,5 @@
+find_package(Threads)
+
 set(src
     byte_order.c
     byte_order.h
@@ -7,3 +9,4 @@ set(src
 )
 
 add_library(testdep ${src})
+target_link_libraries(testdep tinypile ${CMAKE_THREAD_LIBS_INIT})

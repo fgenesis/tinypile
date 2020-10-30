@@ -286,12 +286,12 @@ static inline int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic *expected, tws
 static inline void _AtomicSet_Seq(NativeAtomic *x, tws_Atomic newval) { atomic_store(&x->val, newval); }
 static inline void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval) { atomic_store_explicit(&x->val, newval, memory_order_release); }
 static inline tws_Atomic _AtomicExchange_Acq(NativeAtomic *x, tws_Atomic newval) { return atomic_exchange_explicit(&x->val, newval, memory_order_acquire); } // return previous
-static inline tws_Atomic _AtomicGet_Seq(const NativeAtomic *x) { return atomic_load_explicit(&x->val, memory_order_seq_cst); }
-static inline tws_Atomic _RelaxedGet(const NativeAtomic *x) { return atomic_load_explicit(&x->val, memory_order_relaxed); }
+static inline tws_Atomic _AtomicGet_Seq(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_seq_cst); }
+static inline tws_Atomic _RelaxedGet(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_relaxed); }
 
 static inline int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return atomic_compare_exchange_strong(&x->val, expected, newval); }
 static inline void _Atomic64Set_Seq(NativeAtomic64 *x, tws_Atomic64 newval) { atomic_store(&x->val, newval); }
-static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x) { COMPILER_BARRIER(); return atomic_load_explicit(&x->val, memory_order_relaxed); }
+static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x) { COMPILER_BARRIER(); return atomic_load_explicit((volatile atomic_int_least64_t*)&x->val, memory_order_relaxed); }
 
 static inline int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void **expected, void *newval) { return atomic_compare_exchange_weak(x, expected, newval); }
 
@@ -556,7 +556,8 @@ static size_t RoundUpToPowerOfTwo(size_t v)
     v |= v >> 4u;
     v |= v >> 8u;
     v |= v >> 16u;
-    v |= v >> 32u;
+    if(sizeof(v) > 4) // Need a check here. ARM produces garbage with too large shifts.
+        v |= v >> 32u;
     v++;
     return v;
 }

@@ -12,6 +12,8 @@ Usage:
 
 #pragma once
 
+#include <stdlib.h> /* for size_t */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
