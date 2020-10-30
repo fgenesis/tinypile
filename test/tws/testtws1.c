@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <string.h>
-#include "tws.h"
-#include "tws_backend.h"
+#include "twsinit.h"
 #include "tws_async.h"
 
 static void work(void *data, tws_Job *job, tws_Event *ev)
@@ -36,42 +35,6 @@ static void split(void *data, tws_Job *job, tws_Event *ev)
 static void largeprint(void *data, tws_Job *job, tws_Event *ev)
 {
     puts((char*)data); // access memory stored in the job
-}
-
-static int init()
-{
-    unsigned cache = tws_getCPUCacheLineSize();
-    unsigned th0 = tws_getLazyWorkerThreads(); // Keep main thread free; the rest can do background work 
-    printf("cache line size = %u\n", cache);
-    printf("cpu cores = %u\n", tws_getNumCPUs());
-    printf("worker threads = %u\n", th0);
-
-    tws_Setup ts;
-    memset(&ts, 0, sizeof(ts)); // clear out all other optional params
-    // there's only one work type (tws_DEFAULT), but we could add more by extending the array
-    unsigned threads[] = { th0 };
-    ts.threadsPerType = &threads[0];
-    ts.threadsPerTypeSize = 1;
-    // the other mandatory things
-    ts.cacheLineSize = cache;
-    ts.semFn = tws_backend_sem;
-    ts.threadFn = tws_backend_thread;
-    ts.jobsPerThread = 1024;
-
-    tws_MemInfo mi;
-    if(tws_check(&ts, &mi) != tws_ERR_OK)
-        return 1;
-
-    printf("---\n");
-    printf("jobSpace = %u\n", (unsigned)mi.jobSpace); // any job data above this size must be dynamically allocated
-    printf("jobTotalSize = %u\n", (unsigned)mi.jobTotalSize);
-    printf("jobMemPerThread = %u\n", (unsigned)mi.jobMemPerThread);
-
-    if(tws_init(&ts) != tws_ERR_OK)
-        return 2;
-
-    printf("---\n");
-    return 0;
 }
 
 void test1()
@@ -123,14 +86,12 @@ void test2()
 
 int main()
 {
-    int ini = init();
-    if(ini)
-        return ini;
+    tws_test_init();
 
     //test1();
     test2();
 
-    tws_shutdown();
+    tws_test_shutdown();
 
     return 0;
 }

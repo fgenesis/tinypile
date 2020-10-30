@@ -1,7 +1,4 @@
-#define TWS_BACKEND_IMPLEMENTATION
-#include "tws_backend.h"
-
-#include "tws.h"
+#include "twsinit.h"
 
 #include <atomic>
 #include <stdio.h>
@@ -79,28 +76,6 @@ static void work2a(void *data, tws_Job *curjob, tws_Event *ev)
     }
 }
 
-std::atomic<size_t> totalmem;
-static void *debugalloc(void *ud, void *ptr, size_t osize, size_t nsize)
-{
-    void *ret = NULL;
-    if(!ptr && nsize)
-    {
-        totalmem += nsize;
-        ret = malloc(nsize);
-    }
-    else if(ptr && !nsize)
-    {
-        totalmem -= osize;
-        free(ptr);
-    }
-    else if(ptr && nsize)
-    {
-        totalmem += (nsize - osize);
-        ret = realloc(ptr, nsize);
-    }
-    return ret;
-}
-
 static void warncb(tws_Warn what, size_t a, size_t b)
 {
     printf("%u! (%u, %u)\n", what, (unsigned)a, (unsigned)b);
@@ -108,27 +83,7 @@ static void warncb(tws_Warn what, size_t a, size_t b)
 
 int main()
 {
-    //tws_setDebugCallback(warncb);
-    unsigned cache = tws_getCPUCacheLineSize();
-    unsigned th0 = tws_getLazyWorkerThreads(); // Keep main thread free; the rest can do background work 
-    //tws_setSemSpinCount(100);
-
-    tws_Setup ts;
-    memset(&ts, 0, sizeof(ts)); // clear out all other optional params
-    ts.allocator = debugalloc;
-    // there's only one work type (tws_DEFAULT), but we could add more by extending the array
-    unsigned threads[] = { th0 };
-    ts.threadsPerType = &threads[0];
-    ts.threadsPerTypeSize = 1;
-    // the other mandatory things
-    ts.cacheLineSize = cache;
-    ts.semFn = tws_backend_sem;
-    ts.threadFn = tws_backend_thread;
-    ts.jobsPerThread = 1024;
-    ts.jobSpace = cache;
-
-    if(tws_init(&ts) != tws_ERR_OK)
-        return 2;
+    tws_test_init();
 
     tws_Event *ev = tws_newEvent();
     tws_Job *job;
@@ -156,17 +111,14 @@ int main()
         std::chrono::duration<double> td = std::chrono::duration_cast<std::chrono::duration<double> >(t1 - t0);
         unsigned val = a_test;
         double persec = n_test / td.count();
-        printf("value = %u, mem = %u, time = %f ms, job avg = %f ms, per sec = %f\n",
-            val, (unsigned)totalmem, td.count()*1000, td.count() / double(val) * 1000, persec);
+        printf("value = %u, time = %f ms, job avg = %f ms, per sec = %f\n",
+            val, td.count()*1000, td.count() / double(val) * 1000, persec);
     }
 
 
     tws_destroyEvent(ev);
 
-    tws_shutdown();
-    size_t mem = totalmem;
-    printf("mem leaked: %u\n", (unsigned)mem);
-    assert(mem == 0);
+    tws_test_shutdown();
 
 
     return 0;

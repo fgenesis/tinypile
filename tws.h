@@ -291,6 +291,10 @@ void tws_wait(tws_Event *ev);
 void tws_waitEx(tws_Event *ev, tws_WorkType *help, size_t n);
 
 
+// ---------------------------------------------------------------
+// ------ Goodies and generally optional things below here -------
+// ---------------------------------------------------------------
+
 /* --- Promise API ---
 
 A promise provides an easy way of returning data from a job asynchronously.

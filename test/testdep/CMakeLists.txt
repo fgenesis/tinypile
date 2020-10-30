@@ -6,6 +6,8 @@ set(src
     sha3.c
     sha3.h
     ustd.h
+    twsinit.cpp
+    twsinit.h
 )
 
 add_library(testdep ${src})
