@@ -248,7 +248,6 @@ static inline tws_Atomic _AtomicInc_Acq(NativeAtomic *x);
 static inline tws_Atomic _AtomicInc_Rel(NativeAtomic *x);
 static inline tws_Atomic _AtomicDec_Acq(NativeAtomic *x);
 static inline tws_Atomic _AtomicDec_Rel(NativeAtomic *x);
-static inline int _AtomicCAS_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval);
 static inline int _AtomicCAS_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval);
 static inline int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval);
 static inline int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval);
@@ -283,7 +282,6 @@ static inline tws_Atomic _AtomicInc_Acq(NativeAtomic *x) { return atomic_fetch_a
 static inline tws_Atomic _AtomicInc_Rel(NativeAtomic *x) { return atomic_fetch_add_explicit(&x->val, 1, memory_order_release) + 1; }
 static inline tws_Atomic _AtomicDec_Acq(NativeAtomic *x) { return atomic_fetch_add_explicit(&x->val, -1, memory_order_acquire) - 1; }
 static inline tws_Atomic _AtomicDec_Rel(NativeAtomic *x) { return atomic_fetch_add_explicit(&x->val, -1, memory_order_release) - 1; }
-static inline int _AtomicCAS_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval) { return atomic_compare_exchange_strong_explicit(&x->val, expected, newval, memory_order_acquire, memory_order_acquire); }
 static inline int _AtomicCAS_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval) { return atomic_compare_exchange_strong_explicit(&x->val, expected, newval, memory_order_release, memory_order_consume); }
 static inline int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval) { return atomic_compare_exchange_weak_explicit(&x->val, expected, newval, memory_order_acquire, memory_order_acquire); }
 static inline int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval) { return atomic_compare_exchange_weak_explicit(&x->val, expected, newval, memory_order_release, memory_order_consume); }
@@ -368,7 +366,6 @@ static inline int _msvc_casptr_x86(void * volatile *x, void **expected, void *ne
     *expected = prevVal;
     return 0;
 }
-static inline int _AtomicCAS_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval) { return _msvc_cas32_x86(x, expected, newval); }
 static inline int _AtomicCAS_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval) { return _msvc_cas32_x86(x, expected, newval); }
 static inline int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval) { return _msvc_cas32_x86(x, expected, newval); }
 static inline int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval) { return _msvc_cas32_x86(x, expected, newval); }
@@ -412,7 +409,6 @@ static inline tws_Atomic _AtomicInc_Acq(NativeAtomic* x) { return __sync_add_and
 static inline tws_Atomic _AtomicInc_Rel(NativeAtomic* x) { return __sync_add_and_fetch(&x->val, 1); }
 static inline tws_Atomic _AtomicDec_Acq(NativeAtomic* x) { return __sync_sub_and_fetch(&x->val, 1); }
 static inline tws_Atomic _AtomicDec_Rel(NativeAtomic* x) { return __sync_sub_and_fetch(&x->val, 1); }
-static inline int _AtomicCAS_Acq(NativeAtomic* x, tws_Atomic* expected, tws_Atomic newval) { return _sync_cas32(&x->val, expected, newval); }
 static inline int _AtomicCAS_Rel(NativeAtomic* x, tws_Atomic* expected, tws_Atomic newval) { return _sync_cas32(&x->val, expected, newval); }
 static inline int _AtomicCAS_Weak_Acq(NativeAtomic* x, tws_Atomic* expected, tws_Atomic newval) { return _sync_cas32(&x->val, expected, newval); }
 static inline int _AtomicCAS_Weak_Rel(NativeAtomic* x, tws_Atomic* expected, tws_Atomic newval) { return _sync_cas32(&x->val, expected, newval); }
@@ -2664,11 +2660,6 @@ static int _tws_testAtomics(void)
     t = _AtomicInc_Rel(&a); TWS_CHECK(t == 32);
     t = _AtomicDec_Acq(&a); TWS_CHECK(t == 31);
     t = _AtomicDec_Rel(&a); TWS_CHECK(t == 30);
-
-    t = 1;
-    c = _AtomicCAS_Acq(&a, &t, 5); TWS_CHECK(c == 0 && t == 30); // fail, updates t to current value
-    c = _AtomicCAS_Acq(&a, &t, 5); TWS_CHECK(c != 0 && t == 30); // success
-    TWS_CHECK(a.val == 5 && t == 30);
 
     t = 1;
     c = _AtomicCAS_Weak_Acq(&a, &t, 8); TWS_CHECK(c == 0 && t == 5); // fail, updates t to current value
