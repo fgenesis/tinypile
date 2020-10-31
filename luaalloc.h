@@ -12,6 +12,11 @@ Usage:
 
 #pragma once
 
+/* Every public API function is annotated with this */
+#ifndef LUAALLOC_EXPORT
+#define LUAALLOC_EXPORT
+#endif
+
 #include <stdlib.h> /* for size_t */
 
 #ifdef __cplusplus
@@ -23,7 +28,7 @@ typedef struct LuaAlloc LuaAlloc;
 
 /* Main allocation callback. Lua will call this when it needs memory.
    'ud' must be a valid LuaAlloc context passed as user pointer to lua_newstate(). */
-void *luaalloc(void *ud, void *ptr, size_t osize, size_t nsize);
+LUAALLOC_EXPORT void *luaalloc(void *ud, void *ptr, size_t osize, size_t nsize);
 
 /* Block requests and large allocations will be forwarded to the system allocator.
    If you don't provide one, a suitable one based on realloc()/free() will be used.
@@ -32,10 +37,10 @@ typedef void *(*LuaSysAlloc)(void *ud, void *ptr, size_t osize, size_t nsize);
 
 /* Create allocator context. Pass custom system allocator if needed or NULL for the built-in default.
    Multiple Lua states can share a single LuaAlloc as long as they run on the same thread. */
-LuaAlloc *luaalloc_create(LuaSysAlloc sysalloc, void *ud);
+LUAALLOC_EXPORT LuaAlloc *luaalloc_create(LuaSysAlloc sysalloc, void *ud);
 
 /* Destroy allocator. Call after lua_close()ing each Lua state using the allocator. */
-void luaalloc_delete(LuaAlloc*);
+LUAALLOC_EXPORT void luaalloc_delete(LuaAlloc*);
 
 /* Statistics tracking. Define LA_TRACK_STATS in luaalloc.c to use this. [Enabled by default in debug mode].
    Provides pointers to internal stats area. Each element corresponds to an internal allocation bin.
@@ -60,7 +65,7 @@ void luaalloc_delete(LuaAlloc*);
         printf("large allocations: %zu alive, %zu done all-time\n", alive[n-1], total[n-1]);
     }
 */
-unsigned luaalloc_getstats(const LuaAlloc*, const size_t **alive, const size_t **total, const size_t **blocks, unsigned *pbinstep);
+LUAALLOC_EXPORT unsigned luaalloc_getstats(const LuaAlloc*, const size_t **alive, const size_t **total, const size_t **blocks, unsigned *pbinstep);
 
 
 

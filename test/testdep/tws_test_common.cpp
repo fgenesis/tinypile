@@ -1,9 +1,22 @@
+#ifdef _WIN32
+// we're good
+#elif defined(__unix__) || defined(__linux__) || defined(__APPLE__)
+#include <pthread.h>
+#else // whatever
+#include <SDL_thread.h>
+#endif
+
+#define TWS_BACKEND_IMPLEMENTATION
+#include "tws_backend.h"
+
+
+//-------------------------------
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
 #include <atomic>
-#include "tws_backend.h"
-#include "twsinit.h"
+#include "tws_test_common.h"
 
 
 static std::atomic<size_t> s_totalmem;
@@ -48,8 +61,8 @@ static tws_Error tws_simpleinit()
 
     tws_Setup ts =
     {
-        tws_backend_thread,
-        tws_backend_sem,
+        tws_getThreadFuncs(), // thread funcptrs
+        tws_getSemFuncs(), // semaphore funcptrs
         debugalloc, NULL, // allocator and its user data
         NULL, NULL,  // runThread and its user data
         &threads[0], 1, // job types and array size

@@ -1,4 +1,4 @@
-#include "twsinit.h"
+#include "tws_test_common.h"
 
 #include <atomic>
 #include <stdio.h>
@@ -78,11 +78,12 @@ static void work2a(void *data, tws_Job *curjob, tws_Event *ev)
 
 static void warncb(tws_Warn what, size_t a, size_t b)
 {
-    printf("%u! (%u, %u)\n", what, (unsigned)a, (unsigned)b);
+    printf("WARN[%u]: %u, %u\n", what, (unsigned)a, (unsigned)b);
 }
 
 int main()
 {
+    //tws_setDebugCallback(warncb); // <-- This is supposed to spam warnings if enabled, and oh boy it does
     tws_test_init();
 
     tws_Event *ev = tws_newEvent();

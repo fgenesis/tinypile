@@ -42,13 +42,17 @@ Some notes:
 
 // Define this to not wrap the system semaphore
 // (The wrapper reduces API calls a lot and very likely speeds things up. Go and benchmark if in doubt.)
-// If semaphores are not wrapped, tws_setSemSpinCount() will have no effect.
+// If semaphores are not wrapped, tws_setSemSpinCount() has no effect.
 //#define TWS_NO_SEMAPHORE_WRAPPER
 
-// Define this to permanently enable debug callbacks, even in release mode.
-//#define TWS_CALLBACKS_ALWAYS_ON
+// Define this to disable debug callbacks. If disabled, tws_setDebugCallback() will always fail.
+// This is for release mode only. In debug mode callbacks are always enabled.
+//#define TWS_NO_DEBUG_CALLBACKS
 
 // ---------------------------------------
+
+#pragma intrinsic(memset)
+#pragma intrinsic(memcpy)
 
 #if !defined(tws_memcpy) || !defined(tws_memzero)
 #include <string.h> // for memset, memcpy
@@ -473,7 +477,7 @@ static inline void _Mfence() { COMPILER_BARRIER(); __sync_synchronize(); }
 
 // ---- Warning callback ----
 
-#if defined(TWS_CALLBACKS_ALWAYS_ON) || defined(TWS_DEBUG)
+#if defined(TWS_DEBUG) || !defined(TWS_NO_DEBUG_CALLBACKS)
 
 static tws_DebugCallback s_warnCB;
 static inline void warn(tws_Warn what, size_t size1, size_t size2)
@@ -481,14 +485,14 @@ static inline void warn(tws_Warn what, size_t size1, size_t size2)
     if(s_warnCB)
         s_warnCB(what, size1, size2);
 }
-tws_Error tws_setDebugCallback(tws_DebugCallback cb)
+TWS_EXPORT tws_Error tws_setDebugCallback(tws_DebugCallback cb)
 {
     s_warnCB = cb;
     return tws_ERR_OK;
 }
 #else
 #define warn(a, b, c) do{}while(0)
-tws_Error tws_setDebugCallback(tws_DebugCallback cb) { (void)cb; return tws_ERR_UNSUPPORTED; }
+TWS_EXPORT tws_Error tws_setDebugCallback(tws_DebugCallback cb) { (void)cb; return tws_ERR_UNSUPPORTED; }
 #endif
 
 // ---- Spinlock ----
@@ -591,12 +595,12 @@ struct LWsem
 
 static unsigned s_lwsemSpinCount = 10000; // must never be 0
 
-unsigned tws_getSemSpinCount(void)
+TWS_EXPORT unsigned tws_getSemSpinCount(void)
 {
     return s_lwsemSpinCount;
 }
 
-void tws_setSemSpinCount(unsigned spin)
+TWS_EXPORT void tws_setSemSpinCount(unsigned spin)
 {
     s_lwsemSpinCount = spin ? spin : 1;
 }
@@ -1495,7 +1499,7 @@ static void _DeleteJob(tws_Job *job)
     //_AtomicDec_Rel(&s_pool->jobStoreUsed);
 }
 
-int _tws_setParent(tws_Job* job, tws_Job* parent)
+TWS_EXPORT int _tws_setParent(tws_Job* job, tws_Job* parent)
 {
     TWS_ASSERT(!(job->status & JB_SUBMITTED), "job was already submitted. DO NOT CALL THIS FUNCTION.");
     TWS_ASSERT(!(parent->status & JB_SUBMITTED), "parent was already submitted. DO NOT CALL THIS FUNCTION.");
@@ -1852,7 +1856,7 @@ static void AddCont(tws_Job *ancestor, tws_Job *continuation)
     }
 }
 
-void tws_submit(tws_Job *job, tws_Job *ancestor)
+TWS_EXPORT void tws_submit(tws_Job *job, tws_Job *ancestor)
 {
     TWS_ASSERT(job, "RTFM: do not submit NULL job");
     TWS_ASSERT(!(job->status & (JB_SUBMITTED | JB_ISCONT)), "RTFM: Don't submit a job twice");
@@ -1986,7 +1990,7 @@ struct tws_Event
     // <padding to fill a cache line>
 };
 
-tws_Event *tws_newEvent(void)
+TWS_EXPORT tws_Event *tws_newEvent(void)
 {
     size_t sz = s_pool->meminfo.eventAllocSize;
     tws_Event *ev = (tws_Event*)_Alloc(sz);
@@ -2016,24 +2020,24 @@ static void tws_incrEventCount(tws_Event *ev)
         mr_unset(&ev->mr);
 }
 
-int tws_isDone(const tws_Event *ev)
+TWS_EXPORT int tws_isDone(const tws_Event *ev)
 {
     return mr_isset(&ev->mr);
 }
 
-void tws_destroyEvent(tws_Event *ev)
+TWS_EXPORT void tws_destroyEvent(tws_Event *ev)
 {
     TWS_ASSERT(tws_isDone(ev), "RTFM: Attempt to destroy event that is not done");
     mr_destroy(&ev->mr);
     _Free(ev, s_pool->meminfo.eventAllocSize);
 }
 
-void tws_wait(tws_Event *ev)
+TWS_EXPORT void tws_wait(tws_Event *ev)
 {
     mr_waitAndHelp(&ev->mr);
 }
 
-void tws_waitEx(tws_Event *ev, tws_WorkType *help, size_t n)
+TWS_EXPORT void tws_waitEx(tws_Event *ev, tws_WorkType *help, size_t n)
 {
     if(n)
         for(size_t i = 0; i < n; ++i)
@@ -2059,7 +2063,7 @@ static tws_Error checksetup(const tws_Setup *cfg)
         return tws_ERR_FUNCPTRS_INCOMPLETE;
 
 #ifdef TWS_NO_DEFAULT_ALLOC
-    if(!cfg->alloctor)
+    if(!cfg->allocator)
         return tws_ERR_FUNCPTRS_INCOMPLETE;
 #endif
 
@@ -2094,7 +2098,7 @@ static void fillmeminfo(const tws_Setup *cfg, tws_MemInfo *mem)
     mem->eventAllocSize = AlignUp(sizeof(tws_Event), cfg->cacheLineSize);
 }
 
-tws_Error tws_check(const tws_Setup *cfg, tws_MemInfo *mem)
+TWS_EXPORT tws_Error tws_check(const tws_Setup *cfg, tws_MemInfo *mem)
 {
     fillmeminfo(cfg, mem);
     return checksetup(cfg);
@@ -2113,14 +2117,14 @@ static void *defaultalloc(void *user, void *ptr, size_t osize, size_t nsize)
 }
 #endif
 
-tws_Job *tws_newJob(tws_JobFunc f, const void *data, size_t size, unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev)
+TWS_EXPORT tws_Job *tws_newJob(tws_JobFunc f, const void *data, size_t size, unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev)
 {
     if(!f) // empty jobs are always tiny
         type = tws_TINY;
     return NewJob(f, data, size, maxcont, type, parent, ev);
 }
 
-tws_Job *tws_newJobNoInit(tws_JobFunc f, void **pdata, size_t size, unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev)
+TWS_EXPORT tws_Job *tws_newJobNoInit(tws_JobFunc f, void **pdata, size_t size, unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev)
 {
     if(!f) // empty jobs are always tiny
         type = tws_TINY;
@@ -2366,7 +2370,7 @@ tws_Error _tws_init(const tws_Setup *cfg)
     return err;
 }
 
-tws_Error tws_init(const tws_Setup *cfg)
+TWS_EXPORT tws_Error tws_init(const tws_Setup *cfg)
 {
     tws_Error err = _tws_init(cfg);
     if(err != tws_ERR_OK && s_pool)
@@ -2374,7 +2378,7 @@ tws_Error tws_init(const tws_Setup *cfg)
     return err;
 }
 
-void tws_shutdown(void)
+TWS_EXPORT void tws_shutdown(void)
 {
     TWS_ASSERT(!tls, "RTFM: Do not call tws_shutdown() from a worker thread!");
     tws_Pool *pool = s_pool;
@@ -2383,7 +2387,7 @@ void tws_shutdown(void)
     _tws_clear(pool);
 }
 
-size_t _tws_getJobAvailSpace(unsigned short ncont)
+TWS_EXPORT size_t _tws_getJobAvailSpace(unsigned short ncont)
 {
    size_t space = s_pool->meminfo.jobSpace;
    const size_t cc = sizeof(tws_Job*) * (size_t)ncont;
@@ -2420,7 +2424,7 @@ tws_Promise *_allocPromise(size_t sz)
     return pr;
 }
 
-tws_Promise *tws_newPromise(void *p, size_t size)
+TWS_EXPORT tws_Promise *tws_newPromise(void *p, size_t size)
 {
     // make sure it's aligned to cache line boundaries
     size_t sz = AlignUp(sizeof(tws_Promise), s_pool->meminfo.eventAllocSize);
@@ -2434,7 +2438,7 @@ tws_Promise *tws_newPromise(void *p, size_t size)
     return pr;
 }
 
-tws_Promise *tws_allocPromise(size_t space, size_t alignment)
+TWS_EXPORT tws_Promise *tws_allocPromise(size_t space, size_t alignment)
 {
     TWS_ASSERT(!alignment || IsPowerOfTwo(alignment), "RTFM: alignment must be 0 or power of 2");
     
@@ -2459,12 +2463,12 @@ tws_Promise *tws_allocPromise(size_t space, size_t alignment)
     return pr;
 }
 
-void _tws_promiseIncRef(tws_Promise *pr)
+TWS_EXPORT void _tws_promiseIncRef(tws_Promise *pr)
 {
     _AtomicInc_Acq(&pr->refcount);
 }
 
-void tws_destroyPromise(tws_Promise *pr)
+TWS_EXPORT void tws_destroyPromise(tws_Promise *pr)
 {
     if(!_AtomicDec_Rel(&pr->refcount))
     {
@@ -2473,24 +2477,24 @@ void tws_destroyPromise(tws_Promise *pr)
     }
 }
 
-void tws_resetPromise(tws_Promise *pr)
+TWS_EXPORT void tws_resetPromise(tws_Promise *pr)
 {
     mr_unset(&pr->mr);
 }
 
-int tws_isDonePromise(const tws_Promise *pr)
+TWS_EXPORT int tws_isDonePromise(const tws_Promise *pr)
 {
     return mr_isset(&pr->mr);
 }
 
-void *tws_getPromiseData(const tws_Promise *pr, size_t *psize)
+TWS_EXPORT void *tws_getPromiseData(const tws_Promise *pr, size_t *psize)
 {
     if(psize)
         *psize = pr->datasize;
     return pr->data;
 }
 
-void tws_fulfillPromise(tws_Promise *pr, int code)
+TWS_EXPORT void tws_fulfillPromise(tws_Promise *pr, int code)
 {
     TWS_ASSERT(!tws_isDonePromise(pr), "RTFM: promise already fulfilled! Use tws_resetPromise() to use it more than once");
     pr->code = code;
@@ -2498,14 +2502,14 @@ void tws_fulfillPromise(tws_Promise *pr, int code)
     mr_set(&pr->mr);
 }
 
-int tws_waitPromise(tws_Promise *pr)
+TWS_EXPORT int tws_waitPromise(tws_Promise *pr)
 {
     mr_waitAndHelp(&pr->mr);
     _Mfence();
     return pr->code;
 }
 
-int _tws_waitPromiseCopyAndDestroy(tws_Promise *pr, void *dst, size_t sz)
+TWS_EXPORT int _tws_waitPromiseCopyAndDestroy(tws_Promise *pr, void *dst, size_t sz)
 {
     if(!pr)
         return 0;
@@ -2520,19 +2524,19 @@ int _tws_waitPromiseCopyAndDestroy(tws_Promise *pr, void *dst, size_t sz)
 // -- Utility --
 // ----------------------------------------------------------------------
 
-void tws_memoryFence()
+TWS_EXPORT void tws_memoryFence()
 {
     _Mfence();
 }
 
-void tws_atomicIncRef(unsigned* pcount)
+TWS_EXPORT void tws_atomicIncRef(unsigned* pcount)
 {
     TWS_STATIC_ASSERT(sizeof(*pcount) == sizeof(NativeAtomic));
     TWS_ASSERT(IsAligned((uintptr_t)pcount, sizeof(unsigned)), "atomic int is not aligned, this won't work on most platforms");
     _AtomicInc_Acq((NativeAtomic*)pcount);
 }
 
-int tws_atomicDecRef(unsigned* pcount)
+TWS_EXPORT int tws_atomicDecRef(unsigned* pcount)
 {
     TWS_ASSERT(IsAligned((uintptr_t)pcount, sizeof(unsigned)), "atomic int is not aligned, this won't work on most platforms");
     return !_AtomicDec_Rel((NativeAtomic*)pcount);
@@ -2626,14 +2630,14 @@ static tws_Job *_tws_splitGeneric(tws_JobFunc split, tws_Kernel k, void *ud, siz
     return j;
 }
 
-tws_Job *tws_dispatchEven(tws_Kernel k, void *ud, size_t n, size_t maxElems,
+TWS_EXPORT tws_Job *tws_dispatchEven(tws_Kernel k, void *ud, size_t n, size_t maxElems,
     unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev)
 {
     return _tws_splitGeneric((tws_JobFunc)_splitEvenThunk, k, ud, n, maxElems, maxcont, type, parent, ev);
 }
 
 
-tws_Job *tws_dispatchMax (tws_Kernel k, void *ud, size_t n, size_t maxElems,
+TWS_EXPORT tws_Job *tws_dispatchMax (tws_Kernel k, void *ud, size_t n, size_t maxElems,
     unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev)
 {
     return _tws_splitGeneric((tws_JobFunc)_splitMaxThunk, k, ud, n, maxElems, maxcont, type, parent, ev);

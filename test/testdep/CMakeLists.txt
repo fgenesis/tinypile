@@ -6,9 +6,10 @@ set(src
     sha3.c
     sha3.h
     ustd.h
-    twsinit.cpp
-    twsinit.h
+    tws_test_common.cpp
+    tws_test_common.h
 )
 
 add_library(testdep ${src})
 target_link_libraries(testdep tinypile ${CMAKE_THREAD_LIBS_INIT})
+

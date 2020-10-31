@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <string.h>
-#include "twsinit.h"
+#include "tws_test_common.h"
 #include "tws_async.h"
 
 static void work(void *data, tws_Job *job, tws_Event *ev)

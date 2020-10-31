@@ -26,6 +26,11 @@ For more info, see tws.cpp.
 
 #include <stddef.h> // for size_t, intptr_t, uintptr_t
 
+/* All public functions defined in tws.c are marked with this */
+#ifndef TWS_EXPORT
+#define TWS_EXPORT
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -206,17 +211,17 @@ typedef struct tws_MemInfo
 // Checks your config struct and returns tws_ERR_OK (0) if it's fine,
 // or an error code if there's an obvious problem.
 // Optionally, pass 'mem' to fill the struct with memory usage information.
-tws_Error tws_check(const tws_Setup *cfg, tws_MemInfo *mem);
+TWS_EXPORT tws_Error tws_check(const tws_Setup *cfg, tws_MemInfo *mem);
 
 // Setup the thread pool given a setup configuration.
 // Returns tws_ERR_OK (0) on success or an error if failed.
-tws_Error tws_init(const tws_Setup *cfg);
+TWS_EXPORT tws_Error tws_init(const tws_Setup *cfg);
 
 // Signals all pool threads to please stop ASAP. Returns once everything is stopped and cleaned up.
 // Submitting new jobs from inside job functions is still possible but they may or may not be processed.
 // Submitting new jobs from outside (incl. other threads) is undefined behavior.
 // Any tws pointers become invalid for the outside world once this function is called.
-void tws_shutdown(void);
+TWS_EXPORT void tws_shutdown(void);
 
 // --- Job functions ---
 
@@ -234,13 +239,13 @@ void tws_shutdown(void);
 // Parent-child relation is ONLY used for when to consider a job done (parent is done when all children are done);
 // to express dependencies, use continuations.
 // Returns NULL if (and only if) the underlying memory allocator fails.
-tws_Job *tws_newJob(tws_JobFunc f, const void *data, size_t size, unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev);
+TWS_EXPORT tws_Job *tws_newJob(tws_JobFunc f, const void *data, size_t size, unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev);
 
 // Similar to tws_newJob(), but does not copy any data into the job.
 // Instead, a pointer to the job data area is returned in pdata.
 // This function is intended for interfacing with C++ with non-POD data where an exposed pointer is needed for placement new or similar.
 // If you use this, don't forget to call the destructor manually before returning from the job function!
-tws_Job *tws_newJobNoInit(tws_JobFunc f, void **pdata, size_t size, unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev);
+TWS_EXPORT tws_Job *tws_newJobNoInit(tws_JobFunc f, void **pdata, size_t size, unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev);
 
 // Shortcut to add an empty job.
 // This is useful to set as parent for some other jobs that need to run first,
@@ -259,7 +264,7 @@ inline tws_Job *tws_newEmptyJob(unsigned short maxcont, tws_Event *ev)
 //   If the ancestor's max. continuation number is exceeded this will assert(), but limp along and do the right thing anyways.
 //   (Whatever happens, this will do the right thing and the job will eventually run. The asserts are there to catch performance degradation.)
 // Never pass job == NULL.
-void tws_submit(tws_Job *job, tws_Job *ancestor /* = NULL */);
+TWS_EXPORT void tws_submit(tws_Job *job, tws_Job *ancestor /* = NULL */);
 
 
 // --- Event functions ---
@@ -268,27 +273,27 @@ void tws_submit(tws_Job *job, tws_Job *ancestor /* = NULL */);
 // An event initially starts with a count of 0. Submitting a job with an attached event increases the count by 1,
 // completion of a job decreases the count by 1. An event is "done" when the count is 0.
 // Avoid creating and deleting events repeatedly, re-use them if possible.
-tws_Event *tws_newEvent(void);
+TWS_EXPORT tws_Event *tws_newEvent(void);
 
 // Delete a previously created event.
 // Deleting an in-flight event is undefined behavior.
-void tws_destroyEvent(tws_Event *ev);
+TWS_EXPORT void tws_destroyEvent(tws_Event *ev);
 
 // Quick check whether an event is done. Non-blocking. Zero when not done.
-int tws_isDone(const tws_Event *ev);
+TWS_EXPORT int tws_isDone(const tws_Event *ev);
 
 // Wait until an event signals completion.
 // Any number of threads can be waiting on an event. All waiting threads will continue once the event is signaled.
 // Waiting threads will help with any unfinished work, if possible.
 // Can be safely called from within a job but doing so indicates you might be doing it wrong
 //  (it's probably better to use continuations instead of waiting in the job).
-void tws_wait(tws_Event *ev);
+TWS_EXPORT void tws_wait(tws_Event *ev);
 
 // Like tws_wait(), but with more control.
 // Set help to an array (of size 'n') of the type of jobs the calling thread may process while waiting.
 // Pass n == 0 to just idle.
 // Do not pass tws_TINY in help.
-void tws_waitEx(tws_Event *ev, tws_WorkType *help, size_t n);
+TWS_EXPORT void tws_waitEx(tws_Event *ev, tws_WorkType *help, size_t n);
 
 
 // ---------------------------------------------------------------
@@ -340,29 +345,29 @@ typedef struct tws_Promise tws_Promise;
 
 // Create a promise from a pointer and a size.
 // Both parameters are totally up to you, the memory is never used or touched.
-tws_Promise *tws_newPromise(void *p, size_t size);
+TWS_EXPORT tws_Promise *tws_newPromise(void *p, size_t size);
 
 // Allocate promise together with a data area of 'size' bytes, in one allocation.
 // You can specify a power-of-2 alignment of the data area if you need it. Specify 0 if you don't care.
-tws_Promise *tws_allocPromise(size_t size, size_t alignment);
+TWS_EXPORT tws_Promise *tws_allocPromise(size_t size, size_t alignment);
 
 // Delete a previously created promise.
 // If it was allocated via tws_allocPromise() this deleted both the promise and the data.
 // Deleting an in-flight promise is undefined behavior and will probably crash.
-void tws_destroyPromise(tws_Promise *pr);
+TWS_EXPORT void tws_destroyPromise(tws_Promise *pr);
 
 // Reset a promise to unfulfilled state so that it can be used again.
 // Same rules as tws_destroyPromise() apply, don't reset an in-flight promise!
 // Resetting an already reset promise again has no effect.
-void tws_resetPromise(tws_Promise *pr);
+TWS_EXPORT void tws_resetPromise(tws_Promise *pr);
 
 // Non-blocking; returns 1 when a promise was fulfilled, 0 when it was not.
-int tws_isDonePromise(const tws_Promise *pr);
+TWS_EXPORT int tws_isDonePromise(const tws_Promise *pr);
 
 // Get pointer and size that were passed to tws_newPromise() earlier,
 // or allocated via tws_allocPromise().
 // psize is ignored if NULL.
-void *tws_getPromiseData(const tws_Promise *pr, size_t *psize);
+TWS_EXPORT void *tws_getPromiseData(const tws_Promise *pr, size_t *psize);
 
 // Fulfill (or fail) a promise. 'Code' is up to you and will be returned by tws_waitPromise().
 // Call this function only once! Fulfilling a promise again is an error and will assert().
@@ -370,12 +375,12 @@ void *tws_getPromiseData(const tws_Promise *pr, size_t *psize);
 // Order of operations:
 //  - Call tws_getPromiseData() first and copy whatever you want to return.
 //  - Afterwards, call this function. Threads waiting on the promise will wake up and continue.
-void tws_fulfillPromise(tws_Promise *pr, int code);
+TWS_EXPORT void tws_fulfillPromise(tws_Promise *pr, int code);
 
 // Wait until promise is done, and return the code passed to tws_fulfillPromise().
 // If tws_isDonePromise() is true, this call is non-blocking.
 // Like tws_wait(), this helps with other unfinished work while waiting.
-int tws_waitPromise(tws_Promise *pr);
+TWS_EXPORT int tws_waitPromise(tws_Promise *pr);
 
 
 // --- Kernel dispatch ---
@@ -425,14 +430,14 @@ tws_submit(j, ...);
 // Asserts that maxElems > 0 and kernel != NULL; with assertions off it'll return NULL in that case.
 // The function splits the size in half each subdivision, so when you pass size=20 and maxElems=16,
 // you will get 2x 10 elements.
-tws_Job *tws_dispatchEven(tws_Kernel kernel, void *ud, size_t size, size_t maxElems,
+TWS_EXPORT tws_Job *tws_dispatchEven(tws_Kernel kernel, void *ud, size_t size, size_t maxElems,
     unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev);
 
 // Similar to the above function, but instead of splitting evenly, it will prefer an uneven split
 // and call your kernel repeatedly with exactly n == maxElems and once with (size % maxElems) if this is not 0.
 // In the above example with size=20 and maxElems=16 that would result in 16 and 4 elements.
 // The uneven split is useful for eg. processing as many elements as your L2 cache can fit, *hint hint*.
-tws_Job *tws_dispatchMax (tws_Kernel kernel, void *ud, size_t size, size_t maxElems,
+TWS_EXPORT tws_Job *tws_dispatchMax (tws_Kernel kernel, void *ud, size_t size, size_t maxElems,
     unsigned short maxcont, tws_WorkType type, tws_Job *parent, tws_Event *ev);
 
 
@@ -460,15 +465,15 @@ typedef void (*tws_DebugCallback)(tws_Warn what, size_t size1, size_t size2);
 // Register a debug callback that will be called whenever the internals have something to report.
 // NULL to disable. Disabled by default. This is a global setting independent of the pool instance.
 // Returns tws_ERR_UNSUPPORTED when debug callbacks are compiled out and won't be called.
-tws_Error tws_setDebugCallback(tws_DebugCallback cb);
+TWS_EXPORT tws_Error tws_setDebugCallback(tws_DebugCallback cb);
 
 
 // --- Utility functions ---
 
-void tws_memoryFence();
+TWS_EXPORT void tws_memoryFence();
 
-void tws_atomicIncRef(unsigned *pcount);
-int tws_atomicDecRef(unsigned *pcount); // returns 1 when count == 0 after decrementing
+TWS_EXPORT void tws_atomicIncRef(unsigned *pcount);
+TWS_EXPORT int tws_atomicDecRef(unsigned *pcount); // returns 1 when count == 0 after decrementing
 
 // --- Don't touch this unless you know what you're doing. ---
 // Control internal 'lightweight semaphore' spin count.
@@ -477,27 +482,27 @@ int tws_atomicDecRef(unsigned *pcount); // returns 1 when count == 0 after decre
 // It's set to a reasonable default but can be changed if you have to. Benchmark & profile if you do.
 // Note that this is a global setting independent of the pool instance and applies to ALL sempahores used internally.
 // (There's a #define in tws.c to turn off the spinning completely)
-unsigned tws_getSemSpinCount(void);
-void tws_setSemSpinCount(unsigned spin);
+TWS_EXPORT unsigned tws_getSemSpinCount(void);
+TWS_EXPORT void tws_setSemSpinCount(unsigned spin);
 
 
 // --- Internals -- For the C++ API -- Functions may disappear without notice ---
 
 // Set parent of job. Returns 1 if parent was set, 0 if job already has a parent. Assert()s if either job has been submitted already.
 // Very unsafe to use, therefore DO NOT USE this function. It's intended for the C++ API, not for end users!
-int _tws_setParent(tws_Job *job, tws_Job *parent);
+TWS_EXPORT int _tws_setParent(tws_Job *job, tws_Job *parent);
 
 // Free space for user data in a job given ncont continuations, without requiring an extra heap allocation.
 // For the C++ API. Returns 0 if there is no space or if ncont is large enough to force a heap allocation.
-size_t _tws_getJobAvailSpace(unsigned short ncont);
+TWS_EXPORT size_t _tws_getJobAvailSpace(unsigned short ncont);
 
 // For the C++ API
-void _tws_promiseIncRef(tws_Promise *pr);
+TWS_EXPORT void _tws_promiseIncRef(tws_Promise *pr);
 
 // For tws_async.h. pr == NULL is ok, does nothing, and immediately returns 0.
 // Copy out sz bytes into dst, then destroy the promise.
 // Returns the promise's result code.
-int _tws_waitPromiseCopyAndDestroy(tws_Promise *pr, void *dst, size_t sz);
+TWS_EXPORT int _tws_waitPromiseCopyAndDestroy(tws_Promise *pr, void *dst, size_t sz);
 
 #ifdef __cplusplus
 }

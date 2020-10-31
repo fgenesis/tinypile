@@ -29,7 +29,6 @@ Extra exported functions:
 
 unsigned tws_getNumCPUs(); // Get # of CPU cores, 0 on failure.
 unsigned tws_getCacheLineSize(); // Get cache line size, or a sensible default when failed. Never 0. You can use the returned value directly.
-unsigned tws_getLazyWorkerThreads(); // returns max(#CPUs - 1, 1); for the most lazy setup. Don't use this if you DO know what you're doing.
 
 With these functions, you may setup your tws_Setup struct (as in the above example) like so:
 
@@ -53,18 +52,22 @@ License:
 
 */
 
+/* All "public" functions in this file are marked with this */
+#ifndef TWS_BACKEND_EXPORT
+#define TWS_BACKEND_EXPORT
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* Pointers to function tables */
-extern const struct tws_ThreadFn *tws_backend_thread;
-extern const struct tws_SemFn *tws_backend_sem;
+TWS_BACKEND_EXPORT const struct tws_ThreadFn* tws_getThreadFuncs(void);
+TWS_BACKEND_EXPORT const struct tws_SemFn* tws_getSemFuncs(void);
 
 /* Extra functions */
-extern unsigned tws_getNumCPUs();
-extern unsigned tws_getCPUCacheLineSize();
-extern unsigned tws_getLazyWorkerThreads();
+TWS_BACKEND_EXPORT unsigned tws_getNumCPUs(void);
+TWS_BACKEND_EXPORT unsigned tws_getCPUCacheLineSize(void);
 
 #ifdef __cplusplus
 }
@@ -469,11 +472,10 @@ static const struct tws_SemFn tws_impl_sem = { tws_impl_sem_create, tws_impl_sem
 #ifdef __cplusplus
 extern "C" {
 #endif
-const struct tws_ThreadFn *tws_backend_thread = &tws_impl_thread;
-const struct tws_SemFn *tws_backend_sem = &tws_impl_sem;
-unsigned tws_getNumCPUs() { return tws_impl_getNumCPUs(); }
-unsigned tws_getCPUCacheLineSize() { return tws_impl_getCPUCacheLineSize(); }
-unsigned tws_getLazyWorkerThreads() { unsigned cpus = tws_getNumCPUs(); return cpus > 1 ? cpus - 1 : 1; }
+TWS_BACKEND_EXPORT const struct tws_ThreadFn* tws_getThreadFuncs(void) { return &tws_impl_thread; }
+TWS_BACKEND_EXPORT const struct tws_SemFn* tws_getSemFuncs(void) { return &tws_impl_sem; }
+TWS_BACKEND_EXPORT unsigned tws_getNumCPUs(void) { return tws_impl_getNumCPUs(); }
+TWS_BACKEND_EXPORT unsigned tws_getCPUCacheLineSize(void) { return tws_impl_getCPUCacheLineSize(); }
 #ifdef __cplusplus
 }
 #endif

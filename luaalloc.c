@@ -596,7 +596,7 @@ static void *defaultalloc(void *user, void *ptr, size_t osize, size_t nsize)
 extern "C" {
 #endif
 
-void *luaalloc(void * ud, void *ptr, size_t oldsize, size_t newsize)
+LUAALLOC_EXPORT void *luaalloc(void * ud, void *ptr, size_t oldsize, size_t newsize)
 {
     LuaAlloc *LA = (LuaAlloc*)ud;
     if(ptr)
@@ -614,7 +614,7 @@ void *luaalloc(void * ud, void *ptr, size_t oldsize, size_t newsize)
     return NULL;
 }
 
-LuaAlloc * luaalloc_create(LuaSysAlloc sysalloc, void *user)
+LUAALLOC_EXPORT LuaAlloc * luaalloc_create(LuaSysAlloc sysalloc, void *user)
 {
     if(!sysalloc)
     {
@@ -636,7 +636,7 @@ LuaAlloc * luaalloc_create(LuaSysAlloc sysalloc, void *user)
     return LA;
 }
 
-void luaalloc_delete(LuaAlloc *LA)
+LUAALLOC_EXPORT void luaalloc_delete(LuaAlloc *LA)
 {
     LA_ASSERT(LA->allnum == 0); /* If this fails the Lua state didn't GC everything, which is a bug */
     if(LA->all)
@@ -646,7 +646,7 @@ void luaalloc_delete(LuaAlloc *LA)
 
 /* ---- Optional stats tracking ---- */
 
-unsigned luaalloc_getstats(const LuaAlloc *LA, const size_t ** alive, const size_t ** total, const size_t ** blocks, unsigned *pbinstep)
+LUAALLOC_EXPORT unsigned luaalloc_getstats(const LuaAlloc *LA, const size_t ** alive, const size_t ** total, const size_t ** blocks, unsigned *pbinstep)
 {
     if(pbinstep)
         *pbinstep = LA_ALLOC_STEP;
