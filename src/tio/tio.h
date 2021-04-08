@@ -1,6 +1,8 @@
 /*
 Tiny file I/O abstraction library.
-For more info and compile-time config, see tio.cpp
+
+License:
+  Public domain, WTFPL, CC0 or your favorite permissive license; whatever is available in your country.
 
 This library has 3 main I/O concepts:
 - File handle: Like libc FILE*, a (OS-buffered) file stream. Supports read/write from/to memory, seek, etc.
@@ -14,6 +16,16 @@ What to pick?
 - Read/write/both randomly, without resizing: MMIO
 - File handle otherwise
 -> If you can, use a stream. It has the best potential for internal I/O optimization.
+   Code like this (left) is best replaced with a stream (right):
+   FILE *f = fopen(...);                   |  tio_Stream sm;
+   if(!f) return;                          |  if(tio_sopen(&sm, ...)) return; // 0 == no error
+   while(!feof(f))                         |  while(!sm.err)
+   {                                       |  {
+        char buf[SIZE];                    |     size_t n = sm->Refill(sm);
+        size_t n = fread(buf, 1, SIZE, f); |     // use [sm.begin .. sm.end) // no copy!
+        // use buf[0..n)                   |     // aka sm.begin[0..n)
+                                           |  }
+    }
 
 The tio_Features flags are hints for the underlying implementation to optimize performance.
 File names and paths are always UTF-8.
@@ -21,15 +33,56 @@ File names and paths are always UTF-8.
 Known/Intentional limitations:
 - No support for "text mode", everything is binary I/O.
 - Unlike STL/libc functions (fread() and friends, std::fstream), which are buffered,
-  all tio calls are thin wrappers around system APIs.
+  all calls involving tio_Handle are thin wrappers around system APIs.
   Means if you're requesting data byte-by-byte, syscall overhead will kill you.
 
 Thread safety:
 - There is no global state.
   (Except few statics that are set on the first call to avoid further syscalls.)
 - The system wrapper APIs are as safe as guaranteed by the OS.
-  Usually you may open/close files, streams, mmio freely from multiple threads at once.
-- Individual tio_Stream, tio_MMIO need to be externally locked if used across multiple threads.
+  Usually you may open/close files, streams, MMIO freely from multiple threads at once.
+- Individual tio_Stream, tio_Mapping need to be externally locked if used across multiple threads.
+
+Features:
+- Pure C API (The implementation uses some C++98 features)
+- File names and paths use UTF-8.
+- No heap allocations in the library (one exception on win32 where it makes sense. Ctrl+F VirtualAlloc)
+- Win32: Proper translation to wide UNC paths to avoid 260 chars PATH_MAX limit
+- 64 bit file sizes and offsets everywhere
+
+Dependencies:
+- Optionally libc for memcpy, memset, strlen, <<TODO list>> unless you use your own
+- On POSIX platforms: libc for some POSIX wrappers around syscalls (open, close, posix_fadvise, ...)
+- C++(98) for some convenience features, destructors, SFINAE, and type safety
+  (But no exceptions, STL, or the typical C++ bullshit)
+
+Why not libc stdio?
+- libc has no concept of directories and can't enumerate directory contents
+- libc has no memory-mapped IO
+- libc stdio does lots of small heap allocations internally
+- libc stdio can be problematic with files > 4 GB
+  (Offsets are size_t, which is platform dependent)
+- libc stdio has no way of communicating access patterns
+- File names are char*, but which encoding?
+- Parameters to fread/fwrite() are a complete mess
+- Some functions like ungetc() should never have existed
+- Try to get the size of a file with stdio.h alone. Bonus points if the file is > 4 GB.
+- fopen() access modes are stringly typed and rather confusing. "r", "w", "r+", "w+"?
+- stdio in "text mode" does magic escaping of \n to \r\n,
+  but only on windows, and may break when seeking. This should never have existed.
+- Text mode is actually the default unless "b" is in the string
+- Append mode is just weird and confusing if you think about it
+  ("a" ignores seeks; "a+" can seek but sets the file cursor always back to the end when writing.)
+- Enforced use of a file cursor; I/O at a specified offset is not possible without seeking.
+  -> Not thread-safe.
+- C11 didn't even try to fix any of this
+- ...
+
+Why not std::fstream + std::filesystem?
+- No.
+
+Origin:
+  https://github.com/fgenesis/tinypile
 */
 
 #pragma once
@@ -50,8 +103,10 @@ typedef uint64_t tiosize;
 typedef size_t tiosize; /* Not guaranteed to be 64 bits */
 #endif
 
-/* All public functions defined in tio.cpp are marked with this */
+/* All public functions are marked with this */
+#ifndef TIO_EXPORT
 #define TIO_EXPORT
+#endif
 
 /* Bitmask; Specify max. one from each group.
     The groups are: Access, Content flags, File flags.
@@ -63,11 +118,12 @@ typedef size_t tiosize; /* Not guaranteed to be 64 bits */
    Note that not all combinations make sense:
      E.g. (tio_R | tioM_Truncate | tioM_MustNotExist) is possible, but nonsensical
      from a practical point of view.
+     If passed flags look fishy an assert() is triggered.
 */
 enum tio_Mode_
 {
     /* Access */
-    tio_R          = 0x01,          /* Default: Keep, MustExist;   Implied: KeepSize */
+    tio_R          = 0x01,          /* Default: Keep, MustExist */
     tio_W          = 0x02,          /* Default: Truncate, Create */
     tio_RW         = tio_R | tio_W, /* Default: Keep, MustExist */
 
@@ -80,13 +136,18 @@ enum tio_Mode_
     tioM_MustExist = 0x20,    /* Fail if file doesn't exist */
     tioM_MustNotExist = 0x30, /* Fail if file already exists, create it if it doesn't. */
 
-    // TODO: KILL THIS
     /* Append flag */
-    tio_A          = 0x40,   /* Write operations always append to end of file.
+    tio_A          = 0x40,   /* Seek to the end of the file after opening it.
+                                (This is NOT POSIX append mode, ie. it will not
+                                change how writing to the file behaves. You can seek
+                                elsewhere afterwards and the file will behave normally)
+                                Also works when tioF_Sequential is set, and is thus
+                                the only way to open a stream to append to a file.
                                 Changes default flags:
                                 - Sets tio_W if not set
                                 - tioM_Keep becomes the default if nothing is specified.
-                                - tioM_Create becomes the default if nothing is specified. */
+                                - tioM_Create becomes the default if nothing is specified.
+                                Attempting to open a file that is not seekable will fail. */
 };
 typedef unsigned tio_Mode;
 
@@ -107,9 +168,12 @@ enum tio_Features_
                                Notify the OS that files/memory is expected to be read/written sequentially (low to high address).
                                This way the OS can prefetch/flush more efficiently. */
 
+    // TODO: rename to tiov_Background? To support delayed write (also fix checkmode())
     tioF_Preload = 0x02, /* Preload data/prefetch file contents. May avoid stalls because we don't
                             have to go to disk anymore when data were already pre-fetched in the background.
-                            May use some extra memory but will *not* load the entire file content into RAM at once. */
+                            May use some extra memory but will *not* load the entire file content into RAM at once.
+                            It's recommended to set this flag if you're planning to stream in a large amount of data,
+                            so that the OS can DMA-in blocks while your code can munch away on them as they come in. */
 
     tioF_NoBuffer = 0x04, /* Disable buffering. Reads/writes should go directly to storage.
                              If possible, avoid going through the OS's file cache, possibly increasing throughput.
@@ -157,14 +221,29 @@ enum tio_error_
 {
     tio_NoError = 0,
     tio_Error_Unspecified = -1,
-    tio_Error_InternalError = -2,
+    tio_Error_Unsupported = -2,
     tio_Error_NotFound = -3,
     tio_Error_BadPath = -4,
     tio_Error_BadOp = -5,
-    tio_Error_AllocationFail = -6,
+    tio_Error_ResAllocFail = -6, // failed to allocate an OS resource
+    tio_Error_MemAllocFail = -7, // for extenions
+    tio_Error_EmptyFile = -8, // file is empty where it must not be
+    tio_Error_ParamError = -9, // some parameter was not accepted
+    tio_Error_DeviceFull = -10
 };
 typedef int tio_error; /* Typedef'd to make places for error handling easier to spot. Convention: 0 == No error */
 
+enum tio_CleanFlags_
+{
+    tio_Clean_SepUnix = 0x1, // Turn all recognized path separators to '/'
+    tio_Clean_SepNative = 0x2, // Turn all recognized path separators to the OS pathsep
+    // Not set or both set: Leave as-is
+
+    tio_Clean_EndWithSep = 0x4, // Ensure that path ends with a path sep
+    tio_Clean_EndNoSep = 0x08, //  Remove path sep at end if there is one
+    // Not set or both set: Leave as-is
+};
+typedef unsigned tio_CleanFlags;
 
 #ifdef __cplusplus
 extern "C" {
@@ -183,9 +262,9 @@ inline static tio_error tio_init(); /* defined inline below */
 TIO_EXPORT tio_error tio_init_version(unsigned version); 
 
 
-/* ---------------------------- */
-/* ---- Low-level file API ---- */
-/* ---------------------------- */
+/* ------------------------------------------ */
+/* ---- Low-level file API -- [tio_k*()] ---- */
+/* ------------------------------------------ */
 
 /* Raw file handle. This is a raw OS handle:
    - Windows: A HANDLE as returned by CreateFileW()
@@ -202,8 +281,8 @@ typedef struct tio_OpaqueHandle *tio_Handle;
    implemented with a syscall. Will hurt performance when called excessively with tiny sizes. */
 TIO_EXPORT tio_error  tio_kopen   (tio_Handle *hDst, const char *fn, tio_Mode mode, tio_Features features); /* Write to handle location if good, return error otherwise */
 TIO_EXPORT tio_error  tio_kclose  (tio_Handle fh); /* Closing a file will not flush it immediately. */
-TIO_EXPORT tiosize    tio_kwrite  (tio_Handle fh, const void *ptr, size_t bytes);
 TIO_EXPORT tiosize    tio_kread   (tio_Handle fh, void *ptr, size_t bytes);
+TIO_EXPORT tiosize    tio_kwrite  (tio_Handle fh, const void *ptr, size_t bytes);
 TIO_EXPORT tio_error  tio_kseek   (tio_Handle fh, tiosize offset, tio_Seek origin);
 TIO_EXPORT tio_error  tio_ktell   (tio_Handle fh, tiosize *poffset); /* Write position offset location */
 TIO_EXPORT tio_error  tio_kflush  (tio_Handle fh); /* block until write to disk is complete */
@@ -212,21 +291,43 @@ TIO_EXPORT tio_error  tio_kgetsize(tio_Handle fh, tiosize *pbytes); /* Get total
 TIO_EXPORT tio_error  tio_ksetsize(tio_Handle fh, tiosize bytes); /* Change file size on disk, truncate or enlarge. New areas' content is undefined. */
 TIO_EXPORT tiosize    tio_ksize   (tio_Handle fh); /* Shortcut for tio_kgetsize(), returns size of file or 0 on error */
 
+/* Read/write with explicit offset. Does not use/modify the internal file position.
+   Safe for concurrent access from multiple threads.
+   Always synchronous - less bytes read than requested means EOF.
+   Using these together with tioF_Sequential is undefined behavior. */
+TIO_EXPORT tiosize    tio_kreadat (tio_Handle fh, void *ptr, size_t bytes, tiosize offset);
+TIO_EXPORT tiosize    tio_kwriteat(tio_Handle fh, const void *ptr, size_t bytes, tiosize offset);
+
 /* Get handle to stdin, stdout, stderr if those exist.
    Do NOT close these handles unless you know what you're doing.
    Any operation other than read/write/flush/close is undefined behavior. */
 TIO_EXPORT tio_error tio_stdhandle(tio_Handle *hDst, tio_StdHandle); 
 
 
-/* --------------------------- */
-/* ---- Memory-mapped I/O ---- */
-/* --------------------------- */
+/* ---------------------------------------- */
+/* ---- Memory-mapped I/O -- [tio_m*()]---- */
+/* ---------------------------------------- */
+
+struct tio_MMIO;
+struct tio_Mapping;
+
+/* Only interesting if you plan to write a backend or extension */
+struct tio_MMFunc
+{
+    void *(*remap)(tio_Mapping*, tiosize offset, size_t size, tio_Features features);
+    void (*unmap)(tio_Mapping*);
+    tio_error (*flush)(tio_Mapping*, tio_FlushMode);
+    void (*destroy)(tio_Mapping *map);
+    tio_error (*init)(tio_Mapping *map, const tio_MMIO *mmio);
+    tio_error (*close)(tio_MMIO *mmio);
+};
+
 /*
 To successfully memory-map a file the file must 1) exist, 2) be accessible, and 3) be not empty.
 A file's size can not be changed by memory-mapping and writing to it; any access past the end is undefined behavior.
 tio_A (append mode) is not supported anywhere in the MMIO API; if passed, the call will always fail.
 
-Basic usage example:
+Basic usage example: FIXME: adapt to new API
 
     tio_MMIO m;
     if(const char *p = (const char*)tio_mopenmap(&m, "file.txt", tio_R, 0, 0, 0)) // mmap the entire file
@@ -237,75 +338,129 @@ Basic usage example:
     }
 */
 
-/* Memory-mapped IO struct.
-   The begin & end pointers are read-only. Ignore the rest. Don't change ANY of the fields, ever.
-*/
+/* Memory-mapped IO struct. Represents one file opened in MMIO mode.
+   Use it to initialize one or more tio_Mapping.
+   You can read the total size of the file in 'filesize'.
+   Ignore the rest. Don't change ANY of the fields, ever. */
 struct tio_MMIO
 {
-    /* Read-only by caller. */
-    char *begin; /* pointer to beginning of mapped area */
-    char *end;   /* one past the end */
+    tiosize filesize; /* Total size of the file */
 
-    /* Functions called by tio_munmap(), tio_mclose(), tio_mflush(), tio_mremap(). */
-    void (*_unmap)(tio_MMIO*, int close);
-    tio_error (*_flush)(tio_MMIO*, tio_FlushMode);
-    void *(*_remap)(tio_MMIO*, tiosize offset, size_t size, tio_Features features);
+    const tio_MMFunc *backend;
 
     /* For internal use. The implementation may use the underlying memory freely;
        it may or may not follow the struct layout suggested here. */
     /* TODO: Can this be made opaque? */
     struct
     {
-        tio_Handle hFile;
-        tiosize totalsize;
-        void *base, *aux1, *aux2;
-        unsigned access, reserved;
+        struct
+        {
+            tio_Handle hFile;
+            unsigned access;
+        } mm;
+        struct
+        {
+            //void *aux;
+            //unsigned u;
+        } os;
     } priv;
 };
 
-/* Init a memory mapped file, but don't map a region yet.
+/* Open a file for memory-mapping.
    Returns an error if the file does not exist, is empty, or mode has tio_A set.
-   When accessing mapping memory, respect the mode that you passed,
+   When mapping regions, respect the mode that you passed,
    i.e. don't write to read-only memory or you'll get a segfault.
    Must be closed with tio_mclose() if (and only if) successfully opened. */
 TIO_EXPORT tio_error tio_mopen(tio_MMIO *mmio, const char *fn, tio_Mode mode, tio_Features features);
 
-/* Shortcut for tio_mopen() followed by tio_mremap() if successful.
-   Initializes mmio if successful. Consider mmio uninitialized if the call fails.
-   Returns the same pointer as mmio->begin (NULL if failed). */
-TIO_EXPORT void *tio_mopenmap(tio_MMIO *mmio, const char *fn, tio_Mode mode, tiosize offset, size_t size, tio_Features features);
+/* Closes the underlying file and frees associated resources.
+   You must tio_mmdestroy() all existing mappings before calling this!
+   Not calling this for any previously initialized mmio is a memory leak.
+   After the call, mmio is to be considered uninitialized. */
+TIO_EXPORT tio_error tio_mclose(tio_MMIO *mmio);
 
-/* Change an existing memory mapping to map the specified region and sets mmio->begin and mmio->end.
-   mmio must have been successfully inited with tio_mopen() or tio_mopenmap().
-   Memory in [mmio->begin, mmio->end) is valid to access. This memory region may be
+/* Shortcut for tio_mopen() followed by tio_mminit() and tio_mmremap().
+   Initializes map & mmio if successful. Consider both uninitialized if the call fails.
+   Returns the same pointer as map->begin (NULL if failed). */
+TIO_EXPORT void *tio_mopenmap(tio_Mapping *map, tio_MMIO *mmio, const char *fn, tio_Mode mode, tiosize offset, size_t size, tio_Features features);
+
+
+// -------------------------------------------------------------------
+// Memory-mapped region -- [tio_mm*()]
+// -------------------------------------------------------------------
+
+/* One memory-mapped region, initialized via tio_MMIO.
+   You can have many of these for a single tio_MMIO.
+   The begin & end pointers and size are read-only.
+   Ignore the rest. Don't change ANY of the fields, ever. */
+struct tio_Mapping
+{
+    /* Read-only by caller. */
+    char *begin; /* pointer to beginning of mapped area */
+    char *end;   /* one past the end */
+
+    tiosize filesize; /* Total size of the file */
+
+    const tio_MMFunc *backend;
+
+    /* For internal use. The implementation may use the underlying memory freely;
+       it may or may not follow the struct layout suggested here. */
+    /* TODO: Can this be made opaque? */
+    struct
+    {
+        struct
+        {
+            void *base;
+            tio_Handle hFile;
+            unsigned access;
+        } mm;
+        struct
+        {
+            void *aux;
+            unsigned u;
+        } os;
+    } priv;
+};
+
+/* Initializes 'map' based on 'mmio'. Must be done before 'map' can be used.
+   When this function returns without error, 'map' is initialized to an empty
+   mapping and can be used to memory-map a region. */
+TIO_EXPORT tio_error tio_mminit(tio_Mapping *map, const tio_MMIO *mmio);
+
+/* Unmaps and destroys a previously initialized mapping.
+   After the call, map is to be considered uninitialized.
+   You MUST call tio_mmdestroy() to dispose of a previously inititialized mapping,
+   not doing so is a resource leak. */
+TIO_EXPORT void tio_mmdestroy(tio_Mapping *map);
+
+/* Change a previously initialized (empty or existing) memory mapping to map
+   the specified region and sets map->begin and map->end.
+   Memory in [map->begin, map->end) is valid to access. This memory region may be
    smaller than the requested size if (and only if) the end of the file is within range.
    Pass size == 0 to map the entire file starting from offset.
    Mapping will fail if offset goes past the end of the file.
-   It is also possible that mmap-ing a (large) file fails because the OS cannot provide enough contiguous address space.
-   Returns the same pointer as mmio->begin (NULL if failed). */
-TIO_EXPORT void *tio_mremap(tio_MMIO *mmio, tiosize offset, size_t size, tio_Features features);
+   It is also possible that mmap-ing a (large) region fails because the OS
+   cannot provide enough contiguous address space.
+   Returns the same pointer as map->begin (NULL if failed). */
+TIO_EXPORT void *tio_mmremap(tio_Mapping *map, tiosize offset, size_t size, tio_Features features);
 
-/* Unmap a previously mapped memory region. No-op if mmio has no mapped region.
+/* Unmap a previously mapped memory region. 'map' becomes empty. No-op if map is empty.
+   The mapping is still in a valid state and tio_mmremap() can be used again.
    Changes to a file's content will eventually be flushed to storage but it's up to the OS
    to decide when that happens; I/O errors can not be detected anymore at this point.
-   The underlying file will stay opened and tio_mremap() can be used. */
-TIO_EXPORT void tio_munmap(tio_MMIO *mmio);
+   (There is little need to call this function unless you want to return address
+   space to the OS.) */
+TIO_EXPORT void tio_mmunmap(tio_Mapping *map);
 
 /* Size of mapped region */
-inline static size_t tio_msize(const tio_MMIO *mmio) { return mmio->end - mmio->begin; }
+inline static size_t tio_mmsize(const tio_Mapping *map) { return map->end - map->begin; }
 
-/* Flush changed regions to storage. */
-TIO_EXPORT tio_error tio_mflush(tio_MMIO *mmio, tio_FlushMode flush);
+/* Flush changed region to storage. */
+TIO_EXPORT tio_error tio_mmflush(tio_Mapping *map, tio_FlushMode flush);
 
-/* Does tio_munmap() and also closes & frees all underlying resources.
-   Not calling this for any previously initialized mmio is a memory leak.
-   After the call, mmio is to be considered uninitialized. */
-TIO_EXPORT void tio_mclose(tio_MMIO *mmio);
-
-
-/* -------------------- */
-/* ---- Stream API ---- */
-/* -------------------- */
+/* ---------------------------------- */
+/* ---- Stream API -- [tio_s*()] ---- */
+/* ---------------------------------- */
 
 /* Streams are not seekable but avoid copying data around.
    The stream consumer gets an unspecified amount of bytes to deal with (up to the stream to decide).
@@ -316,8 +471,10 @@ TIO_EXPORT void tio_mclose(tio_MMIO *mmio);
 /* Control stream behavior */
 enum tio_StreamFlags_
 {
-    /* On EOF or error, by default a stream stops providing data (cursor == begin == end).
-    Specify this flag to instead emit an infinite trickle of zeros. */
+    /* On EOF or error, by default a stream stops providing data (cursor == begin == end),
+    means it will will always report 0 bytes processed.
+    Specify this flag to instead emit an infinite trickle of zeros when reading,
+    or to consume (and ignore) all bytes when writing. */
     tioS_Infinite = 0x01,
 };
 typedef unsigned tio_StreamFlags;
@@ -326,7 +483,7 @@ struct tio_Stream
 {
     /* public, read, modify */
     char *cursor;   /* Cursor in buffer. Set to begin by Refill() when READING.
-                       The valid range is within [begin, end].
+                       The valid range is within [begin, end).
                        Unused and ignored when WRITING. */
 
     /* When open for READING: public, MUST NOT be changed by user, changed by Refill() */
@@ -353,7 +510,11 @@ struct tio_Stream
         union
         {
             void *ptr[10]; /* Opaque pointers, for use by Refill() and Close() */
-            tio_MMIO mmio; /* If the stream is mmio-based, this is used instead */
+            struct /* If the stream is mmio-based, this is used instead */
+            {
+                tio_MMIO mmio;
+                tio_Mapping map;
+            } mm;
             tio_Handle handle; /* And this is for file-handle-based streams */
         } u;
         void *aux;
@@ -381,6 +542,7 @@ inline static tio_error tio_sclose(tio_Stream *sm) { sm->Close(sm); return sm->e
      to the failure mode as previously set in tio_sopen().
      Returns the number of bytes available for reading.
    - When writing, the block of memory in [begin, end) will be written to storage.
+     This means the caller has to set the two pointers and then call refill.
      If writing is not possible, the stream's error flag will be set,
      and further attempts to write are ignored.
      The stream's cursor, begin, end pointers will be unchanged after the call.
@@ -416,6 +578,30 @@ TIO_EXPORT tiosize tio_sread(tio_Stream *sm, void *dst, size_t bytes);
       call and return tio_streamfail(). */
 TIO_EXPORT size_t tio_streamfail(tio_Stream *sm);
 
+/* -- Stream utility -- */
+
+/* Wrap a block of memory of a given size into a stream.
+   It is safe to cast a const away if a const pointer is to be used for reading.
+   'features' is currently ignored but may be used in future.
+   'mode' may be tio_R, tio_W, or 0.
+   Pass mode=0 to make this stream behave as a simple sliding window
+   over a memory range; what you do with the pointers is up to you.
+   The block size is exact, except the tail end may be smaller.
+   Pass blocksize == 0 to use the entire memory as a single block. */
+TIO_EXPORT tio_error tio_memstream(tio_Stream *sm, void *mem, size_t memsize, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize);
+
+/* Wrap an existing tio_MMIO into a stream.
+   The stream maps the first blocksize bytes of memory starting at offset,
+   each Refill() advances the mapped block forward until reaching maxsize bytes.
+   The stream owns a private tio_Mapping that stays alive until the stream
+   is closed, ie. the mmio must also stay alive while the stream is open.
+   Pass maxsize == 0 to map the entire remainder of the mmio.
+   Make sure mode matches the mode of the mmio, ie. if your mmio is read-only,
+   your stream should use tio_R. As mode, only tio_R and tio_W are allowed.
+   Note that the actual block size is not exact and may change between refills
+   based on alignment requirements of the host OS. */
+TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize);
+
 
 /* -------------------------- */
 /* ---- File/Dir utility ---- */
@@ -424,8 +610,11 @@ TIO_EXPORT size_t tio_streamfail(tio_Stream *sm);
 /* Run callback for each directory entry in path.
    The callback receives the cleaned path, terminated with a directory separator.
    Type is one of tio_FileType. Userdata ud is passed through.
-   There is no guarantee about the order in which entries are processed. */
-typedef void (*tio_FileCallback)(const char *path, const char *name, tio_FileType type, void *ud);
+   There is no guarantee about the order in which entries are processed.
+   Return 0 to continue iterating, anything else to stop. tio_dirlist() will then
+   return that value. To prevent confusion with error codes, it is advised to only
+   return values >= 0 from the callback (as all error codes are negative). */
+typedef int (*tio_FileCallback)(const char *path, const char *name, tio_FileType type, void *ud);
 TIO_EXPORT tio_error tio_dirlist(const char *path, tio_FileCallback callback, void *ud);
 
 /* Query type and (optionally) size of path/file. Returns tioT_Nothing (0) on failure. */
@@ -437,7 +626,7 @@ TIO_EXPORT tio_error tio_createdir(const char *path);
 
 /* Clean a path string for the underlying OS by lexical processing. Does NOT look at the file system!
    This function is used internally and there's no need to use this, but it's exposed for testing.
-   Pass forcetrail > 0 to ensure dst ends with a directory separator, < 0 to ensure it doesn't end with one, and 0 to keep as-is.
+   Pass extra flags to control conversion of directory separators and the trailing separator.
 - Win32: Converts absolute paths to UNC-compatible paths (prefix with "\\?\")
 - Strip unnecessary ".", remove paths followed by ".."
 - Condense multiple directory separators into one
@@ -446,7 +635,13 @@ TIO_EXPORT tio_error tio_createdir(const char *path);
 Will return error if the path is non-sensical or there's not enough space to write the result and terminating '\0'.
 dstsize should be a few more bytes than strlen(path) to ensure the UNC prefix fits if we're on windows;
 aside from that the resulting path can not become longer than the input path. */
-TIO_EXPORT tio_error tio_cleanpath(char *dst, const char *path, size_t dstsize, int forcetrail);
+TIO_EXPORT tio_error tio_cleanpath(char *dst, const char *path, size_t dstsize, tio_CleanFlags flags);
+
+/* Join individual names together to a path, separated by 'sep' as long as the result fits into 'dst'.
+   'dst' is not written to if 'dstsize' is too small so you can pass dstsize==0 to get the size,
+   then call this function again with a sufficiently large buffer.
+   Returns the number of bytes that are/would be written to 'dst' (including terminating \0). */
+TIO_EXPORT size_t tio_joinpath(char *dst, size_t dstsize, const char * const *parts, size_t numparts, char sep);
 
 /* System information */
 TIO_EXPORT size_t tio_pagesize();

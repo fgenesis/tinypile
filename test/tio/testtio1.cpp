@@ -3,7 +3,6 @@
 #include "tio.h"
 #include "sha3.h"
 
-
 static void showdir(const char *path, const char *name, unsigned type, void *ud)
 {
     printf("%u: %s%s\n", type, path, name);
@@ -16,7 +15,7 @@ int main()
     /*
     const char *pa = "C:/w/..//x/./";
     char dst[1024];
-    tio_error err = tio_cleanpath(dst, pa, sizeof(dst), true);
+    tio_error err = tio_cleanpath(dst, pa, sizeof(dst), tio_Clean_SepNative);
     printf("%d: %s\n", err, dst);
     */
 
@@ -39,14 +38,11 @@ int main()
 
     tio_Stream sm;
     tiosize total = 0;
-    if(tio_sopen(&sm, f, tio_R, tioF_Preload | tioF_NoBuffer | tioF_Nonblock, 0, 0))
+    if(tio_sopen(&sm, f, tio_R, tioF_Preload | tioF_NoBuffer, 0, 0))
         return 1;
-    for(;;)
+    for(size_t n; (n = tio_srefill(&sm)); )
     {
-        size_t n = tio_srefill(&sm);
         total += n;
-        if(sm.err)
-            break;
         rhash_sha3_update(&sha, (const unsigned char*)sm.begin, n);
         //fwrite(sm.begin, 1, n, stdout);
     }

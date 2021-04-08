@@ -76,6 +76,22 @@ static void work2a(void *data, tws_Job *curjob, tws_Event *ev)
     }
 }
 
+static void work2small(void *data, tws_Job *curjob, tws_Event *ev)
+{
+    //const unsigned a = ++a_test;
+    //if(a < TEST2LIMIT)
+    {
+        const unsigned lim = 1000;
+        n_test += lim;
+        for(unsigned i = 0; i < lim; ++i)
+        {
+            tws_Job *job = tws_newJob(work2c, NULL, 0, 0, tws_DEFAULT, NULL, ev);
+            if(job)
+                tws_submit(job, NULL);
+        }
+    }
+}
+
 static void warncb(tws_Warn what, size_t a, size_t b)
 {
     printf("WARN[%u]: %u, %u\n", what, (unsigned)a, (unsigned)b);
@@ -104,15 +120,19 @@ int main()
     {
         a_test = 0;
         n_test = 0;
-        job = tws_newJob(work2a, NULL, 0, 0, tws_DEFAULT, NULL, ev);
-        tws_submit(job, NULL);
         std::chrono::high_resolution_clock::time_point t0 = std::chrono::high_resolution_clock::now();
-        tws_wait(ev);
+        const unsigned REP = 100;
+        for(unsigned k = 0; k < REP; ++k)
+        {
+            job = tws_newJob(work2small, NULL, 0, 0, tws_DEFAULT, NULL, ev);
+            tws_submit(job, NULL);
+            tws_wait(ev);
+        }
         std::chrono::high_resolution_clock::time_point t1 = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> td = std::chrono::duration_cast<std::chrono::duration<double> >(t1 - t0);
         unsigned val = a_test;
         double persec = n_test / td.count();
-        printf("value = %u, time = %f ms, job avg = %f ms, per sec = %f\n",
+        printf("value = %u, time = %.8f ms, job avg = %.8f ms, per sec = %f\n",
             val, td.count()*1000, td.count() / double(val) * 1000, persec);
     }
 
