@@ -274,7 +274,7 @@ static inline unsigned tws_impl_getCPUCacheLineSize()
         }
 
         if(buf && buf != &stackbuf[0])
-            VirtualFree(buf, bufsz, MEM_DECOMMIT | MEM_RELEASE);
+            VirtualFree(buf, 0, MEM_RELEASE);
 
         if(linesz)
             return linesz;

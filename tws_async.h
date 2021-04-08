@@ -2,6 +2,8 @@
 
 /* Simple plain-C99 proof-of-concept async/await implementation on top of tws.
 
+*** This is for plain old C. Don't use this for C++. Use tws_async.hh instead. *** 
+
 Why?
   Multithreading is hard. Async/await is the new hot shit (look it up!).
   Async spawns a function call in background, await gets the result.
@@ -22,7 +24,6 @@ License:
 Dependencies:
   C99 (but no libc).
   Requires my tws library. (See https://github.com/fgenesis/tinypile/)
-  This is for plain old C. Don't use this for C++. Use tws_async.hh instead. 
 
 --
 How to use?
@@ -167,7 +168,7 @@ inline static tws_Promise *_tws_allocAsyncPromiseHelper(tws_Job **jdst, tws_JobF
             *jdst = j;
         else
         {
-            tws_destroyPromise(pr);
+            tws_destroyPromise(pr, NULL);
             pr = NULL;
         }
     }

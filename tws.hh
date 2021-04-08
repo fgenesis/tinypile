@@ -1,9 +1,11 @@
 #pragma once
 
+#include <stdio.h>
+
 /* C++-wrapper for tws.h
 
 What's this?
-- A single-header, type-safe, idiot-proof, C++-ish API wrapper for tws.h (tiny work scheduler).
+- A single-header, type-safe, C++-ish API wrapper for tws.h (tiny work scheduler).
   See https://github.com/fgenesis/tinypile/blob/master/tws.h
 
 Design goals:
@@ -117,12 +119,14 @@ Anything job-like defines operator overloads for / and >> once you put this in y
     using namespace tws::operators;
 
 Job-like means:
-- A job struct (a thing that exposes a 'void run(tws::JobRef)' method)
-- tws::Job<>
-- tws_Job*
-- tws::Event
-- tws_Event*
-- tws::Chain (further down)
+- A struct that exposes a 'void run(tws::JobRef)' method
+- [C++11] A closure that takes a tws::JobRef as parameter: [?](tws::JobRef){...}
+- [C++11] A closure that takes no parameters: [?](){...} // beware of capture life times!
+- tws::Job<T>
+- tws::Event  (spawns a tiny job that only signals the event, nothing else)
+- tws_Job*    (from C API)
+- tws_Event*  (frmo C API)
+
 
 A / B means start A and B in parallel.
 A >> B means run B after A is completed (as a continuation).
@@ -148,20 +152,20 @@ An example:
                                         // The event becomes unsignaled/blocking upon chain construction and signaled once execution of the chain reaches it.
 
     // If you don't want to run the chain immediately but keep it for later:
-    tws::Chain c = <the entire thing>;
-    // Don't use auto (it technically works, but is complicated and messy) -- always assign to a tws::Chain object.
-    auto c = <the entire chain>; // <-- DON'T do this.
+    tws::Job<> c = <the entire thing>;
+    // If you're lazy, C++11 auto will do:
+    auto c = <the chain>;
 
     // Once c goes out of scope or is destroyed, the chain is started.
 
     // You can compose chains:
-    tws::Chain a = ..., b = ..., c = ...;
-    tws::Chain x = a/b >> c >> ev;
+    tws::Job<> a = ..., b = ..., c = ...; // some chain expressions
+    tws::Job<> x = a/b >> c >> ev;        // build an even bigger one
 
     // ... but you can't re-use them. Create a chain and run or attach it once.
     // Don't do tws::Chain x = a >> a; to run a chain twice, that won't work (and fails an assert).
     // -> Using a chain or job in a chain has move semantics.
-    // That's also why there is no submit() method or anything and everything is scope-based, like tws:Job<>.
+    // That's also why there is no submit() method or anything and everything is scope-based.
 */
 
 // ------------------------------------------------------------
@@ -171,39 +175,40 @@ An example:
 // Enable this to not throw a tws::AllocFailed exception if resource creation fails.
 // Safe to do if you can guarantee that your allocator won't fail
 // or you handle out-of-memory situations in your allocator.
-// If you don't like exceptions in general and crashing on resource exhaustion is acceptable, go ahead and turn them off.
+// If you don't like exceptions in general and crashing on resource exhaustion
+// is acceptable, go ahead and turn them off.
 //#define TWS_NO_EXCEPTIONS
 
-// If you have an old compiler it might not like the template code required to set up
-// operator overloading (>> and / operators for job-like objects).
-// Define this to remove the operator code completely if you don't want/need it.
-//#define TWS_NO_OPERATOR_OVERLOADS
-
 // You may define this to 0 to force C++98-compliance or to 1 to always enable C++11.
-// If it's not defined C++11 compliance will be autodetected.
+// If it's not defined then C++11 compliance will be autodetected.
 // As a result, this macro will be defined if C++11 is enabled and not defined otherwise.
-#define TWS_USE_CPP11 0
+// Benefits of C++11 involve proper move semantics and better compile-time diagnostics.
+//#define TWS_USE_CPP11 0
+
 
 // ------------------------------------------------------------
 // Don't touch anything below here
 
-#include "tws.h"
+#include "tws.h" // also includes <stddef.h> for size_t
 
+namespace tws {
+// The main classes
+class JobRef;
+class Event;
+template<typename T = void> class Job;
+template<typename T = void> class Promise;
+
+// thrown as exceptions if those are enabled
+struct AllocFailed {};
+struct PromiseFailed {};
+}
+
+// ------------------------------------------------------------
 
 #ifndef TWS_ASSERT
 #  include <assert.h>
-#  define TWS_ASSERT(x, desc) assert((x) && desc)
+#  define TWS_ASSERT(x) assert(x)
 #endif
-
-// operator new() without #include <new>
-// Unfortunately the standard mandates the use of size_t, so we need stddef.h the very least.
-// Trick via https://github.com/ocornut/imgui
-// "Defining a custom placement new() with a dummy parameter allows us to bypass including <new>
-// which on some platforms complains when user has disabled exceptions."
-struct TWS__NewDummy {};
-inline void* operator new(size_t, TWS__NewDummy, void* ptr) { return ptr; }
-inline void  operator delete(void*, TWS__NewDummy, void*)       {}
-#define TWS_PLACEMENT_NEW(p) new(TWS__NewDummy(), p)
 
 // Make it so that the user can still define TWS_USE_CPP11=0 via build system to have C++11 support disabled for whatever reason.
 #ifdef TWS_USE_CPP11
@@ -217,6 +222,23 @@ inline void  operator delete(void*, TWS__NewDummy, void*)       {}
 #  endif
 #endif
 
+// operator new() without #include <new>
+// Unfortunately the standard mandates the use of size_t, so we need stddef.h the very least.
+// Trick via https://github.com/ocornut/imgui
+// "Defining a custom placement new() with a dummy parameter allows us to bypass including <new>
+// which on some platforms complains when user has disabled exceptions."
+struct TWS__NewDummy {};
+inline void* operator new(size_t, TWS__NewDummy, void* ptr) { return ptr; }
+inline void  operator delete(void*, TWS__NewDummy, void*)       {}
+#define TWS_PLACEMENT_NEW(p) new(TWS__NewDummy(), p)
+
+// Compile-time assertions
+#ifdef TWS_USE_CPP11
+#  define tws_compile_assert(cond, msg) switch(0){case 0:case(!!(cond)):;}
+#else
+#  define tws_compile_assert(cond, msg) static_assert(cond, msg)
+#endif
+
 namespace tws {
 
 
@@ -226,14 +248,6 @@ namespace tws {
 #  define TWS_DELETE_METHOD(mth) mth /* will lead to a linker error if used */
 #endif
 
-template<typename T, unsigned short ExtraCont>
-class Job;
-
-class Chain;
-
-// for exceptions
-struct AllocFailed {};
-struct PromiseFailed {};
 
 namespace priv {
 
@@ -260,6 +274,102 @@ struct has_WorkType
     template<typename T> static no&  Test(...);
     enum { value = sizeof(Test<A>(0)) == sizeof(yes) };
 };
+
+template <bool B, typename T = void> struct Enable_if { };
+template <typename T>                struct Enable_if<true, T> { typedef T type; };
+
+template <typename T, T v>
+struct IntegralConstant
+{
+    typedef T value_type;
+    typedef IntegralConstant<T,v> type;
+    static const T value = v;
+};
+
+typedef IntegralConstant<bool, true>  CompileTrue;
+typedef IntegralConstant<bool, false> CompileFalse;
+
+template <typename T, typename U> struct Is_same;
+template <typename T, typename U> struct Is_same      : CompileFalse { };
+template <typename T>             struct Is_same<T,T> : CompileTrue  { };
+
+template<typename A>
+struct has_run_method
+{
+    typedef char yes[1];
+    typedef char no[2];
+    template<typename T, void (T::*)(JobRef)> struct SFINAE {};
+    template<typename T> static yes& Test(SFINAE<T, &T::run>*);
+    template<typename T> static no&  Test(...);
+    enum { value = sizeof(Test<A>(0)) == sizeof(yes) };
+};
+
+template<typename A>
+struct _has_forbid_job_T_tag
+{
+    typedef char yes[1];
+    typedef char no[2];
+    template<typename T, typename Tag_> struct SFINAE {};
+    template<typename T> static yes& Test(SFINAE<T, typename T::tws_forbid_job_T_tag>*);
+    template<typename T> static no&  Test(...);
+    enum { value = sizeof(Test<A>(0)) == sizeof(yes) };
+};
+
+template<typename A>
+struct _has_global_operator_tag
+{
+    typedef char yes[1];
+    typedef char no[2];
+    template<typename T, typename Tag_> struct SFINAE {};
+    template<typename T> static yes& Test(SFINAE<T, typename T::tws_global_operator_tag>*);
+    template<typename T> static no&  Test(...);
+    enum { value = sizeof(Test<A>(0)) == sizeof(yes) };
+};
+
+// For constructor selection
+template<typename T>
+struct is_accepted_job_T
+{
+    enum
+    {
+        // TODO: lambdas without parameters
+        value = !_has_forbid_job_T_tag<T>::value
+             &&  has_run_method<T>::value
+    };
+};
+template<> struct is_accepted_job_T<tws_Event*> : CompileFalse {};
+template<> struct is_accepted_job_T<tws_Job*  > : CompileFalse {};
+
+
+// Helper class to check whether A is usable in *global* operator overloads
+template<typename T>
+struct supports_global_ops
+{
+    enum
+    {
+        value = is_accepted_job_T<T>::value || _has_global_operator_tag<T>::value
+    };
+};
+template<> struct supports_global_ops<tws_Event*> : CompileTrue {};
+template<> struct supports_global_ops<tws_Job*  > : CompileTrue {};
+
+// Expose global operators for both types?
+// A Job doesn't actually have the tws_global_operator_tag that this checks for.
+// Why? Because a job exposes operators >> and / as methods.
+// The global operators are thus only required for anything on the left that
+// isn't a job already (and doesn't have / or >>), so we're extra conservative here.
+template<typename A, typename B>
+struct op_check
+{
+    enum
+    {
+        value = supports_global_ops<A>::value && supports_global_ops<B>::value
+    };
+};
+// Everything where LHS can be made a job and RHS is already a job is also fine
+// eg. (a >> c/d) with a not being a Job.
+template<typename A, typename X>
+struct op_check<A, Job<X> > : supports_global_ops<A> {};
 
 template<typename T, bool>
 struct GetContinuationsImpl
@@ -343,15 +453,29 @@ struct Alignof
     };
 };
 
-#define tws__alignof(a) (tws::priv::Alignof<a>::value)
+#define tws__alignof(T) (tws::priv::Alignof<T>::value)
 #endif
+
+template<typename T>
+struct RoundUpToPtrSize
+{
+    enum
+    {
+        _sz = sizeof(T),
+        aln = tws__alignof(T),
+        _maxsz = _sz > aln ? _sz : aln,
+        _ptr = sizeof(void*),
+        _mod = _maxsz % _ptr,
+        value = _mod ? (_maxsz + _ptr) - _mod : _maxsz
+    };
+};
 
 #ifdef TWS_USE_CPP11
 template <typename T> struct Remove_ref            { typedef T type; };
 template <typename T> struct Remove_ref<T&>        { typedef T type; };
 template <typename T> struct Remove_ref<T&&>       { typedef T type; };
 template <class T>
-typename Remove_ref<T>::type&& Move(T&& x)
+typename Remove_ref<T>::type&& Move(T&& x) noexcept
 {
     return static_cast<typename Remove_ref<T>::type &&>(x);
 }
@@ -360,7 +484,7 @@ typename Remove_ref<T>::type&& Move(T&& x)
 template<typename T>
 static inline T AssertNotNull(T p) // Failure is an internal error or user error -- fail hard immediately
 {
-    TWS_ASSERT(!!p, "AssertNotNull() failed!");
+    TWS_ASSERT(!!p && "AssertNotNull() failed!");
     return p;
 }
 
@@ -374,119 +498,343 @@ static inline T NotNull(T p) // Failure is a system error (resource exhaustion, 
     return AssertNotNull(p);
 }
 
-template<typename Super, typename Base>
-class JobMixin;
-
-class JobOp;
-
-// Helper to bypass transfer() being private
-struct JobGenerator;
-
-// Wrapper around a tws_Job*
-class CheckedJobBase
-{
-    TWS_DELETE_METHOD(CheckedJobBase(const CheckedJobBase&));
-    TWS_DELETE_METHOD(CheckedJobBase& operator=(const CheckedJobBase&));
-
-    template<typename U, typename V> friend class JobMixin;
-    friend struct JobGenerator;
-    friend class JobHandle;
-
-protected:
-    tws_Job *_j;
-
-    inline CheckedJobBase(tws_Job *j) : _j(AssertNotNull(j)) {}
-    inline ~CheckedJobBase() { TWS_ASSERT(!_j, "_j not cleared, this is likely a resource leak"); }
-    inline tws_Job *me() const { TWS_ASSERT(_j, "Job already submitted!"); return _j; }
-    inline static tws_Job *asjob(const CheckedJobBase& base) { return base.me(); }
-    inline tws_Job *transfer() { tws_Job *j = me(); _j = NULL; return j; } // callable once
-    inline void _submit(tws_Job *ancestor) { tws_submit(transfer(), ancestor); }
-};
-
-class DumbJobBase
-{
-    template<typename U, typename V> friend class JobMixin;
-    friend class JobOp;
-protected:
-    tws_Job * const _j;
-    inline DumbJobBase(tws_Job *j) : _j(AssertNotNull(j)) {}
-    // implicit trivial copy ctor, dtor, and so on
-    inline tws_Job *me() const { return _j; }
-};
-
-class AutoSubmitJobBase : public CheckedJobBase
-{
-    TWS_DELETE_METHOD(AutoSubmitJobBase(const AutoSubmitJobBase&));
-    TWS_DELETE_METHOD(AutoSubmitJobBase& operator=(const AutoSubmitJobBase&));
-    typedef CheckedJobBase Base;
-
-protected:
-    inline AutoSubmitJobBase(tws_Job *j) : Base(j) {}
-
-    inline ~AutoSubmitJobBase()
-    {
-        if(_j)
-            _submit(NULL);
-    }
-};
-
-template<typename Super, typename Base>
-class JobMixin : public Base
-{
-    inline Super& self()
-    {
-        return static_cast<Super&>(*this);
-    }
-
-protected:
-    inline JobMixin(tws_Job *j) : Base(j) {}
-
-public:
-    template<typename C>
-    inline Super& child(const C& ch, tws_Event *ev = 0)
-    {
-        Job<C, 0> cj(ch, this->me(), ev);
-        return self();
-    }
-
-    inline Super& then(tws_Job *cont)
-    {
-        tws_submit(cont, this->me());
-        return self();
-    }
-
-    // Continuation without parent
-    template<typename C>
-    inline Super& then(const C& data, tws_Event *ev = 0)
-    {
-        Job<C> c(data, ev);
-        return then(c);
-    }
-
-    // Ready-made job (gets invalidated)
-    template<typename T, unsigned short ExtraCont>
-    inline Super& then(Job<T, ExtraCont>& job)
-    {
-        job._submit(this->me());
-        return self();
-    }
-
-    inline tws_Job *ptr() const { return this->me(); }
-};
-
 } // end namespace priv
+
 // --------------------------------------------------------------------
+
+enum NoInit
+{
+    noinit
+};
 
 class Event
 {
-    tws_Event *_ev;
+    TWS_DELETE_METHOD(Event(const Event&));
+    TWS_DELETE_METHOD(Event(Event&));
+    TWS_DELETE_METHOD(Event& operator=(const Event&));
+    TWS_DELETE_METHOD(Event& operator=(Event&));
+
+    tws_Event * const _ev;
 public:
     typedef priv::Tag tws_operator_tag;
     inline Event() : _ev(priv::NotNull(tws_newEvent())) {}
-    inline ~Event() { wait(); }
+    inline ~Event() { wait(); tws_destroyEvent(_ev); }
     inline void wait() { tws_wait(_ev); }
     inline operator tws_Event*() const { return _ev; }
+
+    typedef priv::Tag tws_global_operator_tag;
+    typedef priv::Tag tws_forbid_job_T_tag;
 };
+
+// --------------------------------------------------------------------
+
+// Type-agnostic promise
+// Supports all necessary operations but does not know the type of its data,
+// yet is able to destroy its data properly.
+// Memory layout: { char opaque[z]; DestroyFn dtorIfValid; DestroyFn dtor; } // z >= sizeof(T), rounded up to pointer size
+template<>
+class Promise<void>
+{
+protected:
+    struct AllocResult
+    {
+        tws_Promise *pr;
+        void *data;
+        size_t sz;
+    };
+
+private:
+
+    mutable tws_Promise * _pr; // the only actual data member
+
+    TWS_DELETE_METHOD(Promise& operator=(const Promise&));
+    TWS_DELETE_METHOD(Promise& operator=(Promise&));
+
+    // Destructor helper. What's important is that we can get a function pointer to this
+    template<typename T>
+    static void _DestroyT(void *p, size_t)
+    {
+        static_cast<T*>(p)->~T();
+    }
+    typedef void (*DestroyFn)(void *, size_t);
+
+    static DestroyFn *_GetDtorPtrFromData(void *ptr, size_t sz)
+    {
+        char *p = static_cast<char*>(ptr);
+        p += sz - (2 * sizeof(DestroyFn));
+        return reinterpret_cast<DestroyFn*>(p);
+    }
+
+    static DestroyFn *_GetDtorPtr(tws_Promise *pr)
+    {
+        size_t sz;
+        void *ptr = tws_getPromiseData(pr, &sz);
+        return _GetDtorPtrFromData(ptr, sz);
+    }
+
+    // Shared part of alloc without specific type
+    static AllocResult _AllocWithDtor(size_t totalsize, size_t alignment, DestroyFn dtor)
+    {
+        AllocResult res;
+        res.pr = tws_allocPromise(totalsize, alignment);
+        if(res.pr)
+        {
+            res.data = tws_getPromiseData(res.pr, &res.sz);
+            DestroyFn *pf = _GetDtorPtrFromData(res.data, res.sz);
+            pf[0] = NULL;
+            pf[1] = dtor; // keep this for later
+        }
+        return res;
+    }
+
+protected:
+
+    // Call this once object is in place and needs to be destroyed when the promise goes away
+    void _enableDestroy()
+    {
+        DestroyFn *pf = _GetDtorPtr(_pr);
+        pf[0] = pf[1];
+    }
+
+    // Alloc but don't init
+    template<typename T>
+    static AllocResult _AllocT()
+    {
+        typedef priv::RoundUpToPtrSize<T> ProperSize;
+        tws_compile_assert((ProperSize::value >= sizeof(T)) && (ProperSize::value % sizeof(void*) == 0), "failed size/alignment check");
+        return _AllocWithDtor(ProperSize::value + 2 * sizeof(DestroyFn), ProperSize::aln, _DestroyT<T>);
+    }
+
+    void *_destroyData()
+    {
+        size_t sz;
+        void *ptr = (char*)tws_getPromiseData(_pr, &sz);
+        DestroyFn *pf = _GetDtorPtrFromData(ptr, sz);
+        DestroyFn f = pf[0]; // NULL if obj mem is uninitialized
+        if(f)
+        {
+            pf[0] = NULL; // dtor must go as well
+            f(ptr, 0); // 2nd parameter is unused
+        }
+        return ptr;
+    }
+
+    // Unchecked raw storage access
+    inline void *_ptr() const
+    {
+        return tws_getPromiseData(_pr, NULL);
+    }
+
+    // Asserts that data are constructed in place
+    inline void *_validptr(size_t *psz) const
+    {
+        size_t sz;
+        void *p = tws_getPromiseData(_pr, &sz);
+        TWS_ASSERT(_GetDtorPtrFromData(p, sz)[0]); // this is NULL if no obj exists
+        if(psz)
+            *psz = sz;
+        return p;
+    }
+
+    explicit inline Promise(tws_Promise *pr)
+        : _pr(priv::NotNull(pr))
+    {}
+
+public:
+
+    Promise(const Promise& p)
+        : _pr(p._pr)
+    {
+        _tws_promiseIncRef(_pr);
+    }
+
+    ~Promise()
+    {
+        if(_pr)
+        {
+            //tws_waitPromise(_pr); // bad, if we're just a clone
+            DestroyFn *pf = _GetDtorPtr(_pr);
+            // FIXME: FIX LEAK
+            //tws_destroyPromise(_pr, pf[0]); // may or may not actually delete the promise
+        }
+    }
+
+#ifdef TWS_USE_CPP11
+    Promise(Promise&& p) noexcept
+        : _pr(p._pr)
+    {
+         p._pr = NULL; // make it safe to destroy without interfering
+    }
+#endif
+
+    inline void signal() { tws_fulfillPromise(_pr, 1); }
+
+    // Re-arm promise to be usable again. Destroys the object.
+    // Do not call while the promise is in-flight!
+    inline void reset() { _destroyData(); tws_resetPromise(_pr);  }
+
+    // Fail promise without assigning valid object
+    inline void fail() { tws_fulfillPromise(_pr, 0); }
+
+    // True if done (success or failed), false if still in-flight. Never blocks.
+    inline bool done() const { return !!tws_isDonePromise(_pr); }
+
+    // Blocks until promise is fulfilled, then returns true on success, false on failure
+    // Will not wait when done() is true.
+    inline bool wait() const { return !!tws_waitPromise(_pr); }
+
+    // Wait, then get pointer to valid object or NULL. Size is written to psz if passed.
+    inline void *getpvoid(size_t *psz = NULL) const { return wait() ? _validptr(psz) : NULL; }
+};
+
+// Promise with known type T. Can be casted to Promise<void>
+template<typename T>
+class Promise : public Promise<void>
+{
+    TWS_DELETE_METHOD(Promise& operator=(const Promise&));
+    TWS_DELETE_METHOD(Promise& operator=(Promise&));
+
+    typedef Promise<void> Base;
+
+    static tws_Promise *_InitDefaultT(const AllocResult& a)
+    {
+        if(a.pr)
+            TWS_PLACEMENT_NEW(a.data) T;
+        return a.pr;
+    }
+
+    static tws_Promise *_InitCopyT(const AllocResult& a, const T& obj)
+    {
+        if(a.pr)
+            TWS_PLACEMENT_NEW(a.data) T(obj);
+        return a.pr;
+    }
+
+#ifdef TWS_USE_CPP11
+    static tws_Promise *_InitMoveT(const AllocResult& a, T&& obj)
+    {
+        if(a.pr)
+            TWS_PLACEMENT_NEW(a.data) T(priv::Move(obj));
+        return a.pr;
+    }
+#endif
+
+    inline AllocResult _Alloc()
+    {
+        return Base::_AllocT<T>();
+    }
+
+public:
+    // TODO: copy, move, etc ctors
+
+    Promise(const Promise& p)
+        : Base(p)
+    {}
+
+    explicit inline Promise(NoInit)
+        : Base(Base::_AllocT<T>().pr)
+    {}
+
+    explicit inline Promise()
+        : Base(_InitDefaultT(_Alloc()))
+    { _enableDestroy(); }
+
+    explicit inline Promise(const T& obj)
+        : Base(_InitCopyT(_Alloc(), obj))
+    { _enableDestroy(); }
+
+#ifdef TWS_USE_CPP11
+    explicit inline Promise(T&& obj)
+        : Base(_InitMoveT(_Alloc(), priv::Move(obj)))
+    { _enableDestroy(); }
+
+    // Fulfill promise with obj, move
+    void set(T&& t)
+    {
+        void *p = this->_destroyData();
+        TWS_PLACEMENT_NEW(p) T(priv::Move(t)); // move ctor
+        this->_enableDestroy();
+        this->signal();
+    }
+#endif
+
+    // Fulfill promise with obj
+    void set(const T& obj)
+    {
+        void *p = this->_destroyData();
+        TWS_PLACEMENT_NEW(p) T(obj); // copy ctor
+        this->_enableDestroy();
+        this->signal();
+    }
+
+    // Wait, then get pointer to object or NULL if failed
+    T *getp() const
+    {
+        return static_cast<T*>(this->getpvoid());
+    }
+
+#ifndef TWS_NO_EXCEPTIONS
+    // Wait, then get ref to valid object or throw if promise failed
+    inline T& refOrThrow() const
+    {
+        if(wait())
+            return *static_cast<T*>(this->_validptr(NULL));
+        throw PromiseFailed();
+    }
+
+# ifdef TWS_USE_CPP11
+    // Wait, then get ref to valid object or throw if promise failed
+    // Call only once to move object out, 2nd time fails an assert
+    inline T moveOrThrow()
+    {
+        if(wait())
+        {
+            T obj = priv::Move(*static_cast<T*>(this->_validptr(NULL)));
+            _destroyData(); // internal storage is in destructible state now; do it
+            return obj;
+        }
+        throw PromiseFailed();
+    }
+# endif
+#endif
+
+    // Always returns ref to object, which may be uninitialized.
+    // Valid only once wait() returned true.
+    T& refUnsafe() const
+    {
+        return *static_cast<T*>(this->_ptr());
+    }
+
+
+    //inline       T *data()       { return static_cast<      T*>(this->payload()); }
+    //inline const T *data() const { return static_cast<const T*>(this->payload()); }
+
+    inline const T& operator*()       { return refUnsafe(); }
+    inline       T& operator*() const { return refUnsafe(); }
+
+    inline       T* operator->()       { return &refUnsafe(); }
+    inline const T* operator->() const { return &refUnsafe(); }
+};
+
+// --------------------------------------------------------------------
+
+// Reference to an already running job. Can add children and continuations.
+// (At this point we don't know anything about the job data anymore)
+class JobRef
+{
+    friend class Job<void>;
+    inline JobRef(tws_Job *j, tws_Event *ev) : job(j), event(ev) {};
+public:
+    tws_Job * const job;
+    tws_Event * const event;
+    inline operator tws_Job*() const { return job; }
+    // implicit trivial copy ctor and so on
+
+    typedef priv::Tag tws_forbid_job_T_tag;
+};
+
+// --------------------------------------------------------------------
+
 
 // Helper to derive your own struct with extra settings, like so:
 // struct MyThing : public JobData<tws_TINY, 2> { ... };
@@ -498,238 +846,73 @@ class JobData
     enum { Continuations = ncont, WorkType = wt };
 };
 
-// Reference to an already running job. Can add children and continuations.
-// Intentionally pointer-sized, not more!
-// (At this point we don't need to know anything about the job data)
-class JobRef : public priv::JobMixin<JobRef, priv::DumbJobBase>
+/*
+template<typename T>
+inline static Job<T> makejob(const T& t)
 {
-    template<typename T, unsigned short ExtraCont>
-    friend class Job;
-    typedef priv::JobMixin<JobRef, priv::DumbJobBase> Base;
-    inline JobRef(tws_Job *j, tws_Event *ev) : Base(j), event(ev) {};
-public:
-    tws_Event * const event;
-    inline operator tws_Job*() const { return me(); }
-    // implicit trivial copy ctor and so on
-};
-
-// A not-yet-launched job. The job is submitted upon destruction of an instance.
-// C++ scoping rules enforce proper use and your code won't compile
-// if there is an ownership problem that would assert() or crash at runtime.
-template<typename T, unsigned short ExtraCont = 0>
-class Job : public priv::JobMixin<Job<T, ExtraCont>, priv::AutoSubmitJobBase>
-{
-    typedef priv::JobMixin<Job<T, ExtraCont>, priv::AutoSubmitJobBase> Base;
-    typedef Job<T, ExtraCont> Self;
-    TWS_DELETE_METHOD(Job(const Job&));
-    TWS_DELETE_METHOD(Self& operator=(const Self&));
-
-    enum
-    {
-        Ncont    = priv::GetContinuations<T>::value + ExtraCont,
-        WorkType = priv::GetWorkType<T>::value
-    };
-
-    static void _Run(void *ud, tws_Job *job, tws_Event *ev)
-    {
-        T *dat = static_cast<T*>(ud);
-        dat->run(JobRef(job, ev));
-        dat->~T();
-    }
-
-    inline tws_Job *newjob(tws_Job *parent, tws_Event *ev)
-    {
-        return priv::NotNull(tws_newJobNoInit(_Run, &this->_pdata, sizeof(T), Ncont, WorkType, parent, ev));
-    }
-
-    void *_pdata;
-
-    inline void _init()           { TWS_PLACEMENT_NEW(_pdata) T;    }
-    inline void _init(const T& t) { TWS_PLACEMENT_NEW(_pdata) T(t); }
-#ifdef TWS_USE_CPP11
-    inline void _initMv(T&& t)      { TWS_PLACEMENT_NEW(_pdata) T(priv::Move(t)); }
-#endif
-
-public:
-    typedef priv::Tag tws_operator_tag;
-
-    inline Job()                                                : Base(newjob(NULL, NULL)) { _init(); }
-    inline Job(tws_Job *parent, tws_Event *ev = 0)              : Base(newjob(parent, ev)) { _init(); }
-    inline Job(const T& t, tws_Event *ev = 0)                   : Base(newjob(NULL,   ev)) { _init(t); }
-    inline Job(const T& t, tws_Job *parent, tws_Event *ev = 0)  : Base(newjob(parent, ev)) { _init(t); }
-
-#ifdef TWS_USE_CPP11
-    inline Job(T&& t, tws_Event *ev = 0)                        : Base(newjob(NULL,   ev)) { _initMv(priv::Move(t)); }
-    inline Job(T&& t, tws_Job *parent, tws_Event *ev = 0)       : Base(newjob(parent, ev)) { _initMv(priv::Move(t)); }
-#endif
-
-    template<typename J>
-    inline Job(const J& parent, tws_Event *ev = 0)              : Base(newjob(Base::asjob(parent), ev)) { _init(); }
-
-
-    inline       T *data()       { return static_cast<      T*>(_pdata); }
-    inline const T *data() const { return static_cast<const T*>(_pdata); }
-
-    inline const T& operator*()       { return *data(); }
-    inline       T& operator*() const { return *data(); }
-
-    inline       T* operator->()       { return data(); }
-    inline const T* operator->() const { return data(); }
-};
-
-// Job wrapper for an externally created job
-/*class JobHandle : public priv::JobMixin<JobHandle, priv::AutoSubmitJobBase>
-{
-    typedef priv::JobMixin<JobHandle, priv::AutoSubmitJobBase> Base;
-    TWS_DELETE_METHOD(JobHandle(const JobHandle&));
-    TWS_DELETE_METHOD(JobHandle& operator=(const JobHandle&));
-
-public:
-    typedef priv::Tag tws_operator_tag;
-    explicit inline JobHandle(tws_Job *j) : Base(j) {}
-    inline JobHandle(CheckedJobBase& j) : Base(j.transfer()) {}
-};*/
-
-// -----------------------------------------------------------
-// Overloaded operators || and >>
-// -----------------------------------------------------------
-#ifndef TWS_NO_OPERATOR_OVERLOADS
-
-namespace priv {
-
-template <bool B, typename T = void> struct Enable_if { };
-template <typename T>                struct Enable_if<true, T> { typedef T type; };
-
-template <typename T, T v>
-struct IntegralConstant
-{
-    typedef T value_type;
-    typedef IntegralConstant<T,v> type;
-    static const T value = v;
-};
-
-typedef IntegralConstant<bool, true>  CompileTrue;
-typedef IntegralConstant<bool, false> CompileFalse;
-
-template <typename T, typename U> struct Is_same;
-template <typename T, typename U> struct Is_same      : CompileFalse { };
-template <typename T>             struct Is_same<T,T> : CompileTrue  { };
-
-template<typename A>
-struct has_run_method
-{
-    typedef char yes[1];
-    typedef char no[2];
-    template<typename T, void (T::*)(JobRef)> struct SFINAE {};
-    template<typename T> static yes& Test(SFINAE<T, &T::run>*);
-    template<typename T> static no&  Test(...);
-    enum { value = sizeof(Test<A>(0)) == sizeof(yes) };
-};
-
-template<typename A>
-struct has_operator_tag
-{
-    typedef char yes[1];
-    typedef char no[2];
-    template<typename T, typename Tag_> struct SFINAE {};
-    template<typename T> static yes& Test(SFINAE<T, typename T::tws_operator_tag>*);
-    template<typename T> static no&  Test(...);
-    enum { value = sizeof(Test<A>(0)) == sizeof(yes) };
-};
-
-// Helper class to check whether A is usable in *global* operator overloads
-template<typename A>
-struct supports_ops
-{
-    enum
-    {
-        isevent = Is_same<A, tws_Event*>::value,
-        hastag = has_run_method<A>::value || has_operator_tag<A>::value,
-        value = isevent || hastag
-    };
-};
-
-// Expose global operators for both types?
-template<typename A, typename B>
-struct op_check
-{
-    enum
-    {
-        hasops = priv::supports_ops<A>::value && priv::supports_ops<B>::value,
-        notAlreadyOp = !priv::Is_same<A, priv::JobOp>::value,
-        value = hasops && notAlreadyOp
-    };
-};
-
-struct JobGenerator
-{
-    template<typename T, unsigned short ExtraCont>
-    static inline typename Enable_if<has_run_method<T>::value, tws_Job*>::type Generate(const T& t)
-    {
-        Job<T, ExtraCont> tmp(t);
-        return tmp.transfer();
-    }
-};
-
-} // end namespace priv 
-//--------------------------------------------------------
-
-// Global operators. Used to convert the two initial types to JobOp, from there the regular JobOp::operator#s take over
-namespace operators {
- 
-
-
-template<typename A, typename B>
-typename priv::Enable_if<priv::op_check<A, B>::value, priv::JobOp>::type operator/ (const A& a, const B& b)
-{
-    return priv::JobOp(a).operator/(b);
+    return t;
 }
+*/
 
-template<typename A, typename B>
-typename priv::Enable_if<priv::op_check<A, B>::value, priv::JobOp>::type operator>> (const A& a, const B& b)
+// --- Member variables for Job<T> - just a few, to keep it light ---
+struct _JobMembers
 {
-    return priv::JobOp(a).operator>>(b);
-}
+    // Compiler-auto-generated copy, move, etc ctors are fine since this
+    // struct is just dumb data.
 
+    inline _JobMembers(tws_Job *j)
+        : _begin(priv::AssertNotNull(j)), _tail(j), _par(0), _payload(0)
+    {}
 
-} // end namespace operators
-//--------------------------------------------------
+    inline _JobMembers(tws_Job *j, void *payload)
+        : _begin(priv::AssertNotNull(j)), _tail(j), _par(0), _payload(priv::AssertNotNull(payload))
+    {}
 
-class Chain : public priv::AutoSubmitJobBase
-{
-    TWS_DELETE_METHOD(Chain& operator= (const Chain&));
-    typedef priv::AutoSubmitJobBase Base;
-    friend class priv::JobOp;
+    inline _JobMembers(tws_Job *begin, tws_Job *tail)
+        : _begin(priv::AssertNotNull(begin)), _tail(priv::AssertNotNull(tail)), _par(0), _payload(0)
+    {}
 
-public:
-    typedef priv::Tag tws_operator_tag;
-    inline Chain(const priv::JobOp& o); // defined below
-    inline Chain(const Chain& o) : Base(const_cast<Chain&>(o).transfer()) {}
+    inline _JobMembers(tws_Job *begin, tws_Job *tail, tws_Job **par, void *payload)
+        : _begin(priv::AssertNotNull(begin)), _tail(priv::AssertNotNull(tail)), _par(par), _payload(payload)
+    {}
+
+    tws_Job *_begin; // The job that is launched. NULL'd on launch.
+    tws_Job *_tail;  // In a sequence of (A >> ... >> Z), this is the rightmost job
+    tws_Job **_par; // parallel slots for operator/
+    void *_payload; // points to data area inside job. Derived Job<T> class knows the type.
 };
 
-namespace priv {
 
-class OperatorOverloads;
-
-// No regular methods accessible; convert to Chain to make end-user-friendly
-// It's especially important not to expose CheckedJobBase::transfer() so that our overload is used instead
-// Also, we use 2 continuation slots everywhere. Why? (A >> (B >> C) >> D) adds 2 continuations to B.
-//  (More shouldn't be possible syntactically...?)
-class JobOp : private AutoSubmitJobBase
+/*
+The universal Job class. A Job is:
+- A tws_Job* wrapper
+- A parallel group of (A / B / ...)
+- A sequence (A >> B >> ...)
+- A combination of the above
+A job is launched upon destruction, if it was not moved elsewhere.
+Job<void> is an opaque job that has a tws_Job and maybe a payload,
+but the type of the payload is not known and there is no way to access it.
+Specialized Job<T> (below) can always be casted to Job<void>.
+You can also write Job<>, which is shorter.
+*/
+template<>
+class Job<void> : private _JobMembers
 {
-    TWS_DELETE_METHOD(JobOp& operator= (const JobOp&));
-    typedef AutoSubmitJobBase Base;
-
-public:
-    typedef priv::Tag tws_operator_tag;
-
-    friend class tws::Chain;
-    template<typename A, typename B>
-    friend typename priv::Enable_if<priv::op_check<A, B>::value, priv::JobOp>::type operators::operator/ (const A& a, const B& b);
-    template<typename A, typename B>
-    friend typename priv::Enable_if<priv::op_check<A, B>::value, priv::JobOp>::type operators::operator>> (const A& a, const B& b);
-
 private:
+    typedef Job<void> Self;
+
+    // -------------------------------------------------------
+
+    // Forbid copying. Much of the magic is scope-based so we need to force move semantics.
+    TWS_DELETE_METHOD(Job& operator=(const Job&));
+    TWS_DELETE_METHOD(Job& operator=(Job&));
+
+    // Make it so that we can't assign from a named object.
+    // Temporaries are ok as these are always const.
+    // This doesn't catch the case where 'const Job<?>' is passed but is better
+    // than nothing; it'll still assert() if somehing isn't right.
+    //TWS_DELETE_METHOD(Job(Self&));
+    //TWS_DELETE_METHOD(template<typename T> Job(Job<T>&));
 
     // too few job slots make no sense. We need at least 1 for bookkeeping and some more for actual jobs.
     // If we have to heap-alloc with this few slots already, we might as well allocate a lot more room.
@@ -737,12 +920,54 @@ private:
     // 32 is arbitrary; I don't think someone will likely write a chain of 32x op/ in a row.
     enum { MinParSlots = 6, FallbackParSlots = 32, ReserveConts = 2 };
 
-    tws_Job *_tail; // last continuation that was added aka where to add more continuations. In (A >> B) notation, if we're A, it's B._j.
-    tws_Job **_par; // parallel slots for operator/
 
-    static inline tws_Job *_Eventjob(tws_Event *ev)
+    template<typename T>
+    static void _RunT(void *ud, tws_Job *job, tws_Event *ev)
     {
-        return NotNull(tws_newJob(NULL, NULL, 0, ReserveConts, tws_TINY, NULL, ev));
+        T *t = (T*)ud;
+        t->run(JobRef(job, ev));
+        t->~T(); // It's placement-constructed into the jobmem, undo that
+    }
+
+    template<typename T>
+    static inline tws_Job *_AllocJob(void **pPayload, tws_Job *parent, tws_Event *ev, unsigned short extraCont)
+    {
+        const unsigned short Ncont  = priv::GetContinuations<T>::value;
+        const tws_WorkType WorkType = priv::GetWorkType<T>::value;
+        // 2 always, plus the static number of T, plus the dynamic number
+        unsigned useCont = ReserveConts + Ncont + extraCont;
+        TWS_ASSERT(useCont == (unsigned short)useCont);
+        return tws_newJobNoInit(_RunT<T>, pPayload, sizeof(T), (unsigned short)useCont, WorkType, parent, ev);
+    }
+
+    // This can be called only once (will assert afterwards)
+    tws_Job *transfer()
+    {
+        tws_Job *ret = _begin;
+        printf("transfer %p\n", this->_begin);
+        TWS_ASSERT(ret && "Job already moved or submitted");
+        _begin = NULL;
+        return ret;
+    }
+
+    tws_Job *steal() const
+    {
+        printf("steal %p\n", this->_begin);
+        return const_cast<Self*>(this)->transfer();
+    }
+
+    inline tws_Job *_submit(tws_Job *ancestor)
+    {
+        tws_Job *j = transfer();
+        printf(ancestor ? "submit %p (ancestor %p)\n" : "submit %p\n",
+            j, ancestor);
+        tws_submit(j, ancestor);
+        return j;
+    }
+
+    static inline tws_Job *_EventJob(tws_Event *ev)
+    {
+        return priv::NotNull(tws_newJob(NULL, NULL, 0, ReserveConts, tws_TINY, NULL, priv::AssertNotNull(ev)));
     }
 
     static void _SetParent(tws_Job *j, tws_Job *parent)
@@ -754,7 +979,7 @@ private:
         // The solution: Attach a continuation to j that has the correct parent.
         // So when j is done, the continuation is started and immediately completes, notifying parent of j's completion.
         // If there's not enough continuation space, this will assert() somewhere. Oh well.
-        tws_Job *stub = NotNull(tws_newJob(NULL, NULL, 0, 0, tws_TINY, parent, NULL));
+        tws_Job *stub = priv::NotNull(tws_newJob(NULL, NULL, 0, 0, tws_TINY, parent, NULL));
         tws_submit(stub, j);
     }
 
@@ -794,229 +1019,261 @@ private:
         {    // (We can't submit those right away so gotta store them somewhere until it's time to submit them.)
             const size_t n = _NumPar();
             void *p; // Space for tws_Job[NumPar]
-            tws_Job *jp = NotNull(tws_newJobNoInit(_SubmitPar, &p, sizeof(tws_Job*) * n, ReserveConts, tws_TINY, NULL, NULL));
+            tws_Job *jp = priv::NotNull(tws_newJobNoInit(_SubmitPar, &p, sizeof(tws_Job*) * n, ReserveConts, tws_TINY, NULL, NULL));
             par = static_cast<tws_Job**>(p);
-            _SetParent(_j, jp); // Upside-down relation: _j will become part of jp, so _j must notify jp when its previously added children are done.
+            _SetParent(_begin, jp); // Upside-down relation: _j will become part of jp, so _j must notify jp when its previously added children are done.
 
             tws_Job ** const last = par + (n - 1); // inclusive
-            *par++ = _j; // Prev. job: either the original, or a launcher.
+            *par++ = _begin; // Prev. job: either the original, or a launcher.
             *par++ = jj;
             _par = par; // 2 slots used, rest is free, continue here later
             do
-                *par++ = NULL; // clear the rest
+                *par++ = 0; // clear the rest
             while(par < last);
             *last = (tws_Job*)uintptr_t(1); // Put stop marker on the last slot.
-            _j = jp; // this is now the new master job.
+            _begin = jp; // this is now the new master job.
         }
-        _SetParent(jj, _j);
+        _SetParent(jj, _begin);
+    }
+
+    /*Job(const _JobMembers& m)
+        : _JobMembers(m)
+    {}*/
+
+    template<typename T>
+    inline static _JobMembers _ConstructNoInitT(tws_Job *parent, tws_Event *ev, unsigned short extraCont)
+    {
+        void *payload;
+        tws_Job *j = priv::NotNull(_AllocJob<T>(&payload, parent, ev, extraCont));
+        printf("_ConstructNoInitT %p\n", j);
+        return _JobMembers(j, payload);
+    }
+
+    template<typename T>
+    inline static _JobMembers _ConstructSteal(const Job<T>& j)
+    {
+        return _JobMembers(j.steal(), j._tail, j._par, j._payload);
+    }
+
+#ifdef TWS_USE_CPP11
+    template<typename T>
+    inline static _JobMembers _ConstructMove(Job<T>&& j)
+    {
+        return _JobMembers(j.transfer(), j._tail, j._par, j._payload);
+    }
+#endif
+
+protected:
+
+    inline       void *payload()       { return _payload; }
+    inline const void *payload() const { return _payload; }
+
+    template<typename T>
+    struct _NoInit
+    {
+        typedef T type;
+    };
+
+    // Construct job based on struct, allocate payload but leave the mem uninitialized.
+    // The _NoInit<T> dummy is to
+    // (1) pass T because we can't call a ctor for a specific T, like this:
+    //       Deriv() : Base<T>() {}
+    // (2) make sure this ctor is only used when explicitly needed.
+    // Every ctor for Job<T != void> eventually goes through this.
+    template<
+        typename T
+        // This line is to cause SFINAE failure when Job<T> would be invalid
+        // (If your compiler doesn't like it, comment it out, it will be fine)
+        , typename = typename priv::Enable_if<priv::is_accepted_job_T<T>::value>::type
+    >
+    explicit inline Job(tws_Job *parent, tws_Event *ev, unsigned short extraCont, _NoInit<T>)
+        : _JobMembers(_ConstructNoInitT<T>(parent, ev, extraCont))
+    {
+        printf("Job<void from T> %p\n", _begin);
     }
 
 public:
 
-    // Force "move constructor"
-    JobOp(const JobOp& j) : Base(j.finalize()), _tail(j._tail), _par(j._par)
+    typedef priv::Tag tws_forbid_job_T_tag;
+
+    inline ~Job()
     {
+        if(_begin)
+            _submit(0);
     }
+
+    explicit inline Job(tws_Job *j) throw()
+        : _JobMembers(j)
+    {}
+
+    inline Job(tws_Event *ev, unsigned short extraCont = 0)
+        : _JobMembers(_EventJob(ev))
+    {}
+
+    // It would pick the type T ctor below rather than do a coercion -> force it
+    inline Job(const Event& ev, unsigned short extraCont = 0)
+        : _JobMembers(_EventJob(ev))
+    {}
+
+    // "copy ctor" that is actually a forced move ctor. Works for all Job<T>.
+    template<typename T>
+    Job(const Job<T>& o)
+        : _JobMembers(_ConstructSteal(o))
+    {}
+    template<typename T>
+    Job(Job<T>& o)
+        : _JobMembers(_ConstructSteal(o))
+    {}
+
+    // With object, copy
+    // Forward to the specialized Job<T> ctors and then erase T
+    template<typename T>
+    inline Job(const T& t, tws_Job *parent = 0, tws_Event *ev = 0, unsigned short extraCont = 0)
+        : _JobMembers(_ConstructSteal(Job<T>(t, parent, ev, extraCont)))
+    {}
 
 #ifdef TWS_USE_CPP11
-    JobOp(JobOp&& j) : Base(j.finalize()), _tail(j._tail), _par(j._par)
-    {
-    }
+    template<typename T>
+    Job(Job<T>&& o) noexcept
+        : _JobMembers(_ConstructMove(priv::Move(o)))
+    {}
 
-    // TODO: perfect forward ctor
+    // With object, move
+    template<typename T>
+    inline Job(T&& t, tws_Job *parent, tws_Event *ev = 0, unsigned short extraCont = 0)
+        : _JobMembers(_ConstructMove(priv::Move(Job<T>(t, parent, ev, extraCont))))
+    {}
 #endif
 
-    // --- Simple constructors for all supported types -- constructs a job out of the passed thing.
-    JobOp(tws_Job *j)
-        : Base(j), _tail(j)
-        , _par(NULL) {}
-
-    template<typename T>
-    JobOp(const T& t)
-        : Base(JobGenerator::Generate<T, ReserveConts>(t)), _tail(Base::_j)
-        , _par(NULL) {}
-
-    template<typename T, unsigned short ExtraCont>
-    JobOp(Job<T, ExtraCont>& job)
-        : Base(job.transfer()), _tail(Base::_j)
-        , _par(NULL) {}
-
-    JobOp(Chain& c)
-        : Base(c.transfer()), _tail(Base::_j)
-        , _par(NULL) {}
-
-    JobOp(tws_Event *ev)
-        : Base(_Eventjob(ev)), _tail(Base::_j)
-        , _par(NULL) {}
-
-    JobOp(Event& ev)
-        : Base(_Eventjob(ev)), _tail(Base::_j)
-        , _par(NULL) {}
-
-    // HACK: this class is only ever used as a temporary. Therefore use const_cast to enforce "move semantics" on temporaries.
-    tws_Job *finalize() const
+    inline Self& operator>>(const Self& o)
     {
-        return const_cast<JobOp*>(this)->transfer();
+        TWS_ASSERT(_tail); // This can't be NULL
+        TWS_ASSERT(_begin); // Otherwise we were already submitted
+        // tail is the rightmost job appended so far. update it to the next.
+        // won't run until the old _tail is done, so we can still add
+        // continuations to the new tail (which is what we just submitted)
+        _tail = const_cast<Self&>(o)._submit(_tail); 
+        printf("op>> (%p >> %p)\n", _begin, _tail);
+        return *this;
     }
 
-    // --- Operators ---
-    // (This uses the fact that '/' binds stronger than '>>' when parsed, so we get all '/' evaluated first)
-
-    inline JobOp& operator/ (const JobOp& o)
+    inline Self& operator/ (const Self& o)
     {
-        tws_Job *parallel = o.finalize();
+        TWS_ASSERT(_begin); // Otherwise we were already submitted
+        tws_Job *parallel = o.steal();
+        printf("op/ (%p / %p)\n", _begin, parallel);
         addpar(parallel);
         return *this;
     }
 
-    inline JobOp& operator>> (const JobOp& o)
+    inline operator tws_Job* () const
     {
-        tws_Job *newcont = o.finalize();
-        // attach new continuation (o) to previous continuation
-        tws_submit(newcont, _tail); // won't run until _tail is done, so we can still add continuations to it later
-        _tail = newcont;
-        return *this;
+        return _begin;
     }
 };
 
-} // end namespace priv
-
-
-inline Chain::Chain(const priv::JobOp& o) : Base(o.finalize())
-{
-}
-
-#endif // #ifndef TWS_NO_OPERATOR_OVERLOADS
-//----------------------------------------------------------
-
-// ---- Promises ----
-
+// Typed Job. Can be casted to Job<void>
+// T is a struct that exposes a 'void run(tws::JobRef)' method.
+// You can access data members like so:
+// Job<Thing> j; // calls default ctor
+// Job<Thing> j(Thing(ctor-params)); // construct a Thing and move into job
+// j->member = 42; // operator-> is used to access member variables
+// j->data() gets a pointer   to the Thing in the job
+// *j        gets a reference to the Thing in the job
 template<typename T>
-class Promise
+class Job : public Job<void>
 {
-    mutable tws_Promise *_pr;
+    typedef Job<void> Base;
+    typedef Job<T> Self;
 
-    struct Data
-    {
-        T obj;
-        bool valid;
-    };
+    TWS_DELETE_METHOD(Job& operator=(const Job&));
+    TWS_DELETE_METHOD(Job& operator=(Job&));
 
-    static tws_Promise *AllocPr()
+    // Doesn't actually do anything, but is called in all code paths to
+    // make sure the compiler has to look at it and has no chance of
+    // silently ignoring any failure in this line.
+    // It's not required but hopefully makes compile errors due to a wrong T
+    // a bit less of a templated mess to sift through.
+    // (And due to C++98 not supporting static_assert() this has to be in a function.)
+    static inline void _chk_()
     {
-        return priv::NotNull(tws_allocPromise(sizeof(T) + 1, tws__alignof(T)));
+        tws_compile_assert((priv::is_accepted_job_T<T>::value), "Can't instantiate Job<T>, T not accepted");
     }
 
-    inline Data *dataptr()
-    {
-        return static_cast<Data*>(tws_getPromiseData(_pr, NULL));
-    }
-
-    inline T *objptr() const
-    {
-        return &static_cast<Data*>(tws_getPromiseData(_pr, NULL))->obj;
-    }
-
-    void _destroy()
-    {
-        Data *d = dataptr();
-        if(d->valid)
-        {
-            d->obj.~T();
-            d->valid = false;
-        }
-    }
-
-public:
-    inline Promise() : _pr(AllocPr()) { dataptr()->valid = false; }
-    inline ~Promise()
-    {
-        if(_pr)
-        {
-            tws_waitPromise(_pr);
-            _destroy();
-            tws_destroyPromise(_pr);
-        }
-    }
-
-    Promise(const Promise& o) : _pr(o._pr)
-    {
-        _tws_promiseIncRef(o._pr);
-    }
-
-    Promise& operator=(const Promise& o)
-    {
-        tws_promiseIncRef(o._pr);
-        tws_destroyPromise(_pr);
-        _pr = o._pr;
-        return *this;
-    }
-
+    inline void _init()           { _chk_(); TWS_PLACEMENT_NEW(this->payload()) T;    }
+    inline void _init(const T& t) { _chk_(); TWS_PLACEMENT_NEW(this->payload()) T(t); }
 #ifdef TWS_USE_CPP11
-    inline Promise(Promise&& o) : _pr(o._pr)
-    {
-        o._pr = NULL;
-    }
-
-    inline Promise& operator=(Promise&& o)
-    {
-        _pr = o._pr;
-        o._pr = NULL
-        return *this;
-    }
-
-    // Move-assign external object and fulfill promise
-    inline Promise& operator=(T&& obj)
-    {
-        Data *d = dataptr();
-        TWS_PLACEMENT_NEW(&d->obj) T(priv::Move(obj));
-        d->valid = true;
-        tws_fulfillPromise(_pr, 1);
-        return *this;
-    }
+    inline void _initMv(T&& t)    { _chk_(); TWS_PLACEMENT_NEW(this->payload()) T(priv::Move(t)); }
 #endif
 
-    // Assign external object and fulfill promise
-    Promise& operator=(const T& obj)
-    {
-        Data *d = dataptr();
-        TWS_PLACEMENT_NEW(&d->obj) T(obj);
-        d->valid = true;
-        tws_fulfillPromise(_pr, 1);
-        return *this;
-    }
+public:
 
-    // Re-arm promise to be usable again. Destroys the object.
-    inline void reset() { tws_resetPromise(_pr); _destroy(); }
+    // Without object, default init
+    inline Job(tws_Job *parent = 0, tws_Event *ev = 0, unsigned short extraCont = 0)
+        : Base(parent, ev, extraCont, _NoInit<T>()) { _init();  }
 
-    // Fail promise without assigning valid object
-    inline void fail() { tws_fulfillPromise(_pr, 0); }
 
-    // Check if done; never blocks.
-    inline bool done() const { return !!tws_isDonePromise(_pr); }
+    // With object, copy
+    inline Job(const T& t, tws_Job *parent = 0, tws_Event *ev = 0, unsigned short extraCont = 0)
+        : Base(parent, ev, extraCont, _NoInit<T>()) { _init(t); }
 
-    // Blocks until promise is fulfilled, then returns true on success, false on failure
-    inline bool wait() const { return !!tws_waitPromise(_pr); }
 
-    // Wait, then get pointer to valid object or NULL
-    inline T *getp() const { return wait() ? objptr() : NULL; }
+    // Stealing "copy ctor"
+    inline Job(const Self& o)
+        : Base(o) {}
+    inline Job(Self& o)
+        : Base(o) {}
 
-    // Wait, then get ref to valid object or throw
-    inline T& getOrThrow() const
-    {
-        if(wait())
-            return *objptr();
-        throw PromiseFailed();
-    }
+#ifdef TWS_USE_CPP11
 
-    // Performs no checks. If the promise is still in-flight
-    // you'll get an undefined/uninitialized value.
-    // Safe to call if you've checked that wait() returned true.
-    inline       T& getUnsafe()          { return *objptr(); }
-    inline const T& getUnsafe()    const { return *objptr(); }
-    inline       T* getUnsafePtr()       { return objptr(); }
-    inline const T* getUnsafePtr() const { return objptr(); }
+    // Proper move ctor
+    inline Job(Self&& o)
+        : Base(o) {}
+
+    // With object, move
+    inline Job(T&& t, tws_Job *parent = 0, tws_Event *ev = 0, unsigned short extraCont = 0)
+        : Base(parent, ev, extraCont, _NoInit<T>()) { _initMv(priv::Move(t)); }
+
+#endif
+
+    inline       T *data()       { return static_cast<      T*>(this->payload()); }
+    inline const T *data() const { return static_cast<const T*>(this->payload()); }
+
+    inline const T& operator*()       { return *data(); }
+    inline       T& operator*() const { return *data(); }
+
+    inline       T* operator->()       { return data(); }
+    inline const T* operator->() const { return data(); }
 };
+
+// This doesn't need the extended functionality of Job<T>
+template<> class Job<Event> : public Job<void> {};
+
+// -----------------------------------------------------------
+// Overloaded operators || and >>
+// -----------------------------------------------------------
+
+// Global operators. Used to convert the two initial types to Job<>,
+// from there the regular Job::operator#s take over.
+// op_check<> ensures that this is not used when A is already a Job;
+// wouldn't be a problem but add some indirection and compiler burden.
+namespace operators {
+ 
+template<typename A, typename B>
+typename priv::Enable_if<priv::op_check<A, B>::value, Job<void> >::type operator/ (const A& a, const B& b)
+{
+    return Job<void>(a).operator/(b);
+}
+
+template<typename A, typename B>
+typename priv::Enable_if<priv::op_check<A, B>::value, Job<void> >::type operator>> (const A& a, const B& b)
+{
+     return Job<void>(a).operator>>(b);
+}
+
+} // end namespace operators
+//--------------------------------------------------
+
 
 } // end namespace tws
 

@@ -257,10 +257,12 @@ inline tws_Job *tws_newEmptyJob(unsigned short maxcont, tws_Event *ev)
 
 // Submit a job. Parent and children can be submitted in any order.
 // The job may or may not run immediately once submitted. The job may finish before this call returns.
-// Once a job is submitted it is undefined behavior to use the job pointer outside of the running job function itself.
-// (Treat the job pointer as if it was free()'d)
+// Once a job is submitted it is undefined behavior to use the job pointer outside of the running job function itself,
+// with one exception below (*).
+// (In general, treat the job pointer as if it was free()'d)
 // If ancestor is set, submit the job as a continuation of ancestor:
 //   It will be started upon completion of the ancestor job.
+//   (*) Until ancestor is submitted 'job' stays valid and usable.
 //   If the ancestor's max. continuation number is exceeded this will assert(), but limp along and do the right thing anyways.
 //   (Whatever happens, this will do the right thing and the job will eventually run. The asserts are there to catch performance degradation.)
 // Never pass job == NULL.
@@ -352,9 +354,9 @@ TWS_EXPORT tws_Promise *tws_newPromise(void *p, size_t size);
 TWS_EXPORT tws_Promise *tws_allocPromise(size_t size, size_t alignment);
 
 // Delete a previously created promise.
-// If it was allocated via tws_allocPromise() this deleted both the promise and the data.
+// If it was allocated via tws_allocPromise() this frees both the promise and the data.
 // Deleting an in-flight promise is undefined behavior and will probably crash.
-TWS_EXPORT void tws_destroyPromise(tws_Promise *pr);
+TWS_EXPORT int tws_destroyPromise(tws_Promise *pr);
 
 // Reset a promise to unfulfilled state so that it can be used again.
 // Same rules as tws_destroyPromise() apply, don't reset an in-flight promise!

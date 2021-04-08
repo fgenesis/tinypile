@@ -51,9 +51,6 @@ Some notes:
 
 // ---------------------------------------
 
-#pragma intrinsic(memset)
-#pragma intrinsic(memcpy)
-
 #if !defined(tws_memcpy) || !defined(tws_memzero)
 #include <string.h> // for memset, memcpy
 #  ifndef tws_memcpy
@@ -289,6 +286,8 @@ static inline void _AtomicSet_Seq(NativeAtomic *x, tws_Atomic newval) { atomic_s
 static inline void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval) { atomic_store_explicit(&x->val, newval, memory_order_release); }
 static inline tws_Atomic _AtomicExchange_Acq(NativeAtomic *x, tws_Atomic newval) { return atomic_exchange_explicit(&x->val, newval, memory_order_acquire); } // return previous
 static inline tws_Atomic _AtomicGet_Seq(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_seq_cst); }
+static inline tws_Atomic _AtomicGet_Acq(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_acq); }
+static inline tws_Atomic _AtomicGet_Rel(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_rel); }
 static inline tws_Atomic _RelaxedGet(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_relaxed); }
 
 static inline int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return atomic_compare_exchange_strong(&x->val, expected, newval); }
@@ -373,6 +372,8 @@ static inline void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval) { _Interlo
 static inline void _AtomicSet_Seq(NativeAtomic *x, tws_Atomic newval) { _InterlockedExchange(&x->val, newval); }
 static inline tws_Atomic _AtomicExchange_Acq(NativeAtomic *x, tws_Atomic newval) { return _InterlockedExchange(&x->val, newval); }
 static inline tws_Atomic _AtomicGet_Seq(const NativeAtomic *x) { COMPILER_BARRIER(); return x->val; }
+static inline tws_Atomic _AtomicGet_Acq(const NativeAtomic *x) { COMPILER_BARRIER(); return x->val; }
+static inline tws_Atomic _AtomicGet_Rel(const NativeAtomic *x) { COMPILER_BARRIER(); return x->val; }
 static inline tws_Atomic _RelaxedGet(const NativeAtomic *x) { return x->val; }
 
 static inline int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return _msvc_cas64_x86(x, expected, newval); }
@@ -426,6 +427,8 @@ static inline tws_Atomic _AtomicExchange_Acq(NativeAtomic* x, tws_Atomic newval)
     }
 }
 static inline tws_Atomic _AtomicGet_Seq(const NativeAtomic* x) { return __sync_add_and_fetch(&((NativeAtomic*)x)->val, 0); }
+static inline tws_Atomic _AtomicGet_Acq(const NativeAtomic* x) { return __sync_add_and_fetch(&((NativeAtomic*)x)->val, 0); }
+static inline tws_Atomic _AtomicGet_Rel(const NativeAtomic* x) { return __sync_add_and_fetch(&((NativeAtomic*)x)->val, 0); }
 static inline tws_Atomic _RelaxedGet(const NativeAtomic* x) { return x->val; }
 
 static inline int _Atomic64CAS_Seq(NativeAtomic64* x, tws_Atomic64* expected, tws_Atomic64 newval)
@@ -1919,7 +1922,7 @@ static void mr_destroy(MREvent *mr)
 
 static int mr_isset(const MREvent *mr)
 {
-    return !!_AtomicGet_Seq(&mr->status);
+    return _AtomicGet_Seq(&mr->status) > 0;
 }
 
 static void mr_set(MREvent *mr)
@@ -2464,13 +2467,15 @@ TWS_EXPORT void _tws_promiseIncRef(tws_Promise *pr)
     _AtomicInc_Acq(&pr->refcount);
 }
 
-TWS_EXPORT void tws_destroyPromise(tws_Promise *pr)
+TWS_EXPORT int tws_destroyPromise(tws_Promise *pr)
 {
     if(!_AtomicDec_Rel(&pr->refcount))
     {
         mr_destroy(&pr->mr);
         _Free(pr, pr->allocsize);
+        return 1;
     }
+    return 0;
 }
 
 TWS_EXPORT void tws_resetPromise(tws_Promise *pr)
@@ -2661,7 +2666,8 @@ static int _tws_testAtomics(void)
     t = _AtomicDec_Acq(&a); TWS_CHECK(t == 31);
     t = _AtomicDec_Rel(&a); TWS_CHECK(t == 30);
 
-    t = 1;
+    t = 0;
+    a.val = 5;
     c = _AtomicCAS_Weak_Acq(&a, &t, 8); TWS_CHECK(c == 0 && t == 5); // fail, updates t to current value
     t = 1;
     for(;;)
