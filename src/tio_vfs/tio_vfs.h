@@ -138,6 +138,7 @@ TIO_EXPORT tio_error  tiov_fgetsize(tiov_FH *fh, tiosize *pbytes); /* Get total 
 TIO_EXPORT tio_error  tiov_fsetsize(tiov_FH *fh, tiosize bytes); /* Change file size on disk, truncate or enlarge. New areas' content is undefined. */
 TIO_EXPORT tiosize    tiov_fsize   (tiov_FH *fh); /* Shortcut for tio_fgetsize(), returns size of file or 0 on error */
 
+// TODO: readat, writeat
 
 /* ---- MMIO ----
 Same as tio_mopen() and tio_mopenmap(), but takes an extra fs as 2nd parameter.
@@ -196,7 +197,7 @@ TIO_EXPORT tio_error tiov_mount(tiov_FS *fs, const tiov_MountDef *mtab, size_t n
 
 /* Looks up the real name and FS of a file/path name.
    This traverses all VFSs and mangles the name appropriately, to the name natively used
-   by realfs. Follows symlinks but does not resolve them.
+   by realfs. Follows system symlinks but does not resolve them.
    The realname pointer is valid until the callback returns. If you need it afterwards,
    copy the string in the callback.
    There is no guarantee that a file/directory with the realname you get actually exists.

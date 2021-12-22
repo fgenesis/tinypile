@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.6)
+cmake_minimum_required(VERSION 2.6...3.20)
 project(tinypiletest)
 
 add_library(tinypile
@@ -7,12 +7,12 @@ add_library(tinypile
     ../jps.hh
     #../ustrpool.cpp
     #../ustrpool.h
-    ../tws.c
-    ../tws.h
-    ../tws.hh
-    ../tws_async.h
-    ../tws_async.hh
-    ../tws_backend.h
+    #../tws.c
+    #../tws.h
+    #../tws.hh
+    #../tws_async.h
+    #../tws_async.hh
+    #../tws_backend.h
 
     ../src/tio/tio.h
     ../src/tio/tio_api.cpp
@@ -38,10 +38,15 @@ add_library(tinypile
 
     ../src/tio_addons/tio_decomp.h
     ../src/tio_addons/tio_decomp_priv.h
+    ../src/tio_addons/tio_decomp.cpp
+    ../src/tio_addons/tio_decomp_deflate.cpp
     ../src/tio_addons/tio_decomp_lz4.cpp
-    ../src/tio_addons/tio_decomp_defl.cpp
     ../src/tio_addons/tiov_fs_wrapfs.cpp
     ../src/tio_addons/tiov_fs_wrapfs.h
+    
+    ../src/tio_addons/miniz_tinfl.c
+    ../src/tio_addons/miniz_tinfl.h
+    ../src/tio_addons/miniz_common.h
 )
 
 include_directories(../src/tio)
@@ -55,4 +60,4 @@ add_subdirectory(luaalloc)
 add_subdirectory(jps)
 #add_subdirectory(tbsp)
 add_subdirectory(tio)
-add_subdirectory(tws)
+#add_subdirectory(tws)

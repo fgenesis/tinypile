@@ -1,3 +1,4 @@
+#pragma once
 #include "tio.h"
 
 /* Stream decompression add-on for tio.
@@ -72,12 +73,16 @@ typedef unsigned tio_DecompStreamFlags;
 
 /* --- Stream-to-stream functions. See the note at the top for details. ---
    Initializes 'sm' and stores a pointer to 'packed' in it.
+   'packed' must stay alive while 'sm' is used.
    Don't mix up the two flags.
 */
 
 /* Autodetect the compressed format based on framing.
    If tioDecomp_DelayCheck is specified, delay format detection until the first read. */
 TIO_EXPORT tio_error tio_sdecomp_auto(tio_Stream *sm, tio_Stream *packed, tio_DecompStreamFlags df, tio_StreamFlags flags);
+
+/* Decompress deflate-encoded data. */
+TIO_EXPORT tio_error tio_sdecomp_deflate(tio_Stream* sm, tio_Stream* packed, tio_DecompStreamFlags df, tio_StreamFlags flags);
 
 /* Decompress LZ4-framed data. */
 TIO_EXPORT tio_error tio_sdecomp_LZ4_frame(tio_Stream *sm, tio_Stream *packed, tio_DecompStreamFlags df, tio_StreamFlags flags);

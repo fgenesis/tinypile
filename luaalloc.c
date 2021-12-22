@@ -58,18 +58,19 @@ Inspired by:
    If the default sysalloc is disabled, symbols for realloc()/free() won't be pulled in. */
 #define LA_ENABLE_DEFAULT_ALLOC
 
-/* Maximum size of allocations to handle. Any size beyond that will be redirected to the system allocator.
-   Must be a multiple of LA_ALLOC_STEP */
-#define LA_MAX_ALLOC 128
-
 /* Provide pools in increments of this size, up to LA_MAX_ALLOC. 4 or 8 are good values. */
-/* E.g. A value of 4 will create pools for size 4, 8, 12, ... 128; which is 32 distinct sizes. */
-#define LA_ALLOC_STEP 4
+/* E.g. A value of 4 will create pools for size 4, 8, 12, ... up to LA_MAX_ALLOC. */
+#define LA_ALLOC_STEP (sizeof(void*))
+
+/* Maximum size of allocations to handle. Any size beyond that will be redirected to the system allocator.
+   Must be a multiple of LA_ALLOC_STEP.
+   128b on 32bit systens and 256b on 64bit systems is a reasonable default. */
+#define LA_MAX_ALLOC (32 * LA_ALLOC_STEP)
 
 /* Initial/Max. # of elements per block. Default growing behavior is to double the size for each full block until hitting LA_ELEMS_MAX.
    Note that each element requires 1 bit in the bitmap, the number of elements is rounded up so that no bit is unused,
    and the bitmap array is sized accordingly. Best is to use powers of 2. */
-#define LA_ELEMS_MIN 64
+#define LA_ELEMS_MIN 64 /* Starting with 64 means 2x u32 to store the bitmap, so the following data are for sure 8-byte aligned. */
 #define LA_ELEMS_MAX 2048 /* Stored in u16, don't go higher than 0x8000 */
 #define LA_GROW_BLOCK_SIZE(n) (n * 2)
 
@@ -79,7 +80,7 @@ typedef unsigned short u16;
 /* Bitmap type. Default u32. If you want to use another unsigned type (e.g. uint64_t)
    you must provide a count-trailing-zeroes function.
    Note that the bitmap implicitly controls the data alignment -- the data area starts directly after the bitmap array,
-   there is no explicit padding in between. */
+   there is no explicit padding in between. Make sure LA_ELEMS_MIN is sized correctly. */
 typedef u32 ubitmap;
 
 /* CTZ for your bitmap type. */
@@ -209,7 +210,7 @@ static int contains(Block * b, const void *p)
     return getdata(b) <= p && p < getdataend(b);
 }
 
-inline static u16 roundToFullBitmap(u16 n) 
+inline static u16 roundToFullBitmap(u16 n)
 {
 #if CHAR_BIT == 8
     return (n + BITMAP_ELEM_SIZE - 1) & -BITMAP_ELEM_SIZE; /* Fast round if BITMAP_ELEM_SIZE is a power of 2 */
@@ -331,7 +332,7 @@ static Block *insertblock(LuaAlloc * LA_RESTRICT LA, Block * LA_RESTRICT b)
 {
     /* Enlarge central block storage if necessary */
     if(LA->allcap == LA->allnum && !enlarge(LA))
-    { 
+    {
         sysfree(LA, b, blocksize(b)); /* Can't fit block, kill it and fail */
         return NULL;
     }

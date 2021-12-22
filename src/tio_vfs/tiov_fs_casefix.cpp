@@ -78,7 +78,7 @@ struct CaseFixHelper
 
     char *addFrag(const char *s)
     {
-        tio__ASSERT(path[path.size()-1] == 0); 
+        tio__ASSERT(path[path.size()-1] == 0);
         path[path.size()-1] = '/'; // replace \0 with /
         char *ret = path.append(s, tio__strlen(s), pathalloc);
         if(ret)
@@ -110,7 +110,7 @@ struct CaseFixHelper
 
     tio_error fixPath(const char * const oldname)
     {
-        const size_t len = tio__strlen(oldname);
+        size_t len = tio__strlen(oldname);
 
         // Have to copy oldname because we're going to insert \0 to chop it up
         // This allocates on stack if small enough, heap otherwise
@@ -125,8 +125,11 @@ struct CaseFixHelper
 
         // Shouldn't fail here with a valid path since we don't increase the length,
         // but if the path was invalid to begin with this may very well fail
-        if(err) 
+        if(err)
             return err;
+
+        // FIXME: may want to make tio_cleanpath() output the new length so we can avoid this?
+        len = tio__strlen(name);
 
         char * const end = name + len;
         tio__ASSERT(!*end);

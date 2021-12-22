@@ -30,13 +30,13 @@ static void dirlistCB(const char *path, const char *name, tio_FileType type, voi
 int main()
 {
     tiov_FS *disk = tiov_sysfs(myalloc, NULL);
-    tiov_FS *df = tiov_wrapFuzzyFind(disk, 1, tiov_utf8CaseEqualSimple, NULL);
+    tiov_FS *df = tiov_wrapFuzzyFind(disk, 0, tiov_utf8CaseEqualSimple, NULL);
 
-    tio_FileType ft = tiov_fileinfo(df, "c:\\winDOWS/hH.EXE", NULL);
+    tio_FileType ft = tiov_fileinfo(df, "c:\\winDOWS///hH.EXE", NULL);
     printf("type = %d\n", ft);
 
     tiov_deleteFS(df);
-    return 0;
+    //return 0;
 
 
     tiov_FS *vfs = tiov_vfs(NULL, NULL);
@@ -45,10 +45,10 @@ int main()
     // Aka the bottom has priority.
     const tiov_MountDef mtab[] =
     {
-        { "", disk, "F:\\" }, // F:\ becomes "working dir" aka root of relative path
+        { "", disk, "D:\\F" }, // F:\ becomes "working dir" aka root of relative path
         { "", disk, "C:" }, // also, C: for good measure, so we see both drives' files
         { "dm", disk, "D:/demos" },
-        { "dos", disk, "F:\\dos1\\" },
+        { "dos", disk, "D:\\F\\dos1\\" },
         { "rav", vfs, "dos/ravage" } // recursive resolve: mount the VFS into itself
     };
 
@@ -59,6 +59,7 @@ int main()
         return err;
     }
 
+    info(vfs, "");
     info(vfs, "serial.txt"); // Checks C: first, not there, checks F: next, and it's there
     info(vfs, "Windows/hh.exe"); // Checks C: first, it's there, so it uses that
     info(vfs, "dm/automata.com"); // Virtual path (to D:\demos)

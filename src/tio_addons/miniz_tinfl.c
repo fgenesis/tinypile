@@ -1,135 +1,38 @@
-// mostly https://github.com/richgel999/miniz/blob/master/miniz_tinfl.c
-// with a few changes
+/**************************************************************************
+ *
+ * Copyright 2013-2014 RAD Game Tools and Valve Software
+ * Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC
+ * All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ *
+ **************************************************************************/
 
-#include "tio_decomp_priv.h"
-#include <string.h> // memset, memcpy
+#include "miniz_tinfl.h"
 
-#include <assert.h>
-#define MZ_ASSERT(x) assert(x)
+#ifndef MINIZ_NO_INFLATE_APIS
 
-typedef unsigned char mz_uint8;
-typedef unsigned short mz_uint16;
-typedef signed short mz_int16;
-typedef unsigned int mz_uint32;
-typedef unsigned int mz_uint;
-
-typedef unsigned __int64 mz_uint64;
-
-#define TINFL_MEMCPY(d, s, l) memcpy(d, s, l)
-#define TINFL_MEMSET(p, c, l) memset(p, c, l)
-#define MZ_CLEAR_OBJ(obj) TINFL_MEMSET(&(obj), 0, sizeof(obj))
-
-#define MZ_READ_LE16(p) ((mz_uint32)(((const mz_uint8 *)(p))[0]) | ((mz_uint32)(((const mz_uint8 *)(p))[1]) << 8U))
-#define MZ_READ_LE32(p) ((mz_uint32)(((const mz_uint8 *)(p))[0]) | ((mz_uint32)(((const mz_uint8 *)(p))[1]) << 8U) | ((mz_uint32)(((const mz_uint8 *)(p))[2]) << 16U) | ((mz_uint32)(((const mz_uint8 *)(p))[3]) << 24U))
-
-#define MINIZ_EXPORT
-
-#ifdef _MSC_VER
-#define MZ_MACRO_END while (0, 0)
-#else
-#define MZ_MACRO_END while (0)
+#ifdef __cplusplus
+extern "C" {
 #endif
 
-#define MZ_MAX(a, b) (((a) > (b)) ? (a) : (b))
-#define MZ_MIN(a, b) (((a) < (b)) ? (a) : (b))
-
-/* Max size of LZ dictionary. */
-#define TINFL_LZ_DICT_SIZE 32768
-
-enum
-{
-    TINFL_FLAG_PARSE_ZLIB_HEADER = 1,
-    TINFL_FLAG_HAS_MORE_INPUT = 2,
-    TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF = 4,
-    TINFL_FLAG_COMPUTE_ADLER32 = 8
-};
-
-/* Return status. */
-typedef enum {
-    /* This flags indicates the inflator needs 1 or more input bytes to make forward progress, but the caller is indicating that no more are available. The compressed data */
-    /* is probably corrupted. If you call the inflator again with more bytes it'll try to continue processing the input but this is a BAD sign (either the data is corrupted or you called it incorrectly). */
-    /* If you call it again with no input you'll just get TINFL_STATUS_FAILED_CANNOT_MAKE_PROGRESS again. */
-    TINFL_STATUS_FAILED_CANNOT_MAKE_PROGRESS = -4,
-
-    /* This flag indicates that one or more of the input parameters was obviously bogus. (You can try calling it again, but if you get this error the calling code is wrong.) */
-    TINFL_STATUS_BAD_PARAM = -3,
-
-    /* This flags indicate the inflator is finished but the adler32 check of the uncompressed data didn't match. If you call it again it'll return TINFL_STATUS_DONE. */
-    TINFL_STATUS_ADLER32_MISMATCH = -2,
-
-    /* This flags indicate the inflator has somehow failed (bad code, corrupted input, etc.). If you call it again without resetting via tinfl_init() it it'll just keep on returning the same status failure code. */
-    TINFL_STATUS_FAILED = -1,
-
-    /* Any status code less than TINFL_STATUS_DONE must indicate a failure. */
-
-    /* This flag indicates the inflator has returned every byte of uncompressed data that it can, has consumed every byte that it needed, has successfully reached the end of the deflate stream, and */
-    /* if zlib headers and adler32 checking enabled that it has successfully checked the uncompressed data's adler32. If you call it again you'll just get TINFL_STATUS_DONE over and over again. */
-    TINFL_STATUS_DONE = 0,
-
-    /* This flag indicates the inflator MUST have more input data (even 1 byte) before it can make any more forward progress, or you need to clear the TINFL_FLAG_HAS_MORE_INPUT */
-    /* flag on the next call if you don't have any more source data. If the source data was somehow corrupted it's also possible (but unlikely) for the inflator to keep on demanding input to */
-    /* proceed, so be sure to properly set the TINFL_FLAG_HAS_MORE_INPUT flag. */
-    TINFL_STATUS_NEEDS_MORE_INPUT = 1,
-
-    /* This flag indicates the inflator definitely has 1 or more bytes of uncompressed data available, but it cannot write this data into the output buffer. */
-    /* Note if the source compressed data was corrupted it's possible for the inflator to return a lot of uncompressed data to the caller. I've been assuming you know how much uncompressed data to expect */
-    /* (either exact or worst case) and will stop calling the inflator and fail after receiving too much. In pure streaming scenarios where you have no idea how many bytes to expect this may not be possible */
-    /* so I may need to add some code to address this. */
-    TINFL_STATUS_HAS_MORE_OUTPUT = 2
-} tinfl_status;
-
-/* Initializes the decompressor to its initial state. */
-#define tinfl_init(r)     \
-    do                    \
-    {                     \
-        (r)->m_state = 0; \
-    }                     \
-    MZ_MACRO_END
-#define tinfl_get_adler32(r) (r)->m_check_adler32
-
-/* Internal/private bits follow. */
-enum
-{
-    TINFL_MAX_HUFF_TABLES = 3,
-    TINFL_MAX_HUFF_SYMBOLS_0 = 288,
-    TINFL_MAX_HUFF_SYMBOLS_1 = 32,
-    TINFL_MAX_HUFF_SYMBOLS_2 = 19,
-    TINFL_FAST_LOOKUP_BITS = 10,
-    TINFL_FAST_LOOKUP_SIZE = 1 << TINFL_FAST_LOOKUP_BITS
-};
-
-typedef struct
-{
-    mz_uint8 m_code_size[TINFL_MAX_HUFF_SYMBOLS_0];
-    mz_int16 m_look_up[TINFL_FAST_LOOKUP_SIZE], m_tree[TINFL_MAX_HUFF_SYMBOLS_0 * 2];
-} tinfl_huff_table;
-
-#if MINIZ_HAS_64BIT_REGISTERS // FIXME
-#define TINFL_USE_64BIT_BITBUF 1
-#else
-#define TINFL_USE_64BIT_BITBUF 0
-#endif
-
-#if TINFL_USE_64BIT_BITBUF
-typedef mz_uint64 tinfl_bit_buf_t;
-#define TINFL_BITBUF_SIZE (64)
-#else
-typedef mz_uint32 tinfl_bit_buf_t;
-#define TINFL_BITBUF_SIZE (32)
-#endif
-
-struct tinfl_decompressor
-{
-    mz_uint32 m_state, m_num_bits, m_zhdr0, m_zhdr1, m_z_adler32, m_final, m_type, m_check_adler32, m_dist, m_counter, m_num_extra, m_table_sizes[TINFL_MAX_HUFF_TABLES];
-    tinfl_bit_buf_t m_bit_buf;
-    size_t m_dist_from_out_buf_start;
-    tinfl_huff_table m_tables[TINFL_MAX_HUFF_TABLES];
-    mz_uint8 m_raw_header[4], m_len_codes[TINFL_MAX_HUFF_SYMBOLS_0 + TINFL_MAX_HUFF_SYMBOLS_1 + 137];
-};
-
-
-//------------------
-
+/* ------------------- Low-level Decompression (completely independent from all compression API's) */
 
 #define TINFL_MEMCPY(d, s, l) memcpy(d, s, l)
 #define TINFL_MEMSET(p, c, l) memset(p, c, l)
@@ -270,7 +173,7 @@ struct tinfl_decompressor
     }                                                                                                                               \
     MZ_MACRO_END
 
-static tinfl_status tinfl_decompress(tinfl_decompressor *r, const mz_uint8 *pIn_buf_next, size_t *pIn_buf_size, mz_uint8 *pOut_buf_start, mz_uint8 *pOut_buf_next, size_t *pOut_buf_size, const mz_uint32 decomp_flags)
+tinfl_status tinfl_decompress(tinfl_decompressor *r, const mz_uint8 *pIn_buf_next, size_t *pIn_buf_size, mz_uint8 *pOut_buf_start, mz_uint8 *pOut_buf_next, size_t *pOut_buf_size, const mz_uint32 decomp_flags)
 {
     static const int s_length_base[31] = { 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258, 0, 0 };
     static const int s_length_extra[31] = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0, 0, 0 };
@@ -391,7 +294,7 @@ static tinfl_status tinfl_decompress(tinfl_decompressor *r, const mz_uint8 *pIn_
                     TINFL_GET_BITS(11, r->m_table_sizes[counter], "\05\05\04"[counter]);
                     r->m_table_sizes[counter] += s_min_table_sizes[counter];
                 }
-                MZ_CLEAR_OBJ(r->m_tables[2].m_code_size);
+                MZ_CLEAR_ARR(r->m_tables[2].m_code_size);
                 for (counter = 0; counter < r->m_table_sizes[2]; counter++)
                 {
                     mz_uint s;
@@ -406,9 +309,9 @@ static tinfl_status tinfl_decompress(tinfl_decompressor *r, const mz_uint8 *pIn_
                 tinfl_huff_table *pTable;
                 mz_uint i, j, used_syms, total, sym_index, next_code[17], total_syms[16];
                 pTable = &r->m_tables[r->m_type];
-                MZ_CLEAR_OBJ(total_syms);
-                MZ_CLEAR_OBJ(pTable->m_look_up);
-                MZ_CLEAR_OBJ(pTable->m_tree);
+                MZ_CLEAR_ARR(total_syms);
+                MZ_CLEAR_ARR(pTable->m_look_up);
+                MZ_CLEAR_ARR(pTable->m_tree);
                 for (i = 0; i < r->m_table_sizes[r->m_type]; ++i)
                     total_syms[pTable->m_code_size[i]]++;
                 used_syms = 0, total = 0;
@@ -616,7 +519,33 @@ static tinfl_status tinfl_decompress(tinfl_decompressor *r, const mz_uint8 *pIn_
                     }
                     continue;
                 }
-
+#if MINIZ_USE_UNALIGNED_LOADS_AND_STORES
+                else if ((counter >= 9) && (counter <= dist))
+                {
+                    const mz_uint8 *pSrc_end = pSrc + (counter & ~7);
+                    do
+                    {
+#ifdef MINIZ_UNALIGNED_USE_MEMCPY
+						memcpy(pOut_buf_cur, pSrc, sizeof(mz_uint32)*2);
+#else
+                        ((mz_uint32 *)pOut_buf_cur)[0] = ((const mz_uint32 *)pSrc)[0];
+                        ((mz_uint32 *)pOut_buf_cur)[1] = ((const mz_uint32 *)pSrc)[1];
+#endif
+                        pOut_buf_cur += 8;
+                    } while ((pSrc += 8) < pSrc_end);
+                    if ((counter &= 7) < 3)
+                    {
+                        if (counter)
+                        {
+                            pOut_buf_cur[0] = pSrc[0];
+                            if (counter > 1)
+                                pOut_buf_cur[1] = pSrc[1];
+                            pOut_buf_cur += counter;
+                        }
+                        continue;
+                    }
+                }
+#endif
                 while(counter>2)
                 {
                     pOut_buf_cur[0] = pSrc[0];
@@ -715,3 +644,102 @@ common_exit:
     }
     return status;
 }
+
+/* Higher level helper functions. */
+void *tinfl_decompress_mem_to_heap(const void *pSrc_buf, size_t src_buf_len, size_t *pOut_len, int flags)
+{
+    tinfl_decompressor decomp;
+    void *pBuf = NULL, *pNew_buf;
+    size_t src_buf_ofs = 0, out_buf_capacity = 0;
+    *pOut_len = 0;
+    tinfl_init(&decomp);
+    for (;;)
+    {
+        size_t src_buf_size = src_buf_len - src_buf_ofs, dst_buf_size = out_buf_capacity - *pOut_len, new_out_buf_capacity;
+        tinfl_status status = tinfl_decompress(&decomp, (const mz_uint8 *)pSrc_buf + src_buf_ofs, &src_buf_size, (mz_uint8 *)pBuf, pBuf ? (mz_uint8 *)pBuf + *pOut_len : NULL, &dst_buf_size,
+                                               (flags & ~TINFL_FLAG_HAS_MORE_INPUT) | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+        if ((status < 0) || (status == TINFL_STATUS_NEEDS_MORE_INPUT))
+        {
+            MZ_FREE(pBuf);
+            *pOut_len = 0;
+            return NULL;
+        }
+        src_buf_ofs += src_buf_size;
+        *pOut_len += dst_buf_size;
+        if (status == TINFL_STATUS_DONE)
+            break;
+        new_out_buf_capacity = out_buf_capacity * 2;
+        if (new_out_buf_capacity < 128)
+            new_out_buf_capacity = 128;
+        pNew_buf = MZ_REALLOC(pBuf, new_out_buf_capacity);
+        if (!pNew_buf)
+        {
+            MZ_FREE(pBuf);
+            *pOut_len = 0;
+            return NULL;
+        }
+        pBuf = pNew_buf;
+        out_buf_capacity = new_out_buf_capacity;
+    }
+    return pBuf;
+}
+
+size_t tinfl_decompress_mem_to_mem(void *pOut_buf, size_t out_buf_len, const void *pSrc_buf, size_t src_buf_len, int flags)
+{
+    tinfl_decompressor decomp;
+    tinfl_status status;
+    tinfl_init(&decomp);
+    status = tinfl_decompress(&decomp, (const mz_uint8 *)pSrc_buf, &src_buf_len, (mz_uint8 *)pOut_buf, (mz_uint8 *)pOut_buf, &out_buf_len, (flags & ~TINFL_FLAG_HAS_MORE_INPUT) | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+    return (status != TINFL_STATUS_DONE) ? TINFL_DECOMPRESS_MEM_TO_MEM_FAILED : out_buf_len;
+}
+
+int tinfl_decompress_mem_to_callback(const void *pIn_buf, size_t *pIn_buf_size, tinfl_put_buf_func_ptr pPut_buf_func, void *pPut_buf_user, int flags)
+{
+    int result = 0;
+    tinfl_decompressor decomp;
+    mz_uint8 *pDict = (mz_uint8 *)MZ_MALLOC(TINFL_LZ_DICT_SIZE);
+    size_t in_buf_ofs = 0, dict_ofs = 0;
+    if (!pDict)
+        return TINFL_STATUS_FAILED;
+    memset(pDict,0,TINFL_LZ_DICT_SIZE);
+    tinfl_init(&decomp);
+    for (;;)
+    {
+        size_t in_buf_size = *pIn_buf_size - in_buf_ofs, dst_buf_size = TINFL_LZ_DICT_SIZE - dict_ofs;
+        tinfl_status status = tinfl_decompress(&decomp, (const mz_uint8 *)pIn_buf + in_buf_ofs, &in_buf_size, pDict, pDict + dict_ofs, &dst_buf_size,
+                                               (flags & ~(TINFL_FLAG_HAS_MORE_INPUT | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF)));
+        in_buf_ofs += in_buf_size;
+        if ((dst_buf_size) && (!(*pPut_buf_func)(pDict + dict_ofs, (int)dst_buf_size, pPut_buf_user)))
+            break;
+        if (status != TINFL_STATUS_HAS_MORE_OUTPUT)
+        {
+            result = (status == TINFL_STATUS_DONE);
+            break;
+        }
+        dict_ofs = (dict_ofs + dst_buf_size) & (TINFL_LZ_DICT_SIZE - 1);
+    }
+    MZ_FREE(pDict);
+    *pIn_buf_size = in_buf_ofs;
+    return result;
+}
+
+#ifndef MINIZ_NO_MALLOC
+tinfl_decompressor *tinfl_decompressor_alloc(void)
+{
+    tinfl_decompressor *pDecomp = (tinfl_decompressor *)MZ_MALLOC(sizeof(tinfl_decompressor));
+    if (pDecomp)
+        tinfl_init(pDecomp);
+    return pDecomp;
+}
+
+void tinfl_decompressor_free(tinfl_decompressor *pDecomp)
+{
+    MZ_FREE(pDecomp);
+}
+#endif
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /*#ifndef MINIZ_NO_INFLATE_APIS*/

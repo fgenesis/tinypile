@@ -228,7 +228,7 @@ TIO_PRIVATE size_t os_writeat(tio_Handle hFile, const void* src, tiosize n, tios
     return win32_write(hFile, src, n, &ov);
 }
 
-// FIXME: fox origin != begin.
+// FIXME: fix origin != begin.
 // https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfilepointerex
 // for seeking from end, we need to flip the sign on offset?
 TIO_PRIVATE tio_error os_seek(tio_Handle hFile, tiosize offset, tio_Seek origin)

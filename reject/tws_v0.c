@@ -1,28 +1,69 @@
-#include "tws.h"
+/****** WARNING **** REJECTED CODE *****
+**** See reject notice in tws_v0.txt ***
+****************************************/
+
+#include "tws_v0.h"
 
 /* Tiny, backend-agnostic mostly-lockless threadpool and scheduler
 
 License:
   Public domain, WTFPL, CC0 or your favorite permissive license; whatever is available in your country.
 
-Dependencies: // FIXME
+Dependencies:
   Compiles as C99 or oldschool C++ code, but can benefit from C11 or if compiled as C++11
+  Requires libc for memcpy() & memset() but you can use your own by replacing tws_memcpy() & tws_memzero() defines
+  Optionally requires libc for realloc()/free(), if the default allocator is used
   Requires compiler/library support for 32bit atomics, pointer compare-and-swap (CAS), and a yield/pause opcode.
-  Optional: 64bit atomics support (write, read, CAS)
-  Does not require the libc, does not allocate memory, does not require TLS.
-
-
+  Requires some 64bit atomics support (write, read, CAS); works with 32bit in theory but this risks overflow [link #4 below]
 
 Origin:
-  https://github.com/fgenesis/tinypile/blob/master/tws.c
+  https://github.com/fgenesis/tinypile/blob/master/reject/tws_v0.c
 
 Inspired by / reading material:
   - [1] https://blog.molecular-matters.com/2016/04/04/job-system-2-0-lock-free-work-stealing-part-5-dependencies/ (the entire series)
   - [2] http://cbloomrants.blogspot.com/2012/11/11-08-12-job-system-task-types.html
   - [3] https://randomascii.wordpress.com/2012/06/05/in-praise-of-idleness/
   - [4] https://blog.molecular-matters.com/2015/09/25/job-system-2-0-lock-free-work-stealing-part-3-going-lock-free/#comment-2270
-  - [5] https://github.com/DanEngelbrecht/bikeshed
+
+Some notes:
+  This library follows the implementation described in [1],
+  but with some changes:
+    * No waiting on jobs directly. Job submission has free()-like semantics; for waiting and dependencies use tws_Event, which is safer.
+    * Supports different job/thread types (See [2])
+    * Idle waiting using semaphores (See [3])
+    * More runtime-flexibility, less hardcoding
+    * Safe against overloading (performance will degrade a bit but it will not crash, unlike [1])
+    * Safe to call from any thread
+    * Not completely lock-free, but the hot code path is lock free
+  * If you see lwsem_enter(), lq_pop() or fl_pop() in your perf profile, you're probably overloading the scheduler.
+    Consider increasing tws_Setup::jobsPerThread or submit less but larger jobs.
 */
+
+/* ---- Compile config ---- */
+
+// Define this to not pull in symbols for realloc/free
+//#define TWS_NO_DEFAULT_ALLOC
+
+// Define this to not wrap the system semaphore
+// (The wrapper reduces API calls a lot and very likely speeds things up. Go and benchmark if in doubt.)
+// If semaphores are not wrapped, tws_setSemSpinCount() has no effect.
+//#define TWS_NO_SEMAPHORE_WRAPPER
+
+// Define this to disable debug callbacks. If disabled, tws_setDebugCallback() will always fail.
+// This is for release mode only. In debug mode callbacks are always enabled.
+//#define TWS_NO_DEBUG_CALLBACKS
+
+// ---------------------------------------
+
+#if !defined(tws_memcpy) || !defined(tws_memzero)
+#include <string.h> // for memset, memcpy
+#  ifndef tws_memcpy
+#    define tws_memcpy(dst, src, n) memcpy((dst), (src), (n))
+#  endif
+#  ifndef tws_memzero
+#    define tws_memzero(dst, n) memset((dst), 0, (n))
+#  endif
+#endif
 
 // --- Compiler feature detection ---
 
@@ -93,6 +134,7 @@ Inspired by / reading material:
 #if defined(TWS_HAS_C11) // intrinsics
 #  include <stdatomic.h>
 #  define TWS_USE_C11
+#  define TWS_THREADLOCAL _Thread_local
 #  define TWS_DECL_ATOMIC(x) _Atomic x
 #  define COMPILER_BARRIER() atomic_signal_fence(memory_order_seq_cst)
 #  define TWS_STATIC_ASSERT(x) _Static_assert(x, #x)
@@ -106,6 +148,7 @@ Inspired by / reading material:
 #  define TWS_DECL_ATOMIC(x) volatile x
 #elif defined(TWS_HAS_GCC) // intrinsics
 #  define COMPILER_BARRIER() asm volatile("" ::: "memory")
+#  define TWS_THREADLOCAL __thread
 #  if 0 // TODO: check since when gcc supports __atomic_*
 #    define TWS_USE_GCC_ATOMICS
 #    define TWS_DECL_ATOMIC(x) __atomic x
@@ -116,6 +159,7 @@ Inspired by / reading material:
 #elif defined(TWS_HAS_CPP11) // STL, but most likely all inline/intrinsics
 #  include <atomic>
 #  define TWS_USE_CPP11
+#  define TWS_THREADLOCAL thread_local
 #  define TWS_DECL_ATOMIC(x) std::atomic<x>
 #  define COMPILER_BARRIER() atomic_signal_fence(memory_order_seq_cst)
 #  define TWS_STATIC_ASSERT(x) static_assert(x, #x)
@@ -165,12 +209,12 @@ static inline void _Yield(void) { YieldProcessor(); }
 static inline void _Yield(void) { /* Do nothing for a few cycles */ }
 #endif
 
-// Optional 64 bit atomic types
+// 64 bit atomic types
 
 #ifdef TWS_HAS_S64_TYPE
-typedef s64 tws_AtomicLong;
+typedef s64 tws_Atomic64;
 #else
-typedef long tws_AtomicLong;
+typedef long tws_Atomic64; // This will work for a while but it's dangerous (see link #4 at the top)
 #endif
 
 typedef int tws_Atomic;
@@ -181,10 +225,10 @@ typedef struct NativeAtomic
     TWS_DECL_ATOMIC(tws_Atomic) val;
 } NativeAtomic;
 
-typedef struct NativeAtomicLong
+typedef struct NativeAtomic64
 {
-    TWS_DECL_ATOMIC(tws_AtomicLong) val;
-} NativeAtomicLong;
+    TWS_DECL_ATOMIC(tws_Atomic64) val;
+} NativeAtomic64;
 
 typedef void* _VoidPtr;
 typedef TWS_DECL_ATOMIC(_VoidPtr) AtomicPtrType;
@@ -211,15 +255,13 @@ static inline int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic *expected, tws
 static inline void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval);
 static inline void _AtomicSet_Seq(NativeAtomic *x, tws_Atomic newval);
 static inline tws_Atomic _AtomicExchange_Acq(NativeAtomic *x, tws_Atomic newval); // return previous
-static inline tws_Atomic _AtomicGet_Acq(const NativeAtomic *x);
-static inline tws_Atomic _AtomicGet_Rel(const NativeAtomic *x);
 static inline tws_Atomic _AtomicGet_Seq(const NativeAtomic *x);
 static inline tws_Atomic _RelaxedGet(const NativeAtomic *x); // load with no synchronization or guarantees
 
 // 64 bit variants
-static inline void _AtomicLongSet_Seq(NativeAtomicLong *x, tws_AtomicLong newval);
-static inline int _AtomicLongCAS_Seq(NativeAtomicLong *x, tws_AtomicLong *expected, tws_AtomicLong newval);
-static inline tws_AtomicLong _RelaxedLongGet(const NativeAtomicLong *x);
+static inline void _Atomic64Set_Seq(NativeAtomic64 *x, tws_Atomic64 newval);
+static inline int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 *expected, tws_Atomic64 newval);
+static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x);
 
 // pointers
 static inline int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void **expected, void *newval);
@@ -252,9 +294,9 @@ static inline tws_Atomic _AtomicGet_Acq(const NativeAtomic *x) { return atomic_l
 static inline tws_Atomic _AtomicGet_Rel(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_rel); }
 static inline tws_Atomic _RelaxedGet(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_relaxed); }
 
-static inline int _AtomicLongCAS_Seq(NativeAtomicLong *x, tws_AtomicLong *expected, tws_AtomicLong newval) { return atomic_compare_exchange_strong(&x->val, expected, newval); }
-static inline void _AtomicLongSet_Seq(NativeAtomicLong *x, tws_AtomicLong newval) { atomic_store(&x->val, newval); }
-static inline tws_AtomicLong _Relaxed64Get(const NativeAtomicLong *x) { COMPILER_BARRIER(); return atomic_load_explicit((volatile atomic_int_least64_t*)&x->val, memory_order_relaxed); }
+static inline int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return atomic_compare_exchange_strong(&x->val, expected, newval); }
+static inline void _Atomic64Set_Seq(NativeAtomic64 *x, tws_Atomic64 newval) { atomic_store(&x->val, newval); }
+static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x) { COMPILER_BARRIER(); return atomic_load_explicit((volatile atomic_int_least64_t*)&x->val, memory_order_relaxed); }
 
 static inline int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void **expected, void *newval) { return atomic_compare_exchange_weak(x, expected, newval); }
 
@@ -307,10 +349,10 @@ static inline int _msvc_cas32_x86(NativeAtomic *x, tws_Atomic *expected, tws_Ato
     *expected = prevVal;
     return 0;
 }
-static inline int _msvc_cas64_x86(NativeAtomicLong *x, tws_AtomicLong *expected, tws_AtomicLong newval)
+static inline int _msvc_cas64_x86(NativeAtomic64 *x, tws_Atomic64 *expected, tws_Atomic64 newval)
 {
-    const tws_AtomicLong expectedVal = *expected;
-    tws_AtomicLong prevVal = _InterlockedCompareExchange64(&x->val, newval, expectedVal);
+    const tws_Atomic64 expectedVal = *expected;
+    tws_Atomic64 prevVal = _InterlockedCompareExchange64(&x->val, newval, expectedVal);
     if(prevVal == expectedVal)
         return 1;
     
@@ -338,9 +380,9 @@ static inline tws_Atomic _AtomicGet_Acq(const NativeAtomic *x) { COMPILER_BARRIE
 static inline tws_Atomic _AtomicGet_Rel(const NativeAtomic *x) { COMPILER_BARRIER(); return x->val; }
 static inline tws_Atomic _RelaxedGet(const NativeAtomic *x) { return x->val; }
 
-static inline int _AtomicLongCAS_Seq(NativeAtomicLong *x, tws_AtomicLong *expected, tws_AtomicLong newval) { return _msvc_cas64_x86(x, expected, newval); }
-static inline void _AtomicLongSet_Seq(NativeAtomicLong *x, tws_AtomicLong newval) { _InterlockedExchange64(&x->val, newval); }
-static inline tws_AtomicLong _Relaxed64Get(const NativeAtomicLong *x) { COMPILER_BARRIER(); return x->val; }
+static inline int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return _msvc_cas64_x86(x, expected, newval); }
+static inline void _Atomic64Set_Seq(NativeAtomic64 *x, tws_Atomic64 newval) { _InterlockedExchange64(&x->val, newval); }
+static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x) { COMPILER_BARRIER(); return x->val; }
 
 static inline int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void **expected, void *newval) { return _msvc_casptr_x86(x, expected, newval); }
 
@@ -393,26 +435,26 @@ static inline tws_Atomic _AtomicGet_Acq(const NativeAtomic* x) { return __sync_a
 static inline tws_Atomic _AtomicGet_Rel(const NativeAtomic* x) { return __sync_add_and_fetch(&((NativeAtomic*)x)->val, 0); }
 static inline tws_Atomic _RelaxedGet(const NativeAtomic* x) { return x->val; }
 
-static inline int _AtomicLongCAS_Seq(NativeAtomicLong* x, tws_AtomicLong* expected, tws_AtomicLong newval)
+static inline int _Atomic64CAS_Seq(NativeAtomic64* x, tws_Atomic64* expected, tws_Atomic64 newval)
 {
-    tws_AtomicLong expectedVal = *expected;
-    tws_AtomicLong prev = __sync_val_compare_and_swap(&x->val, expectedVal, newval);
+    tws_Atomic64 expectedVal = *expected;
+    tws_Atomic64 prev = __sync_val_compare_and_swap(&x->val, expectedVal, newval);
     if (prev == expectedVal)
         return 1;
     *expected = prev;
     _Mfence();
     return 0;
 }
-static inline void _AtomicLongSet_Seq(NativeAtomicLong* x, tws_AtomicLong newval)
+static inline void _Atomic64Set_Seq(NativeAtomic64* x, tws_Atomic64 newval)
 {
-    tws_AtomicLong old = x->val;
+    tws_Atomic64 old = x->val;
     do
         old = __sync_val_compare_and_swap(&x->val, old, newval);
     while (old != newval);
 }
-static inline tws_AtomicLong _RelaxedLongGet(const NativeAtomicLong* x)
+static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64* x)
 {
-    return __sync_add_and_fetch(&((NativeAtomicLong*)x)->val, 0);
+    return __sync_add_and_fetch(&((NativeAtomic64*)x)->val, 0);
 }
 
 static inline int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void** expected, void* newval)
@@ -436,102 +478,251 @@ static inline void _Mfence() { COMPILER_BARRIER(); __sync_synchronize(); }
 
 #endif
 
+// ---- Warning callback ----
+
+#if defined(TWS_DEBUG) || !defined(TWS_NO_DEBUG_CALLBACKS)
+
+static tws_DebugCallback s_warnCB;
+static inline void warn(tws_Warn what, size_t size1, size_t size2)
+{
+    if(s_warnCB)
+        s_warnCB(what, size1, size2);
+}
+TWS_EXPORT tws_Error tws_setDebugCallback(tws_DebugCallback cb)
+{
+    s_warnCB = cb;
+    return tws_ERR_OK;
+}
+#else
+#define warn(a, b, c) do{}while(0)
+TWS_EXPORT tws_Error tws_setDebugCallback(tws_DebugCallback cb) { (void)cb; return tws_ERR_UNSUPPORTED; }
+#endif
+
+// ---- Spinlock ----
+
+// via https://rigtorp.se/spinlock/
+inline static void _atomicLock(NativeAtomic *a)
+{
+    for(;;)
+    {
+        if(!_AtomicExchange_Acq(a, 1)) // try to grab the lock: if it was 0, we got it
+            return;
+
+        while(_RelaxedGet(a)) // spin and yield until someone releases the lock
+            _Yield();
+    }
+}
+
+/*inline static int _atomicTryLock(NativeAtomic *a)
+{
+    return !_RelaxedGet(a) && !_AtomicExchange_Acq(a, 1);
+}*/
+
+inline static void _atomicUnlock(NativeAtomic *a)
+{
+    _AtomicSet_Rel(a, 0);
+}
+
+
 // ---- Utility functions ----
 
 // Minimal memory alignment to guarantee atomic access and pointer load/store
 static const size_t TWS_MIN_ALIGN
-    = sizeof(NativeAtomicLong) < sizeof(void*)
+    = sizeof(NativeAtomic) < sizeof(void*)
     ? sizeof(void*)
-    : sizeof(NativeAtomicLong);
+    : sizeof(NativeAtomic);
 
+inline static void *_Alloc(size_t bytes);
+inline static void *_AllocZero(size_t bytes);
+//inline static void *_Realloc(void *p, size_t oldbytes, size_t newbytes);
+inline static void *_Free(void *p, size_t bytes);
+
+inline static tws_Sem *_NewSem(void);
+inline static void _DestroySem(tws_Sem *sem);
+inline static void _EnterSem(tws_Sem *sem);
+inline static void _LeaveSem(tws_Sem *sem);
+
+typedef struct LWsem LWsem;
+static void *lwsem_init(LWsem *ws, int count);
+static void lwsem_destroy(LWsem *ws);
+static void lwsem_enter(LWsem *ws);
+static void lwsem_leave(LWsem *ws);
+static void lwsem_leaveMax(LWsem *ws, tws_Atomic maxval);
+
+static inline unsigned IsPowerOfTwo(size_t v)
+{ 
+    return v != 0 && (v & (v - 1)) == 0;
+}
+
+static size_t RoundUpToPowerOfTwo(size_t v)
+{
+    TWS_STATIC_ASSERT(sizeof(v) <= 8); // This supports up to 64bit size_t
+    v--;
+    v |= v >> 1u;
+    v |= v >> 2u;
+    v |= v >> 4u;
+    v |= v >> 8u;
+    v |= v >> 16u;
+    if(sizeof(v) > 4) // Need a check here. ARM produces garbage with too large shifts.
+        v |= v >> 32u;
+    v++;
+    return v;
+}
 
 static inline intptr_t AlignUp(intptr_t v, intptr_t aln) // aln must be power of 2
 {
+    TWS_ASSERT(IsPowerOfTwo(aln), "wtf");
     v += (-v) & (aln - 1);
     return v;
 }
 
 static inline intptr_t IsAligned(uintptr_t v, uintptr_t aln) // aln must be power of 2
 {
+    TWS_ASSERT(IsPowerOfTwo(aln), "wtf");
     return !(v & (aln - 1));
 }
 
-// ---- Index pool ----
-
-typedef enum
+static int areWorkTypesCompatible(tws_WorkType a, tws_WorkType b)
 {
-    INDEXPOOL_GEN_SHIFT = 22,
-    INDEXPOOL_GEN_CTR = 1 << INDEXPOOL_GEN_SHIFT,
-    INDEXPOOL_INDEX_MASK = INDEXPOOL_GEN_CTR - 1,
-    INDEXPOOL_GEN_MASK = ~INDEXPOOL_INDEX_MASK
-} IndexPoolConstants;
-
-typedef struct IndexPoolHead
-{
-    NativeAtomic pos; // first available index (0 if empty). upper bits: generation
-} IndexPoolHead;
-
-// We don't store the maximal size
-typedef struct IndexPool
-{
-    IndexPoolHead head; // TODO: should be multiple heads
-    NativeAtomic gen;
-    unsigned *idxs;      // const
-} IndexPool;
-
-static void *il_create(void *mem, unsigned n) // TODO: multiple channels
-{
-    IndexPool *il = (IndexPool*)mem;
-    il->head.pos.val = 0;
-    unsigned *p = (unsigned*)(il + 1);
-    il->idxs = p;
-    for(unsigned i = 1; i < n; ++i)// init indexes
-        *p++ = i;
-    return p;
+    return a == tws_TINY || b == tws_TINY || a == b;
 }
 
-// Pop element if not empty, otherwise return fail element
-static unsigned il_pop(IndexPool *il)
+// ---- Lightweight semaphore ----
+
+// Adapted from https://github.com/preshing/cpp11-on-multicore/blob/master/common/sema.h
+struct LWsem
 {
-    tws_Atomic head = _RelaxedGet(&il->head);
+    NativeAtomic a_count;
+    tws_Sem *sem;
+};
+
+static unsigned s_lwsemSpinCount = 10000; // must never be 0
+
+TWS_EXPORT unsigned tws_getSemSpinCount(void)
+{
+    return s_lwsemSpinCount;
+}
+
+TWS_EXPORT void tws_setSemSpinCount(unsigned spin)
+{
+    s_lwsemSpinCount = spin ? spin : 1;
+}
+
+static void *lwsem_init(LWsem *ws, int count)
+{
+#ifndef TWS_NO_SEMAPHORE_WRAPPER
+    ws->a_count.val = count;
+#endif
+    return ((ws->sem = _NewSem()));
+}
+
+static void lwsem_destroy(LWsem *ws)
+{
+    _DestroySem(ws->sem);
+    ws->sem = NULL;
+}
+
+static void lwsem_enter(LWsem *ws)
+{
+#ifndef TWS_NO_SEMAPHORE_WRAPPER
+    tws_Atomic old = _RelaxedGet(&ws->a_count);
+
+    unsigned spin = s_lwsemSpinCount;
+    do
+    {
+        COMPILER_BARRIER();
+        if (old > 0 && _AtomicCAS_Weak_Acq(&ws->a_count, &old, old - 1)) // The CAS acts as a load when failed
+            return;
+        // Prevent the compiler from collapsing the loop.
+        COMPILER_BARRIER();
+        _Yield();
+    }
+    while(--spin);
+    old = _AtomicDec_Acq(&ws->a_count) + 1;
+    if (old <= 0)
+#endif
+        _EnterSem(ws->sem);
+}
+
+static void lwsem_leave(LWsem *ws)
+{
+#ifndef TWS_NO_SEMAPHORE_WRAPPER
+    const tws_Atomic old = _AtomicInc_Rel(&ws->a_count) - 1;
+    const tws_Atomic toRelease = -old < 1 ? -old : 1;
+    if (toRelease > 0)
+#endif
+        _LeaveSem(ws->sem);
+}
+
+// Variant for thread yielding.
+// The idea is that the semaphore value is only increased up to the total number of threads
+// using this semaphore simultaneously.
+// This is correct since threads only enter the semaphore when there is definitely no work available,
+// in that case we want the thread to go to sleep rather quickly.
+// Compare this with what would happen otherwise, without maxcount:
+//   Each time work is added, the semaphore is incremented (lwsem_leave()). Now add HUGE_VAL work units.
+//   The first few times a waiting thread will wake up and run off with the work.
+//   After all threads are busy, the semaphore count will go up all the way.
+//   Threads will continue working on all added jobs and not touch the semaphore.
+//   Once they are out of work, they will all start hitting the semaphore and spin like
+//   crazy while slowly draining the count to 0. Only then they will go to sleep.
+// Adding an upper bound prevents that scenario.
+// (We *might* get away by hardcoding maxcount == 1, but i am not 100% sure this would work 100% of the time.)
+static void lwsem_leaveMax(LWsem *ws, tws_Atomic maxcount)
+{
+#ifndef TWS_NO_SEMAPHORE_WRAPPER
+    tws_Atomic old = _RelaxedGet(&ws->a_count);
+    tws_Atomic newval;
     for(;;)
     {
-        const unsigned idx = head & INDEXPOOL_INDEX_MASK;
-        if(!idx)
-            return 0;
-
-        // popping doesn't change the generation, use whatever gen head has right now
-        tws_Atomic next = il->idxs[idx - 1] | (head & INDEXPOOL_GEN_MASK);
-
-        if(_AtomicCAS_Weak_Acq(&il->head, &head, next))
-            return idx;
-
-        // Lost a race; start over with the updated head
+        newval = old + 1;
+        if(newval > maxcount)
+            newval = maxcount;
+        if(_AtomicCAS_Weak_Rel(&ws->a_count, &old, newval)) // updates old if failed
+            break;
     }
+    const tws_Atomic toRelease = -old < 1 ? -old : 1;
+    if (toRelease > 0)
+#endif
+        _LeaveSem(ws->sem);
 }
 
-// Push element. UB if the list is full.
-// (We only ever take something out, and eventually put it back -> No problem)
-static void il_push(IndexPool *il, const unsigned idx)
+
+// ---- Mutex ----
+
+// Semaphores are part of the user API, but we also need a good old classical mutex for some things.
+// We don't expect much contention so this Benaphore is good enough.
+// via https://preshing.com/20120226/roll-your-own-lightweight-mutex/
+typedef struct tws_Mutex
 {
-    TWS_ASSERT(idx);
-    const unsigned newgen = _AtomicInc_Rel(&il->gen);
-    const tws_Atomic next = (newgen << INDEXPOOL_GEN_SHIFT) | idx;
-    const unsigned a = idx - 1; // now it's an actual array index
+    NativeAtomic counter;
+    LWsem sem;
+} tws_Mutex;
 
-    tws_Atomic head = _RelaxedGet(&il->head);
-    for(;;)
-    {
-        il->idxs[a] = head & INDEXPOOL_INDEX_MASK;
-        if(_AtomicCAS_Weak_Rel(&il->head, &head, next))
-            break; // all good
-
-        // Lost a race; proceed to update idxs[a] with a different head
-    }
+// returns non-NULL on success
+static inline void *mtx_init(tws_Mutex *mtx)
+{
+    mtx->counter.val = 0;
+    return lwsem_init(&mtx->sem, 0);
 }
 
+static inline void mtx_destroy(tws_Mutex *mtx)
+{
+    lwsem_destroy(&mtx->sem);
+}
 
-#if 0
+static inline void mtx_lock(tws_Mutex *mtx)
+{
+    if (_AtomicInc_Acq(&mtx->counter) > 1)
+        lwsem_enter(&mtx->sem);
+}
+
+static inline void mtx_unlock(tws_Mutex *mtx)
+{
+    if (_AtomicDec_Rel(&mtx->counter) > 0)
+        lwsem_leave(&mtx->sem);
+}
+
 // ---- Freelist ----
 // (Mostly lockfree; supports concurrent push/pop/extend)
 
@@ -710,7 +901,6 @@ static void fl_push(Freelist *fl, void *p)
             break;
     }
 }
-#endif
 
 // ---- Array, element size handled at runtime
 
@@ -769,7 +959,7 @@ typedef struct tws_JQ
     // queue is empty when bottom == top
     NativeAtomic64 bottom; // written by owning thread only
     NativeAtomic64 top; // written concurrently
-    tws_AtomicLong mask;
+    tws_Atomic64 mask;
     tws_Job **jobs;
 } tws_JQ;
 
@@ -798,14 +988,14 @@ static int jq_push(tws_JQ *jq, tws_Job *job)
 {
     //TWS_ASSERT(jq == &tls->jq, "internal error: jq_push() called by thread that isn't jq owner");
 
-    const tws_AtomicLong mask = jq->mask;
-    const tws_AtomicLong b = _Relaxed64Get(&jq->bottom);
+    const tws_Atomic64 mask = jq->mask;
+    const tws_Atomic64 b = _Relaxed64Get(&jq->bottom);
 
     // Check if this queue is full.
     // It is possible that someone steals a job in the meantime,
     // incrementing top, but the only consequence is that
     // we reject a job even though there would be space now.
-    tws_AtomicLong size = b - _Relaxed64Get(&jq->top);
+    tws_Atomic64 size = b - _Relaxed64Get(&jq->top);
     if(size >= mask)
         return 0;
 
@@ -825,12 +1015,12 @@ static tws_Job *jq_steal(tws_JQ *jq)
     //TWS_ASSERT(!tls || jq != &tls->jq, "internal error: jq_steal() called by thread that owns jq");
 retry: ;
     COMPILER_BARRIER();
-    tws_AtomicLong t = _Relaxed64Get(&jq->top);
+    tws_Atomic64 t = _Relaxed64Get(&jq->top);
 
     // ensure that top is always read before bottom
     _Mfence();
 
-    const tws_AtomicLong b = _Relaxed64Get(&jq->bottom);
+    const tws_Atomic64 b = _Relaxed64Get(&jq->bottom);
     if (t < b)
     {
         // non-empty queue
@@ -838,7 +1028,7 @@ retry: ;
         TWS_ASSERT(job, "internal error: stolen job is NULL"); // even if stolen this must never be NULL
 
         // the CAS serves as a compiler barrier, and guarantees that the read happens before the CAS.
-        if (_AtomicLongCAS_Seq(&jq->top, &t, t+1)) // possibly updates t, but to no effect since we're not using it afterwards
+        if (_Atomic64CAS_Seq(&jq->top, &t, t+1)) // possibly updates t, but to no effect since we're not using it afterwards
         {
             // we incremented top, so there was no interfering operation
             return job;
@@ -858,11 +1048,11 @@ static tws_Job *jq_pop(tws_JQ *jq)
 {
     //TWS_ASSERT(jq == &tls->jq, "jq_pop() called by thread that isn't jq owner");
 
-    const tws_AtomicLong b = jq->bottom.val - 1;
+    const tws_Atomic64 b = jq->bottom.val - 1;
 
-    _AtomicLongSet_Seq(&jq->bottom, b); // acts as memory barrier
+    _Atomic64Set_Seq(&jq->bottom, b); // acts as memory barrier
 
-    const tws_AtomicLong t = jq->top.val;
+    const tws_Atomic64 t = jq->top.val;
     if (t <= b)
     {
         // non-empty queue
@@ -875,8 +1065,8 @@ static tws_Job *jq_pop(tws_JQ *jq)
         }
 
         // this is the last item in the queue
-        tws_AtomicLong t2 = t;
-        if(!_AtomicLongCAS_Seq(&jq->top, &t2, t+1))
+        tws_Atomic64 t2 = t;
+        if(!_Atomic64CAS_Seq(&jq->top, &t2, t+1))
         {
             // failed race against steal operation
             job = NULL;
@@ -893,7 +1083,6 @@ static tws_Job *jq_pop(tws_JQ *jq)
     return NULL;
 }
 
-#if 0
 // ---- Locked job queue ----
 
 // TODO: This could probably be done lock-free too
@@ -1015,7 +1204,6 @@ out:
     mtx_unlock(&q->mtx);
     return ok;
 }
-#endif
 
 // --- Statics and threadlocals ---
 
@@ -1032,10 +1220,9 @@ static TWS_THREADLOCAL tws_TlsBlock *tls;
 struct tws_TlsBlock
 {
     tws_JQ jq;             // private deque; others may steal from this
-    //tws_LQ *pspillQ;       // points to associated tws_PerType::spillQ
-    tws_IdxList *pspillQ;
-    //tws_Array jobmem;      // private memory block to allocate this threads' jobs from
-    //size_t jobmemIdx;      // running index keeping track of next slot when allocating from jobmem
+    tws_LQ *pspillQ;       // points to associated tws_PerType::spillQ
+    tws_Array jobmem;      // private memory block to allocate this threads' jobs from
+    size_t jobmemIdx;      // running index keeping track of next slot when allocating from jobmem
     LWsem *pwaiter;        // points to associated tws_PerType::waiter
     unsigned threadID;     // never changes
     unsigned stealFromIdx; // running index to distribute stealing
@@ -1050,8 +1237,7 @@ typedef struct tws_PerType
     LWsem waiter;          // used to wait until work of that type is available
     unsigned firstThread;  // first threads' ID that works on this type
     unsigned numThreads;   // number of threads that work on this type
-    //tws_LQ spillQ;         // spillover queue if a thread's jq is full
-    tws_IdxList spillQ;
+    tws_LQ spillQ;         // spillover queue if a thread's jq is full
     // <padded to cache line size>
 } tws_PerType;
 
@@ -1064,9 +1250,7 @@ struct tws_Pool
     tws_Array threadTls;     // <tws_TlsBlock> one entry per thread
     // lukewarm
     NativeAtomic quit;       // workers check this and exit if not 0
-    //Freelist *jobStore;      // global job list and backup allocation
-    tws_Array jobArray;
-    tws_IdxList freeJobs;
+    Freelist *jobStore;      // global job list and backup allocation
     tws_AllocFn alloc;       // one and only allocation function
     void *allocUser;         // userdata for allocator
     // cold
@@ -1079,6 +1263,31 @@ struct tws_Pool
     tws_Sem *initsync;       // for ensuring proper startup
     tws_MemInfo meminfo;     // filled during init
 };
+
+inline static void *_Alloc(size_t bytes)
+{
+    void *p = s_pool->alloc(s_pool->allocUser, NULL, 0, bytes);
+    TWS_ASSERT(IsAligned((uintptr_t)p, TWS_MIN_ALIGN), "RTFM: allocator delivered memory that's not properly aligned");
+    return p;
+}
+
+inline static void *_AllocZero(size_t bytes)
+{
+    void *p = _Alloc(bytes);
+    if(p)
+        tws_memzero(p, bytes);
+    return p;
+}
+
+/*inline static void *_Realloc(void *p, size_t oldbytes, size_t newbytes)
+{
+    return s_pool->alloc(s_pool->allocUser, p, oldbytes, newbytes);
+}*/
+
+inline static void *_Free(void *p, size_t bytes)
+{
+    return s_pool->alloc(s_pool->allocUser, p, bytes, 0);
+}
 
 inline static tws_Sem *_NewSem(void)
 {
@@ -1217,7 +1426,7 @@ static tws_Job *_AllocGlobalJob(void)
 }
 
 // only called by thread owning that tls via AllocJob()
-/*static tws_Job *_AllocTLSJob(tws_TlsBlock *mytls)
+static tws_Job *_AllocTLSJob(tws_TlsBlock *mytls)
 {
     tws_Array *a = &mytls->jobmem;
     size_t idx = mytls->jobmemIdx;
@@ -1235,7 +1444,7 @@ static tws_Job *_AllocGlobalJob(void)
     }
     mytls->jobmemIdx = idx;
     return job;
-}*/
+}
 
 // called by any thread
 static tws_Job *AllocJob(void)

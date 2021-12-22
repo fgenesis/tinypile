@@ -38,10 +38,10 @@ Known/Intentional limitations:
 
 Thread safety:
 - There is no global state.
-  (Except few statics that are set on the first call to avoid further syscalls.)
+  (Except few statics that are set on the first call to avoid further syscalls. MT-safe.)
 - The system wrapper APIs are as safe as guaranteed by the OS.
   Usually you may open/close files, streams, MMIO freely from multiple threads at once.
-- Individual tio_Stream, tio_Mapping need to be externally locked if used across multiple threads.
+- Individual tio_Stream, tio_Mapping, etc need to be externally locked if used across multiple threads.
 
 Features:
 - Pure C API (The implementation uses some C++98 features)
@@ -65,7 +65,7 @@ Why not libc stdio?
 - libc stdio has no way of communicating access patterns
 - File names are char*, but which encoding?
 - Parameters to fread/fwrite() are a complete mess
-- Some functions like ungetc() should never have existed
+- Some functions like ungetc() should never have existed (think about the implications that this exists)
 - Try to get the size of a file with stdio.h alone. Bonus points if the file is > 4 GB.
 - fopen() access modes are stringly typed and rather confusing. "r", "w", "r+", "w+"?
 - stdio in "text mode" does magic escaping of \n to \r\n,
@@ -180,7 +180,7 @@ enum tio_Features_
                              When writing, flush ASAP. Best used for huge bulk transfers. */
 
     tioF_NoResize = 0x08, /* We don't intend to change a file's size by writing to it. Writing past EOF becomes undefined behavior. */
-  
+
     tioF_Nonblock = 0x10  /* Enable nonblocking I/O. Calls may read/write less data than requested, or no data at all.
                              In this mode, less or no bytes processed does not mean failure! */
 };
@@ -259,7 +259,7 @@ extern "C" {
 inline static tio_error tio_init(); /* defined inline below */
 
 /* Actually exported function that does init + checks */
-TIO_EXPORT tio_error tio_init_version(unsigned version); 
+TIO_EXPORT tio_error tio_init_version(unsigned version);
 
 
 /* ------------------------------------------ */
@@ -271,6 +271,7 @@ TIO_EXPORT tio_error tio_init_version(unsigned version);
    - POSIX: A file descriptor (int) as returned by open() casted to a pointer
    Don't compare this to NULL. The only indication whether this is valid
    is the return value of tio_kopen()!
+   (Different platforms use different values for failure...)
 */
 struct tio_OpaqueHandle;
 typedef struct tio_OpaqueHandle *tio_Handle;
@@ -294,14 +295,15 @@ TIO_EXPORT tiosize    tio_ksize   (tio_Handle fh); /* Shortcut for tio_kgetsize(
 /* Read/write with explicit offset. Does not use/modify the internal file position.
    Safe for concurrent access from multiple threads.
    Always synchronous - less bytes read than requested means EOF.
-   Using these together with tioF_Sequential is undefined behavior. */
+   Using these together with tioF_Sequential is undefined behavior.
+   Writing a block beyond the end of the file with tioF_NoResize is undefined behavior. */
 TIO_EXPORT tiosize    tio_kreadat (tio_Handle fh, void *ptr, size_t bytes, tiosize offset);
 TIO_EXPORT tiosize    tio_kwriteat(tio_Handle fh, const void *ptr, size_t bytes, tiosize offset);
 
 /* Get handle to stdin, stdout, stderr if those exist.
    Do NOT close these handles unless you know what you're doing.
    Any operation other than read/write/flush/close is undefined behavior. */
-TIO_EXPORT tio_error tio_stdhandle(tio_Handle *hDst, tio_StdHandle); 
+TIO_EXPORT tio_error tio_stdhandle(tio_Handle *hDst, tio_StdHandle);
 
 
 /* ---------------------------------------- */
@@ -391,7 +393,7 @@ TIO_EXPORT void *tio_mopenmap(tio_Mapping *map, tio_MMIO *mmio, const char *fn, 
 
 /* One memory-mapped region, initialized via tio_MMIO.
    You can have many of these for a single tio_MMIO.
-   The begin & end pointers and size are read-only.
+   The begin & end pointers and filesize are read-only.
    Ignore the rest. Don't change ANY of the fields, ever. */
 struct tio_Mapping
 {
@@ -495,7 +497,7 @@ struct tio_Stream
     tio_error err;  /* != 0 is error. Set by Refill(). Sticky -- once set, stays set. */
 
     /* public, callable, changed by Refill and Close. */
-    size_t (*Refill)(tio_Stream *s); /* Required. Never NULL. Sets err on failure. Returns #bytes refilled. */
+    size_t (*Refill)(tio_Stream *s); /* Required. Sets err on failure. Returns #bytes refilled. */
     void   (*Close)(tio_Stream *s);  /* Required. Must also set cursor, begin, end, Refill, Close to NULL. */
 
     /* Private, read-only */
@@ -554,7 +556,7 @@ inline static size_t tio_savail(tio_Stream *sm) { return sm->end - sm->cursor; }
 
 /* Write data to stream. Returns 0 immediately if the stream's error flag is set.
    Does not use sm->cursor. Does not modify begin, end, cursor.
-   The stream's error flag will be set if not all bytes could be written. 
+   The stream's error flag will be set if not all bytes could be written.
    Returns how many bytes were actually written. */
 TIO_EXPORT tiosize tio_swrite(tio_Stream *sm, const void *src, size_t bytes);
 
@@ -566,7 +568,8 @@ TIO_EXPORT tiosize tio_swrite(tio_Stream *sm, const void *src, size_t bytes);
    Use only if you absolutely have to copy a stream's data to a contiguous block of memory. */
 TIO_EXPORT tiosize tio_sread(tio_Stream *sm, void *dst, size_t bytes);
 
-/* Close a valid stream and cleanly transition into the previously set failure state:
+/* [For extensions! Ignore this function if you're just a library user!]
+   Close a valid stream and cleanly transition into the previously set failure state:
     - Emit infinite zeros if tioS_Infinite was passed to tio_sopen()
     - Emit no data otherwise
    Sets the error flag on the stream if not previously set.
@@ -591,8 +594,8 @@ TIO_EXPORT size_t tio_streamfail(tio_Stream *sm);
 TIO_EXPORT tio_error tio_memstream(tio_Stream *sm, void *mem, size_t memsize, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize);
 
 /* Wrap an existing tio_MMIO into a stream.
-   The stream maps the first blocksize bytes of memory starting at offset,
-   each Refill() advances the mapped block forward until reaching maxsize bytes.
+   Upon the first Refill(), the stream maps the first blocksize bytes of memory starting at offset,
+   each further Refill() advances the mapped block forward until reaching maxsize bytes.
    The stream owns a private tio_Mapping that stays alive until the stream
    is closed, ie. the mmio must also stay alive while the stream is open.
    Pass maxsize == 0 to map the entire remainder of the mmio.
@@ -613,12 +616,12 @@ TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosiz
    There is no guarantee about the order in which entries are processed.
    Return 0 to continue iterating, anything else to stop. tio_dirlist() will then
    return that value. To prevent confusion with error codes, it is advised to only
-   return values >= 0 from the callback (as all error codes are negative). */
+   return values >= 0 from the callback (as all tio error codes are negative). */
 typedef int (*tio_FileCallback)(const char *path, const char *name, tio_FileType type, void *ud);
 TIO_EXPORT tio_error tio_dirlist(const char *path, tio_FileCallback callback, void *ud);
 
 /* Query type and (optionally) size of path/file. Returns tioT_Nothing (0) on failure. */
-TIO_EXPORT tio_FileType tio_fileinfo(const char *path, tiosize *psz); 
+TIO_EXPORT tio_FileType tio_fileinfo(const char *path, tiosize *psz);
 
 /* Create path if possible. Returns 0 if the path was created or already exists,
    any other value when the path does not exist when the function returns */
@@ -652,9 +655,10 @@ TIO_EXPORT size_t tio_pagesize();
 inline static unsigned tio_headerversion()
 {
     return 0
-        | (sizeof(tiosize) << 8)
-        | (((sizeof(tio_Stream) >> 1) & 0xff) << 16)
-        | (((sizeof(tio_MMIO) >> 1) & 0xff) << 24);
+        | (sizeof(tiosize) << 6)
+        | (((sizeof(tio_MMIO) >> 1) & 0xff) << 12)
+        | (((sizeof(tio_Mapping) >> 1) & 0xff) << 18)
+        | (((sizeof(tio_Stream) >> 1) & 0xff) << 24);
 }
 
 
@@ -664,6 +668,6 @@ inline static tio_error tio_init()
 }
 
 #ifdef __cplusplus
-}
+} // end extern "C"
 #endif
 

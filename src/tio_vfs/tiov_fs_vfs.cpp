@@ -13,7 +13,7 @@ private:
 
     // Variable-length string follows after the struct if _fs is set
 
-    VFSNode(StringPool::Ref name, const tiov_FS *fs, size_t extra) 
+    VFSNode(StringPool::Ref name, const tiov_FS *fs, size_t extra)
         : nameref(name), _fs(fs), extrasize(extra)
     {}
 

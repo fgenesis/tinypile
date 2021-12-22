@@ -195,9 +195,9 @@ template<typename T> struct Has_d_type
 {
     struct Fallback { int d_type; };
     struct Derived : T, Fallback { };
-    template<typename C, C> struct ChT; 
-    template<typename C> static char (&f(ChT<int Fallback::*, &C::d_type>*))[1]; 
-    template<typename C> static char (&f(...))[2]; 
+    template<typename C, C> struct ChT;
+    template<typename C> static char (&f(ChT<int Fallback::*, &C::d_type>*))[1];
+    template<typename C> static char (&f(...))[2];
     static bool const value = sizeof(f<Derived>(0)) == 2;
 };
 
@@ -258,7 +258,7 @@ TIO_PRIVATE tio_error os_dirlist(char* path, tio_FileCallback callback, void* ud
     int ret = 0;
     while((dp=::readdir(dirp)) != NULL)
         if(!dirlistSkip(dp->d_name))
-            if((ret = callback(path, dp->d_name, posix_getDirentFileType(path, dp), ud))
+            if((ret = callback(path, dp->d_name, posix_getDirentFileType(path, dp), ud)))
                 break;
     ::closedir(dirp);
     return ret;

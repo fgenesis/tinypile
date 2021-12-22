@@ -1,0 +1,197 @@
+
+
+/* ---- String / path handling stuff ---- */
+
+struct LongStr
+{
+    char *ptr;
+    size_t sz;
+};
+
+struct ShortStrLayout
+{
+    // LITTLE ENDIAN
+    unsigned char meta;
+    char buf[sizeof(LongStr) - 1];
+    // BIG ENDIAN
+    /*    unsigned char meta;
+    char buf[sizeof(LongStr) - 1];*/
+};
+
+union ShortStr
+{
+    LongStr l;
+    ShortStrLayout s;
+
+    inline uintptr_t isShort() const { return uintptr_t(l.ptr) & 1; }
+    inline size_t size() const { return isShort() ? (s.meta >> 1) : l.sz; }
+    inline       char *ptr()       { return isShort() ? &s.buf[0] : l.ptr; }
+    inline const char *ptr() const { return isShort() ? &s.buf[0] : l.ptr; }
+};
+
+struct Pathbuf
+{
+    char *s; // start of string
+    char *send; // end of string (\0)
+    unsigned *p; // part sizes
+    unsigned scap; // string buffer capacity
+    unsigned pcap; // parts buffer capacity (number of entries)
+    unsigned pbuf[16]; // static part sizes mem
+    char sbuf[256]; // static string mem
+
+    const tio_Alloc _alloc;
+    void * const _ud;
+
+    Pathbuf(tio_Alloc alloc, void *ud)
+        : s(&sbuf[0]), send(s), p(&pbuf[0]), scap(sizeof(sbuf)), pcap(sizeof(pbuf)), _alloc(alloc), _ud(ud) {}
+
+    ~Pathbuf()
+    {
+        if(s != &sbuf[0])
+            _alloc(_ud, s, scap, 0);
+        if(p != &pbuf[0])
+            _alloc(_ud, s, pcap * sizeof(unsigned), 0);
+    }
+
+    inline size_t size() const { return send - s; }
+
+    char *enlargeStr(unsigned sz)
+    {
+        unsigned sz2 = scap * 2;
+        sz = tio__max(sz, sz2);
+        char *s2 = (char*)_alloc(_ud, s == &sbuf[0] ? NULL : s, s == &sbuf[0] ? 0 : scap, sz);
+        if(s2)
+        {
+            if(s == &sbuf[0])
+                tio__memcpy(s2, sbuf, sizeof(sbuf));
+            send = s2 + (send - s);
+            s = s2;
+            scap = sz;
+        }
+        return s2;
+    }
+
+    unsigned *enlargeParts(unsigned n)
+    {
+        unsigned n2 = pcap * 2;
+        n = tio__max(n, n2);
+        unsigned *p2 = (unsigned*)_alloc(_ud, p == &pbuf[0] ? NULL : p, p == &pbuf[0] ? 0 : pcap, n * sizeof(unsigned));
+        if(p2)
+        {
+            if(p == &pbuf[0])
+                tio__memcpy(p2, pbuf, sizeof(pbuf));
+            p = p2;
+            pcap = n;
+        }
+        return p2;
+    }
+
+    char *grow(unsigned extra)
+    {
+        unsigned newsz = size() + extra;
+        return newsz < scap ? s : enlargeStr(newsz);
+    }
+
+    char *push(const char *x)
+    {
+        return push(x, x + tio__strlen(x));
+    }
+
+    // return full path or NULL on error
+    char *push(const char *x, const char *xend)
+    {
+        size_t add = xend - x;
+        char * const dst = grow(add + 1); // guess (too large is ok, too small is not)
+        char *w = dst;
+
+        const char * const beg = x;
+        unsigned plen = 0;
+        for(char c = *x; x < xend; c = *x++)
+        {
+            if(isdirsep(c))
+            {
+                w = pushsep(plen);
+                plen = 0;
+            }
+            else
+                *w++ = c;
+        }
+
+        // TODO
+    }
+
+    // return full path or NULL on error
+    char *pop()
+    {
+
+    }
+}
+
+
+
+
+/* ---- Begin funcationality emulation ---- */
+
+static void fake_mmio_munmap_RAM(tio_MMIO *mmio)
+{
+    tio_Alloc alloc = (tio_Alloc)mmio->_internal[0];
+    void *user = mmio->_internal[1];
+    size_t bytes = mmio->end - mmio->begin;
+    alloc(user, mmio->begin, bytes, 0);
+}
+
+// Wrap pointer into mmio interface
+static void *fake_mmio_mmap_RAM(tio_MMIO *mmio, void *p, size_t bytes, tio_Alloc alloc, void *user)
+{
+    tio__memset(mmio, 0, sizeof(*mmio));
+    if(p)
+    {
+        mmio->begin = (char*)p;
+        mmio->end = ((char*)p) + bytes;
+        mmio->_unmap = fake_mmio_munmap_RAM;
+        mmio->_internal[0] = alloc;
+        mmio->_internal[1] = user;
+    }
+    return p;
+}
+
+
+static void *fake_mmio_malloc(tio_MMIO *mmio, size_t bytes, tio_Alloc alloc, void *user)
+{
+    void *p = alloc(user, NULL, 0, bytes);
+    return fake_mmio_mmap_RAM(mmio, p, bytes, alloc, user);
+}
+
+static void *fake_mmio_mmap_FH(tio_MMIO *mmio, tio_FH *fh)
+{
+}
+
+static void closememstream(tio_Stream *sm)
+{
+    tio_Alloc alloc = (tio_Alloc)sm->_private[0];
+    if(alloc)
+    {
+        void *p = sm->_private[1];
+        size_t bytes = (size_t)(uintptr_t)sm->_private[2];
+        void *user = sm->_private[3];
+        alloc(user, p, bytes, 0);
+        tio__memset(sm->_private, 0, sizeof(sm->_private));
+    }
+    invalidate(sm);
+}
+
+static tio_Stream *initmemstreamREAD(tio_Stream *sm, void *p, size_t bytes, tio_Alloc alloc, void *user)
+{
+    tio__memset(sm, 0, sizeof(tio_Stream));
+    sm->start = sm->cursor = p;
+    sm->end = ((char*)p) + bytes;
+    sm->Refill = streamfail;
+    sm->Close = closememstream;
+    sm->_private[0] = alloc;
+    sm->_private[1] = p;
+    sm->_private[2] = (void*)(uintptr_t)bytes;
+    sm->_private[3] = user;
+    return sm;
+}
+
+

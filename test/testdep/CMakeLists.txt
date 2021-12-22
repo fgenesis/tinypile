@@ -6,8 +6,8 @@ set(src
     sha3.c
     sha3.h
     ustd.h
-    tws_test_common.cpp
-    tws_test_common.h
+    #tws_test_common.cpp
+    #tws_test_common.h
 )
 
 add_library(testdep ${src})

@@ -253,7 +253,7 @@ TIO_PRIVATE tio_error os_mflush(tio_MMIO* mmio, void *p)
 {
     writeback(mmio);
     return 0;
-    
+
 }
 
 TIO_PRIVATE tio_FileType os_fileinfo(char* path, tiosize* psz)
