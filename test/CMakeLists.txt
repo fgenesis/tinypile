@@ -51,6 +51,7 @@ add_library(tinypile
 
 include_directories(../src/tio)
 include_directories(../src/tio_vfs)
+include_directories(../src/tio_addons)
 
 include_directories(..)
 include_directories(testdep)

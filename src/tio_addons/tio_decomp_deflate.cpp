@@ -1,17 +1,17 @@
 // requires https://github.com/richgel999/miniz/blob/master/miniz_tinfl.c + .h
 
 #include "tio_decomp_priv.h"
-#include <string.h> // memset, memcpy
-#include <stdlib.h> // malloc
-#include "tio_decomp.h"
 #include "miniz_tinfl.h"
 
-struct tioDeflateStreamPriv
+
+struct tioDeflateStreamPriv : public tioDecompStreamCommon
 {
-    tio_Stream* source;
-    tio_DecompStreamFlags decompFlags;
     tinfl_decompressor* decomp;
-    char* buf;
+    unsigned dict_ofs;
+    unsigned mzflags;
+    mz_uint8* dict;
+    tiox_Alloc alloc;
+    void* allocUD;
 };
 
 static size_t decomp_deflate_refill(tio_Stream* sm)
@@ -20,12 +20,14 @@ static size_t decomp_deflate_refill(tio_Stream* sm)
     tinfl_decompressor* dc = priv->decomp;
     tio_Stream* src = priv->source;
 
-    size_t inavail = tio_savail(src);
-    tinfl_status status;
-    size_t outsz = TINFL_LZ_DICT_SIZE;
-    size_t outavail = 0;
-    do
+    unsigned dict_ofs = priv->dict_ofs;
+    sm->begin = sm->cursor = (char*)priv->dict + dict_ofs;
+    size_t totalsize = 0;
+    for(;;)
     {
+        size_t inavail = tio_savail(src);
+
+        // grab some bytes first
         if (!inavail)
         {
             inavail = tio_srefill(src); // may be 0 for async streams
@@ -35,20 +37,41 @@ static size_t decomp_deflate_refill(tio_Stream* sm)
                 return tio_streamfail(sm);
             }
         }
+        // at this point, we may or may not have some bytes to decompress
 
-        mz_uint32 mzflags = 0;
+        mz_uint32 mzflags = priv->mzflags;
         if (!src->err)
-            mzflags = TINFL_FLAG_HAS_MORE_INPUT;
+            mzflags |= TINFL_FLAG_HAS_MORE_INPUT;
+
+        size_t dst_buf_size = TINFL_LZ_DICT_SIZE - dict_ofs;
 
         const mz_uint8* in = (const mz_uint8*)src->cursor;
-        mz_uint8* out = (mz_uint8*)priv->buf;
-        status = tinfl_decompress(dc, in, &inavail, out, out, &outsz, mzflags);
+        tinfl_status status = tinfl_decompress(dc, in, &inavail, priv->dict, priv->dict + dict_ofs, &dst_buf_size, mzflags);
+
+        totalsize += dst_buf_size;
+        dict_ofs = (dict_ofs + dst_buf_size) & (TINFL_LZ_DICT_SIZE - 1);
+
+        src->cursor += inavail;
+
+        if (status == TINFL_STATUS_NEEDS_MORE_INPUT)
+        {
+            if (!inavail) // don't have more input (it's perfectly fine if async stream has no data)
+                break;
+            continue; // ... so go and get more input
+        }
+        else if (status == TINFL_STATUS_HAS_MORE_OUTPUT)
+            break; // output buffer is full, get out
+        else
+        {
+            if (status != TINFL_STATUS_DONE)
+                sm->err = tio_Error_DataError;
+            break;
+        }
     }
-    while(status != TINFL_STATUS_NEEDS_MORE_INPUT);
 
-
-    sm->begin = sm->cursor = priv->buf;
-    sm->end = priv->buf + outavail;
+    priv->dict_ofs = dict_ofs;
+    sm->end = (char*)sm->begin + totalsize;
+    return totalsize;
 }
 
 static void decomp_deflate_close(tio_Stream* sm)
@@ -58,28 +81,55 @@ static void decomp_deflate_close(tio_Stream* sm)
     sm->begin = sm->end = sm->cursor = 0;
 
     tioDeflateStreamPriv* priv = (tioDeflateStreamPriv*)&sm->priv;
-    tinfl_decompressor_free(priv->decomp);
+    priv->alloc(priv->allocUD, priv->decomp, sizeof(tinfl_decompressor), 0);
     priv->decomp = 0;
 
-    if (priv->decompFlags & tioDecomp_CloseBoth)
+    priv->alloc(priv->allocUD, priv->dict, TINFL_LZ_DICT_SIZE, 0);
+    priv->dict = 0;
+
+    if (sm->flags & tioS_CloseBoth)
         priv->source->Close(priv->source);
 }
 
-TIO_EXPORT tio_error tio_sdecomp_deflate(tio_Stream* sm, tio_Stream* packed, tio_DecompStreamFlags df, tio_StreamFlags flags)
+static tio_error _tio_sdecomp_miniz(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tiox_Alloc alloc, void *allocUD, unsigned mzflags)
 {
-    char* buf = (char*)malloc(TINFL_LZ_DICT_SIZE); // TODO: make configurable?
-    if (!buf)
+    tinfl_decompressor* decomp = (tinfl_decompressor*)alloc(allocUD, 0, tioDecompAllocMarker, sizeof(tinfl_decompressor));
+    if (!decomp)
         return tio_Error_MemAllocFail;
+
+    mz_uint8* dict = (mz_uint8*)alloc(allocUD, 0, tioDecompAllocMarker, TINFL_LZ_DICT_SIZE); // TODO: make configurable?
+    if (!dict)
+    {
+        alloc(allocUD, decomp, sizeof(*decomp), 0);
+        return tio_Error_MemAllocFail;
+    }
 
     memset(sm, 0, sizeof(*sm));
     sm->Refill = decomp_deflate_refill;
     sm->write = 0;
     sm->Close = decomp_deflate_close;
     sm->flags = flags;
-    tioDeflateStreamPriv* priv = (tioDeflateStreamPriv*)&sm->priv;
-    priv->source = packed;
-    priv->decompFlags = df;
-    priv->buf = buf;
-    return 0;
 
+    tiox__static_assert(sizeof(tioDeflateStreamPriv) <= sizeof(sm->priv));
+    tioDeflateStreamPriv* priv = (tioDeflateStreamPriv*)&sm->priv;
+
+    tinfl_init(decomp);
+    priv->source = packed;
+    priv->decomp = decomp;
+    priv->dict = dict;
+    priv->dict_ofs = 0;
+    priv->mzflags = mzflags;
+    priv->alloc = alloc;
+    priv->allocUD = allocUD;
+    return 0;
+}
+
+tio_error tio_sdecomp_zlib(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tiox_Alloc alloc, void* allocUD)
+{
+    return _tio_sdecomp_miniz(sm, packed, flags, alloc, allocUD, TINFL_FLAG_PARSE_ZLIB_HEADER);
+}
+
+tio_error tio_sdecomp_deflate(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tiox_Alloc alloc, void* allocUD)
+{
+    return _tio_sdecomp_miniz(sm, packed, flags, alloc, allocUD, 0);
 }

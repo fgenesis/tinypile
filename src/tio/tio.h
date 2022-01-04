@@ -138,7 +138,7 @@ enum tio_Mode_
 
     /* Append flag */
     tio_A          = 0x40,   /* Seek to the end of the file after opening it.
-                                (This is NOT POSIX append mode, ie. it will not
+                                (This is *not* POSIX append mode, ie. it will not
                                 change how writing to the file behaves. You can seek
                                 elsewhere afterwards and the file will behave normally)
                                 Also works when tioF_Sequential is set, and is thus
@@ -198,7 +198,7 @@ enum tio_FileType_
     tioT_Special = 0x04, /* Any sort of special thing: Device, FIFO, ... */
 
     /* May or may not be set */
-    tioT_Link    = 0x08
+    tioT_Link    = 0x08  /* File/directory is a symlink */
 };
 typedef unsigned tio_FileType;
 
@@ -219,17 +219,19 @@ typedef unsigned tio_StdHandle;
 
 enum tio_error_
 {
+    tio_Error_EOF = 1, // FIXME: this should not be here? maybe?
     tio_NoError = 0,
     tio_Error_Unspecified = -1,
     tio_Error_Unsupported = -2,
     tio_Error_NotFound = -3,
     tio_Error_BadPath = -4,
     tio_Error_BadOp = -5,
-    tio_Error_ResAllocFail = -6, // failed to allocate an OS resource
-    tio_Error_MemAllocFail = -7, // for extenions
-    tio_Error_EmptyFile = -8, // file is empty where it must not be
-    tio_Error_ParamError = -9, // some parameter was not accepted
-    tio_Error_DeviceFull = -10
+    tio_Error_ResAllocFail = -6,  // failed to allocate an OS resource
+    tio_Error_MemAllocFail = -7,  // for extenions
+    tio_Error_EmptyFile = -8,     // file is empty where it must not be
+    tio_Error_ParamError = -9,    // some parameter was not accepted
+    tio_Error_DeviceFull = -10,
+    tio_Error_DataError = -11
 };
 typedef int tio_error; /* Typedef'd to make places for error handling easier to spot. Convention: 0 == No error */
 
@@ -360,11 +362,11 @@ struct tio_MMIO
             tio_Handle hFile;
             unsigned access;
         } mm;
-        struct
+        /*struct
         {
             //void *aux;
             //unsigned u;
-        } os;
+        } os;*/
     } priv;
 };
 
@@ -383,7 +385,7 @@ TIO_EXPORT tio_error tio_mclose(tio_MMIO *mmio);
 
 /* Shortcut for tio_mopen() followed by tio_mminit() and tio_mmremap().
    Initializes map & mmio if successful. Consider both uninitialized if the call fails.
-   Returns the same pointer as map->begin (NULL if failed). */
+   Returns the same pointer that is written to map->begin (NULL if failed). */
 TIO_EXPORT void *tio_mopenmap(tio_Mapping *map, tio_MMIO *mmio, const char *fn, tio_Mode mode, tiosize offset, size_t size, tio_Features features);
 
 
@@ -478,6 +480,11 @@ enum tio_StreamFlags_
     Specify this flag to instead emit an infinite trickle of zeros when reading,
     or to consume (and ignore) all bytes when writing. */
     tioS_Infinite = 0x01,
+
+    /* Normally, when an overlay stream is closed, its data source stream stays open.
+    Set this flag to close the underlying stream whenever the overlay stream is closed.
+    This flag is ignored for streams that do not wrap another stream. */
+    tioS_CloseBoth = 0x2
 };
 typedef unsigned tio_StreamFlags;
 
@@ -500,9 +507,15 @@ struct tio_Stream
     size_t (*Refill)(tio_Stream *s); /* Required. Sets err on failure. Returns #bytes refilled. */
     void   (*Close)(tio_Stream *s);  /* Required. Must also set cursor, begin, end, Refill, Close to NULL. */
 
+    /* public, read-only. Guaranteed to be available after the first Refill() that doesn't return 0. */
+    tiosize totalsize; /* Total size of data contained in the entire stream if known.
+                          0 if unknown. Uninitialized before the first successful Refill(). */
+
     /* Private, read-only */
     unsigned write; /* 0 if reading, 1 if writing */
     unsigned flags; /* Used by tio_streamfail() */
+
+
 
     /* --- Private part. Don't touch, ever. ---
        The implementation may use the underlying memory freely;
@@ -543,6 +556,9 @@ inline static tio_error tio_sclose(tio_Stream *sm) { sm->Close(sm); return sm->e
      On EOF or I/O error, the error flag is set, and the stream will transition
      to the failure mode as previously set in tio_sopen().
      Returns the number of bytes available for reading.
+     0 bytes read is NOT an error! There are cases where a stream can not deliver data
+     for whatever reason (ie. an async stream that is busy reading bytes in the background
+     but that has nothing available right now) so in that case just keep reading.
    - When writing, the block of memory in [begin, end) will be written to storage.
      This means the caller has to set the two pointers and then call refill.
      If writing is not possible, the stream's error flag will be set,
