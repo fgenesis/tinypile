@@ -3,6 +3,17 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+void *myalloc(void *ud, void *ptr, size_t osize, size_t nsize)
+{
+    (void)ud;
+    (void)osize;
+    printf("myalloc %u\n", unsigned(nsize));
+    if (nsize)
+        return realloc(ptr, nsize);
+    free(ptr);
+    return NULL;
+}
+
 int main()
 {
     /*tio_VFS *vfs = tiov_newVFS(NULL, NULL);
@@ -17,7 +28,7 @@ int main()
     tio_Stream sm, packed;
     if (tio_sopen(&packed, fn, tio_R, 0, 0, 0))
         exit(1);
-    if (tio_sdecomp_LZ4_frame(&sm, &packed, tioDecomp_CloseBoth, 0, tiox_defaultalloc, NULL))
+    if (tio_sdecomp_LZ4_frame(&sm, &packed, tioS_CloseBoth, myalloc, NULL))
         exit(2);
 
     for (size_t n; (n = tio_srefill(&sm)); )

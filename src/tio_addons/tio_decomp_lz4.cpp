@@ -2,18 +2,19 @@
 
 // Streaming LZ4 decompressor
 // No support for dictionary decompression for now
+// Warning: goto-hell ahead.
 
 #define _LZ4_WINDOW_SIZE 65536
 
-struct tioLZ4StreamPriv : public tioDecompStreamCommon
+struct tioLZ4StreamPriv
 {
-    char* dict; // 64k dict, wrapping
     unsigned state; // shared between all Refill functions to store the coroutine state
     unsigned dict_ofs; // dict[dict_ofs] is the current write pos
     unsigned offset; // temporary storage for match offset
     size_t copylen; // temporary storage for match copy length
     size_t literallen;  // temporary storage for literal length
-    tiox_Alloc alloc;
+    char dict[_LZ4_WINDOW_SIZE]; // 64k dict, wrapping
+    tio_Alloc alloc;
     void* allocUD;
     size_t (*onBlockEnd)(tio_Stream* sm); // transition to this Refill function once decomp() has finished a block
     // frame/header only
@@ -44,8 +45,8 @@ static size_t transition(tio_Stream* sm, size_t(*f)(tio_Stream*))
 
 static size_t decomp(tio_Stream* sm)
 {
-    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)&sm->priv;
-    tio_Stream* const src = priv->source;
+    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
+    tio_Stream* const src = (tio_Stream*)sm->priv.aux;
     const unsigned char* end = (const unsigned char*)src->end;
 
     // make sure the mutable state is in registers
@@ -295,8 +296,8 @@ static int _tryfill(tio_Stream* sm, tio_Stream* src)
 
 static size_t footer(tio_Stream* sm)
 {
-    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)&sm->priv;
-    tio_Stream* const src = priv->source;
+    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
+    tio_Stream *const src = (tio_Stream *)sm->priv.aux;
     unsigned char c;
 
     if (!(priv->flg & (1 << 2))) // C.Checksum bit
@@ -326,8 +327,8 @@ static size_t blockend(tio_Stream* sm)
     // 0x00000000 is already handled in blockbegin(),
     // so all we need to handle here is the (optional) block checksum
 
-    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)&sm->priv;
-    tio_Stream* const src = priv->source;
+    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
+    tio_Stream* const src = (tio_Stream *)sm->priv.aux;
     unsigned char c;
 
     if (!(priv->flg & (1 << 4))) // B.Checksum bit
@@ -350,7 +351,7 @@ out:
 
 static size_t uncompressed(tio_Stream* sm)
 {
-    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)&sm->priv;
+    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
 
     size_t avail = tio_savail(sm);
     if(!avail)
@@ -360,17 +361,19 @@ static size_t uncompressed(tio_Stream* sm)
     if (!priv->blocksize)
         sm->Refill = blockend;
 
-    sm->begin = sm->cursor = priv->source->cursor;
+    tio_Stream *const src = (tio_Stream *)sm->priv.aux;
+    sm->begin = sm->cursor = src->cursor;
     sm->end = sm->begin + actual;
-    priv->source->cursor += actual;
+    src->cursor += actual;
 
     return actual;
 }
 
 static size_t blockbegin(tio_Stream* sm)
 {
-    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)&sm->priv;
-    tio_Stream* const src = priv->source;
+    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
+    tio_Stream *const src = (tio_Stream *)sm->priv.aux;
+
     unsigned char c;
     switch (priv->state) // break means fail, everything else is fall through
     {
@@ -393,8 +396,8 @@ out:
 
 static size_t header(tio_Stream* sm)
 {
-    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)&sm->priv;
-    tio_Stream* const src = priv->source;
+    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
+    tio_Stream *const src = (tio_Stream *)sm->priv.aux;
     unsigned char c;
     switch (priv->state) // break means fail, everything else is fall through
     {
@@ -435,8 +438,8 @@ out:
 
 static size_t magic(tio_Stream* sm)
 {
-    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)&sm->priv;
-    tio_Stream* const src = priv->source;
+    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
+    tio_Stream *const src = (tio_Stream *)sm->priv.aux;
     unsigned char c;
     switch (priv->state) // break means fail, everything else is fall through
     {
@@ -456,53 +459,45 @@ out:
 
 static void close(tio_Stream* sm)
 {
-    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)&sm->priv;
-    priv->alloc(priv->allocUD, priv->dict, _LZ4_WINDOW_SIZE, 0);
-    priv->dict = 0;
+    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
+    priv->alloc(priv->allocUD, priv, sizeof(*priv), 0);
 
     sm->Refill = 0;
     sm->Close = 0;
     sm->begin = sm->end = sm->cursor = 0;
 }
 
-static tio_error commonInit(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tiox_Alloc alloc, void* allocUD)
+static tio_error commonInit(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD, size_t(*onBlockEnd)(tio_Stream*), size_t blocksize)
 {
-    tiox__static_assert(sizeof(tioLZ4StreamPriv) <= sizeof(sm->priv));
-
-    void* dict = alloc(allocUD, 0, tioDecompAllocMarker, _LZ4_WINDOW_SIZE);
-    if (!dict)
+    tioLZ4StreamPriv *const priv = (tioLZ4StreamPriv *)alloc(allocUD, 0, tioDecompAllocMarker, sizeof(tioLZ4StreamPriv));
+    if (!priv)
         return tio_Error_MemAllocFail;
 
     sm->Close = close;
-    sm->flags = flags;
+    sm->common.flags = flags;
+    sm->priv.aux = packed;
 
-    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)&sm->priv;
     priv->alloc = alloc;
     priv->allocUD = allocUD;
-    priv->dict = (char*)dict;
-    priv->source = packed;
+    priv->onBlockEnd = onBlockEnd;
+    priv->blocksize = blocksize;
     return 0;
 }
 
 } // end namespace lz4d
 
-TIO_EXPORT tio_error tio_sdecomp_LZ4_block(tio_Stream* sm, tio_Stream* packed, size_t packedbytes, tio_StreamFlags flags, tiox_Alloc alloc, void* allocUD)
+TIO_EXPORT tio_error tio_sdecomp_LZ4_block(tio_Stream* sm, tio_Stream* packed, size_t packedbytes, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD)
 {
     TIOX_MEMSET(sm, 0, sizeof(*sm));
-    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)&sm->priv;
     sm->Refill = lz4d::decomp;
     sm->totalsize = 0;
-    priv->onBlockEnd = tio_streamfail;
-    priv->blocksize = packedbytes;
-    return lz4d::commonInit(sm, packed, flags, alloc, allocUD);
+    return lz4d::commonInit(sm, packed, flags, alloc, allocUD, tio_streamfail, packedbytes);
 }
 
-TIO_EXPORT tio_error tio_sdecomp_LZ4_frame(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tiox_Alloc alloc, void* allocUD)
+TIO_EXPORT tio_error tio_sdecomp_LZ4_frame(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD)
 {
     TIOX_MEMSET(sm, 0, sizeof(*sm));
-    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)&sm->priv;
     sm->Refill = lz4d::magic;
     sm->totalsize = tiosize(-1);
-    priv->onBlockEnd = lz4d::blockend;
-    return lz4d::commonInit(sm, packed, flags, alloc, allocUD);
+    return lz4d::commonInit(sm, packed, flags, alloc, allocUD, lz4d::blockend, 0);
 }

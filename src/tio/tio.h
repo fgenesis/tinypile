@@ -46,7 +46,9 @@ Thread safety:
 Features:
 - Pure C API (The implementation uses some C++98 features)
 - File names and paths use UTF-8.
-- No heap allocations in the library (one exception on win32 where it makes sense. Ctrl+F VirtualAlloc)
+- No hidden memory allocations in the library 
+  -> If a function allocates memory, it takes an allocator.
+  (There is one exception on win32 where it makes sense. Ctrl+F VirtualAlloc)
 - Win32: Proper translation to wide UNC paths to avoid 260 chars PATH_MAX limit
 - 64 bit file sizes and offsets everywhere
 
@@ -263,6 +265,22 @@ inline static tio_error tio_init(); /* defined inline below */
 /* Actually exported function that does init + checks */
 TIO_EXPORT tio_error tio_init_version(unsigned version);
 
+
+/* ---------------------------------------- */
+/* ---- Universal allocator interface. ---- */
+/* ---------------------------------------- */
+
+/* Hint: This is API-compatible with LuaAlloc, if you need a fast block allocator.
+   (See https://github.com/fgenesis/tinypile/ -> luaalloc.h).
+   If you use the same allocator from multiple threads it must be thread-safe! */
+typedef void* (*tio_Alloc)(void* ud, void* ptr, size_t osize, size_t nsize);
+
+#ifndef TIO_NO_DEFAULT_ALLOC
+/* Default allocator based on realloc(), pretty much just:
+    if(nsize) return realloc(ptr, nsize);
+    else free(ptr); */
+TIO_EXPORT void* tio_defaultalloc(void* ud, void* ptr, size_t osize, size_t nsize);
+#endif
 
 /* ------------------------------------------ */
 /* ---- Low-level file API -- [tio_k*()] ---- */
@@ -491,7 +509,9 @@ typedef unsigned tio_StreamFlags;
 struct tio_Stream
 {
     /* public, read, modify */
-    char *cursor;   /* Cursor in buffer. Set to begin by Refill() when READING.
+    char *cursor;   /* Cursor in buffer. Typically used by the stream consumer to store partial
+                       progress through the buffer.
+                       Set to begin by Refill() when READING.
                        The valid range is within [begin, end).
                        Unused and ignored when WRITING. */
 
@@ -509,17 +529,13 @@ struct tio_Stream
 
     /* public, read-only. Guaranteed to be available after the first Refill() that doesn't return 0. */
     tiosize totalsize; /* Total size of data contained in the entire stream if known.
-                          0 if unknown. Uninitialized before the first successful Refill(). */
-
-    /* Private, read-only */
-    unsigned write; /* 0 if reading, 1 if writing */
-    unsigned flags; /* Used by tio_streamfail() */
+                          0 if unknown. Uninitialized before the first successful Refill().
+                          (Depending on the stream, totalsize may actually be filled already during init,
+                          but this is *not* guaranteed, so don't falsely rely on it!) */
 
 
-
-    /* --- Private part. Don't touch, ever. ---
-       The implementation may use the underlying memory freely;
-       it may or may not follow the struct layout suggested here. */
+    /* --- Private part. Don't touch, ever. --- */
+#if 0
     struct
     {
         union
@@ -535,6 +551,24 @@ struct tio_Stream
         void *aux;
         size_t blockSize;
         tiosize offs, size;
+    } priv;
+#endif
+    /* Private, read-only. Commonly used by stream internals. */
+    struct
+    {
+        unsigned write; /* 0 if reading, 1 if writing */
+        unsigned flags; /* Used by tio_streamfail() */
+    } common;
+
+    /* --- Private part. Don't touch, ever. ---
+       The implementation may use the underlying memory freely;
+       it may or may not follow the struct layout suggested here. */
+    struct
+    {
+        tiosize size, offset;
+        size_t blockSize;
+        void *aux;
+        void *extra;
     } priv;
 };
 

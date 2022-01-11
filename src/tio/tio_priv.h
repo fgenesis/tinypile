@@ -90,6 +90,12 @@
 // bounded, non-zero stack allocation
 #define tio__checked_alloca(n) (((n) && (n) <= TIO_MAX_STACK_ALLOC) ? tio__alloca(n) : NULL)
 
+enum tioConstants
+{
+    tioAllocMarker       = 't' | ('i' << 8) | ('o' << 16) | ('_' << 24),
+    tioStreamAllocMarker = 't' | ('i' << 8) | ('o' << 16) | ('S' << 24)
+};
+
 
 template<typename T> inline T tio_min(T a, T b) { return (a) < (b) ? (a) : (b); }
 
@@ -118,7 +124,7 @@ template<typename T> struct MaxIOBlockSize
     enum { value = _MaxIOBlockSize<T, 1>::value };
 };
 
-static const tiosize tio_MaxArchMask = (size_t)(tiosize)(uintptr_t)(intptr_t)(-1); // cast away as many high bits as possible on this little round-trip
+static const tiosize tio_MaxArchMask = (size_t)(tiosize)(uintptr_t)(void*)(intptr_t)(-1); // cast away as many high bits as possible on this little round-trip
 
 struct AutoFreea
 {
@@ -223,7 +229,7 @@ TIO_PRIVATE size_t os_pathExtraSpace();
 // Return 0 to proceed with generic stream init.
 // Return 1 to use the stream as inited by this function.
 // Return a negative value to abort stream creation and report that error.
-TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize);
+TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD);
 
 // Optional OS-specific mmio init. Same purpose and return values as os_initstream().
 // If you don't use this, the default mmio implementation based on file handles
@@ -250,3 +256,35 @@ static inline bool ispathsep(const char c)
 {
     return c == '/' || c == os_pathsep();
 }
+
+template<typename T>
+inline T* streamdata(tio_Stream *sm)
+{
+    return static_cast<T*>(sm->priv.extra);
+}
+
+class PtrHolder
+{
+public:
+    tio_Alloc const alloc;
+    void * const allocUD;
+    void *ptr;
+    size_t const size;
+
+    PtrHolder(tio_Alloc a, void *ud, size_t sz, size_t marker)
+        : alloc(a), allocUD(ud), ptr(a(ud, 0, marker, sz)), size(sz)
+    {}
+
+    ~PtrHolder()
+    {
+        if (ptr)
+            alloc(allocUD, ptr, size, 0);
+    }
+
+    void *keep()
+    {
+        void *p = ptr;
+        ptr = 0;
+        return p;
+    }
+};

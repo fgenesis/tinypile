@@ -54,13 +54,6 @@ How to use?
 
 */
 
-/* Universal allocator interface.
-   Hint: This is API-compatible with LuaAlloc, if you need a fast block allocator.
-   (See https://github.com/fgenesis/tinypile/).
-   If you use this from multiple threads, this must be thread-safe! */
-typedef void* (*tiox_Alloc)(void* ud, void* ptr, size_t osize, size_t nsize);
-
-TIO_EXPORT void* tiox_defaultalloc(void* ud, void* ptr, size_t osize, size_t nsize);
 
 /* --- Stream-to-stream functions. See the note at the top for details. ---
     Initializes 'sm' and stores a pointer to 'packed' in it.
@@ -70,10 +63,10 @@ TIO_EXPORT void* tiox_defaultalloc(void* ud, void* ptr, size_t osize, size_t nsi
 */
 
 /* Decompress deflate data with zlib header and footer */
-TIO_EXPORT tio_error tio_sdecomp_zlib(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tiox_Alloc alloc, void* allocUD);
+TIO_EXPORT tio_error tio_sdecomp_zlib(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD);
 
 /* Decompress LZ4-framed data. */
-TIO_EXPORT tio_error tio_sdecomp_LZ4_frame(tio_Stream *sm, tio_Stream *packed, tio_StreamFlags flags, tiox_Alloc alloc, void* allocUD);
+TIO_EXPORT tio_error tio_sdecomp_LZ4_frame(tio_Stream *sm, tio_Stream *packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD);
 
 
 /* --------------
@@ -82,8 +75,8 @@ TIO_EXPORT tio_error tio_sdecomp_LZ4_frame(tio_Stream *sm, tio_Stream *packed, t
    -------------- */
 
 /* Decompress raw deflate-encoded data. */
-TIO_EXPORT tio_error tio_sdecomp_deflate(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tiox_Alloc alloc, void* allocUD);
+TIO_EXPORT tio_error tio_sdecomp_deflate(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD);
 
 /* Decompress a raw LZ4 block. Since there is no end marker,
    the length of the compressed stream has to be supplied by the user. */
-TIO_EXPORT tio_error tio_sdecomp_LZ4_block(tio_Stream *sm, tio_Stream *packed, size_t packedbytes, tio_StreamFlags flags, tiox_Alloc alloc, void* allocUD);
+TIO_EXPORT tio_error tio_sdecomp_LZ4_block(tio_Stream *sm, tio_Stream *packed, size_t packedbytes, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD);

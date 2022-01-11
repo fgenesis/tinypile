@@ -247,8 +247,8 @@ TIO_EXPORT tio_error tio_sopen(tio_Stream* sm, const char* fn, tio_Mode mode, ti
 
 TIO_EXPORT tiosize tio_swrite(tio_Stream* sm, const void* ptr, size_t bytes)
 {
-    tio__ASSERT(sm->write); // Can't write to a read-only stream
-    if (!sm->write || sm->err)
+    tio__ASSERT(sm->common.write); // Can't write to a read-only stream
+    if (!sm->common.write || sm->err)
         return 0;
 
     char* const oldcur = sm->cursor;
@@ -271,8 +271,8 @@ TIO_EXPORT tiosize tio_swrite(tio_Stream* sm, const void* ptr, size_t bytes)
 
 TIO_EXPORT tiosize tio_sread(tio_Stream* sm, void* ptr, size_t bytes)
 {
-    tio__ASSERT(!sm->write); // Can't read from a write-only stream
-    if (sm->write || sm->err || !bytes)
+    tio__ASSERT(!sm->common.write); // Can't read from a write-only stream
+    if (sm->common.write || sm->err || !bytes)
         return 0;
 
     size_t done = 0;

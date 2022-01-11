@@ -1,27 +1,31 @@
 // requires https://github.com/richgel999/miniz/blob/master/miniz_tinfl.c + .h
 
+#ifndef MINIZ_NO_MALLOC
+#define MINIZ_NO_MALLOC
+#endif
+
 #include "tio_decomp_priv.h"
 #include "miniz_tinfl.h"
 
 
-struct tioDeflateStreamPriv : public tioDecompStreamCommon
+struct tioDeflateStreamPriv
 {
-    tinfl_decompressor* decomp;
     unsigned dict_ofs;
     unsigned mzflags;
-    mz_uint8* dict;
-    tiox_Alloc alloc;
+    mz_uint8 dict[TINFL_LZ_DICT_SIZE];
+    tinfl_decompressor decomp;
+    tio_Alloc alloc;
     void* allocUD;
 };
 
 static size_t decomp_deflate_refill(tio_Stream* sm)
 {
-    tioDeflateStreamPriv* priv = (tioDeflateStreamPriv*)&sm->priv;
-    tinfl_decompressor* dc = priv->decomp;
-    tio_Stream* src = priv->source;
+    tioDeflateStreamPriv* priv = (tioDeflateStreamPriv*)sm->priv.extra;
+    tinfl_decompressor* dc = &priv->decomp;
+    tio_Stream *src = (tio_Stream *)sm->priv.aux;
 
     unsigned dict_ofs = priv->dict_ofs;
-    sm->begin = sm->cursor = (char*)priv->dict + dict_ofs;
+    sm->begin = sm->cursor = (char*)&priv->dict[0] + dict_ofs;
     size_t totalsize = 0;
     for(;;)
     {
@@ -80,43 +84,28 @@ static void decomp_deflate_close(tio_Stream* sm)
     sm->Close = 0;
     sm->begin = sm->end = sm->cursor = 0;
 
-    tioDeflateStreamPriv* priv = (tioDeflateStreamPriv*)&sm->priv;
-    priv->alloc(priv->allocUD, priv->decomp, sizeof(tinfl_decompressor), 0);
-    priv->decomp = 0;
+    tioDeflateStreamPriv* priv = (tioDeflateStreamPriv*)sm->priv.extra;
+    priv->alloc(priv->allocUD, priv, sizeof(*priv), 0);
 
-    priv->alloc(priv->allocUD, priv->dict, TINFL_LZ_DICT_SIZE, 0);
-    priv->dict = 0;
-
-    if (sm->flags & tioS_CloseBoth)
-        priv->source->Close(priv->source);
+    if (sm->common.flags & tioS_CloseBoth)
+        tio_sclose((tio_Stream *)sm->priv.aux);
 }
 
-static tio_error _tio_sdecomp_miniz(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tiox_Alloc alloc, void *allocUD, unsigned mzflags)
+static tio_error _tio_sdecomp_miniz(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void *allocUD, unsigned mzflags)
 {
-    tinfl_decompressor* decomp = (tinfl_decompressor*)alloc(allocUD, 0, tioDecompAllocMarker, sizeof(tinfl_decompressor));
-    if (!decomp)
+    tioDeflateStreamPriv *priv = (tioDeflateStreamPriv*)alloc(allocUD, 0, tioDecompAllocMarker, sizeof(tioDeflateStreamPriv));
+    if (!priv)
         return tio_Error_MemAllocFail;
-
-    mz_uint8* dict = (mz_uint8*)alloc(allocUD, 0, tioDecompAllocMarker, TINFL_LZ_DICT_SIZE); // TODO: make configurable?
-    if (!dict)
-    {
-        alloc(allocUD, decomp, sizeof(*decomp), 0);
-        return tio_Error_MemAllocFail;
-    }
 
     memset(sm, 0, sizeof(*sm));
     sm->Refill = decomp_deflate_refill;
-    sm->write = 0;
     sm->Close = decomp_deflate_close;
-    sm->flags = flags;
+    sm->common.write = 0;
+    sm->common.flags = flags;
+    sm->priv.aux = packed;
+    sm->priv.extra = priv;
 
-    tiox__static_assert(sizeof(tioDeflateStreamPriv) <= sizeof(sm->priv));
-    tioDeflateStreamPriv* priv = (tioDeflateStreamPriv*)&sm->priv;
-
-    tinfl_init(decomp);
-    priv->source = packed;
-    priv->decomp = decomp;
-    priv->dict = dict;
+    tinfl_init(&priv->decomp);
     priv->dict_ofs = 0;
     priv->mzflags = mzflags;
     priv->alloc = alloc;
@@ -124,12 +113,12 @@ static tio_error _tio_sdecomp_miniz(tio_Stream* sm, tio_Stream* packed, tio_Stre
     return 0;
 }
 
-tio_error tio_sdecomp_zlib(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tiox_Alloc alloc, void* allocUD)
+tio_error tio_sdecomp_zlib(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD)
 {
     return _tio_sdecomp_miniz(sm, packed, flags, alloc, allocUD, TINFL_FLAG_PARSE_ZLIB_HEADER);
 }
 
-tio_error tio_sdecomp_deflate(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tiox_Alloc alloc, void* allocUD)
+tio_error tio_sdecomp_deflate(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD)
 {
     return _tio_sdecomp_miniz(sm, packed, flags, alloc, allocUD, 0);
 }

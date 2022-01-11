@@ -10,10 +10,6 @@
 
 enum tioDecompConstants
 {
-    tioDecompAllocMarker = 't' | ('i' << 8) | ('o' << 16) | ('D' << 24)
+    tioDecompAllocMarker = 't' | ('i' << 8) | ('o' << 16) | ('Z' << 24)
 };
 
-struct tioDecompStreamCommon
-{
-    tio_Stream* source;
-};
