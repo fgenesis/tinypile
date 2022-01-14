@@ -92,6 +92,7 @@ static void streamInitBlackhole(tio_Stream* sm)
 
 static void streamInitFail(tio_Stream* sm, tio_StreamFlags flags, int write)
 {
+    tio__ASSERT(sm->err); // should have been set by now
     if (write)
     {
         if(flags & tioS_Infinite)
@@ -116,8 +117,80 @@ TIO_PRIVATE size_t streamfail(tio_Stream* sm)
     if (!sm->err)   // Keep existing error, if any
         sm->err = tio_Error_Unspecified;
     streamInitFail(sm, sm->common.flags, sm->common.write);
-    return sm->Refill(sm);
+    return 0;
 }
+
+TIO_PRIVATE size_t streamEOF(tio_Stream* sm)
+{
+    sm->err = tio_Error_EOF;
+    return streamfail(sm);
+}
+
+// -- Handle-based stream, for reading. ---
+// Probably the worst way to do this but ok as a fallback if everything else fails...
+// Does not use a tio_Handle's file pointer so it can be created from a user-provided handle
+
+struct streamHandleReadBufferHeader
+{
+    tio_Alloc alloc;
+    void* allocUD;
+    // actual buffer follows
+};
+
+static void streamHandleReadClose(tio_Stream* sm)
+{
+    tio_kclose((tio_Handle)sm->priv.aux);
+    streamHandleReadBufferHeader* buf = (streamHandleReadBufferHeader*)sm->priv.extra;
+    --buf; // go back to the actual header
+    buf->alloc(buf->allocUD, buf, sm->priv.blockSize + sizeof(*buf), 0);
+    invalidate(sm);
+}
+
+static size_t streamHandleReadEOF(tio_Stream* sm)
+{
+    sm->err = tio_Error_EOF;
+    return streamfail(sm);
+}
+
+static size_t streamHandleReadRefill(tio_Stream* sm)
+{
+    size_t n = sm->priv.blockSize;
+    char* p = (char*)sm->priv.extra;
+    size_t done = 0;
+    tio_error err = os_readat((tio_Handle)sm->priv.aux, &done, p, n, sm->priv.offset);
+    if (done < n || err == tio_Error_EOF)
+        sm->Refill = streamHandleReadEOF;
+    else if(err)
+        sm->Refill = streamfail;
+    sm->priv.offset += done;
+    sm->begin = sm->cursor = p;
+    sm->end = p + done;
+    return done;
+}
+
+static tio_error streamHandleReadInit(tio_Stream* sm, tio_Handle h, size_t blocksize, tio_Alloc alloc, void *allocUD)
+{
+    if(!blocksize)
+        blocksize = mmio_alignment();
+
+    streamHandleReadBufferHeader* buf = (streamHandleReadBufferHeader*)
+        alloc(allocUD, 0, tioStreamAllocMarker, blocksize + sizeof(streamHandleReadBufferHeader));
+    if (!buf)
+        return tio_Error_MemAllocFail;
+
+    buf->alloc = alloc;
+    buf->allocUD = allocUD;
+
+    sm->Refill = streamHandleReadRefill;
+    sm->Close = streamHandleReadClose;
+
+    sm->priv.aux = h;
+    sm->priv.extra = buf + 1; // don't touch the header
+    sm->priv.blockSize = blocksize;
+
+    return 0;
+}
+
 
 // -- MMIO-based stream, for reading --
 
@@ -133,25 +206,29 @@ static void streamMMIOClose(tio_Stream* sm)
 {
     tioMMIOStreamData* m = streamdata<tioMMIOStreamData>(sm);
     tio_mmdestroy(&m->map);
-    if(m->mmio.backend) // This is used do decide whether we own the mmio or not
+    if(sm->common.flags & tioS_CloseBoth)
         tio_mclose(&m->mmio);
     m->alloc(m->allocUD, m, sizeof(*m), 0);
     invalidate(sm);
 }
 
-static inline char *smmremap(tio_Stream* sm, size_t sz, tio_Features features)
+static inline tio_error smmremap(tio_Stream* sm, size_t sz, tio_Features features)
 {
     tioMMIOStreamData* m = streamdata<tioMMIOStreamData>(sm);
-    return (char*)tio_mmremap(&m->map, sm->priv.offset, sz, features);
+    return tio_mmremap(&m->map, sm->priv.offset, sz, features);
 }
 
 static size_t streamMMIOReadRefill(tio_Stream* sm)
 {
     tioMMIOStreamData* m = streamdata<tioMMIOStreamData>(sm);
-    char *p = smmremap(sm, sm->priv.blockSize, tioF_Preload);
-    if (!p)
+    tio_error err = smmremap(sm, sm->priv.blockSize, tioF_Background);
+    if (err)
+    {
+        sm->err = err;
         return streamfail(sm);
+    }
 
+    char* p = m->map.begin;
     size_t sz = tio_mmsize(&m->map);
     sm->priv.offset += sz;
     sm->begin = sm->cursor = p;
@@ -188,7 +265,13 @@ static size_t streamMMIOWriteRefill(tio_Stream* sm)
                 if(!maxsize)
                     blk = 0; // ... so we set this: next attempt to map must fail
             }
-            cur = smmremap(sm, blk, 0);
+            tio_error err = smmremap(sm, blk, 0);
+            if (err)
+            {
+                sm->err = err;
+                return streamfail(sm);
+            }
+            cur = m->map.begin;
             end = m->map.end;
             sm->priv.offset += blk;
             if (!cur) // unlikely
@@ -220,9 +303,6 @@ static size_t streamMMIOWriteRefill(tio_Stream* sm)
 }
 
 // FIXME: uuhhh not sure
-/* Tests:
-    - Win8.1 x64: aln = 65536 -> 8 MB
-*/
 inline static size_t autoblocksize(size_t mult, size_t aln)
 {
     const size_t P = sizeof(void*);
@@ -230,11 +310,19 @@ inline static size_t autoblocksize(size_t mult, size_t aln)
     return N * aln;
 }
 
-// mmio must be already initialized and can be part of the stream or standalone
-static tio_error _streamInitMMIO(tio_Stream* sm, const tio_MMIO *mmio, size_t blocksize, tiosize offset, tiosize maxsize, int write, tio_StreamFlags flags)
+// mmio must be already initialized in the tioMMIOStreamData
+static tio_error _streamInitMapping(tio_Stream* sm, size_t blocksize, tiosize offset, tiosize maxsize, int write, tio_StreamFlags flags)
 {
     tioMMIOStreamData* m = streamdata<tioMMIOStreamData>(sm);
-    tio_error err = tio_mminit(&m->map, mmio);
+
+    if (offset >= m->mmio.filesize)
+        return tio_Error_Empty;
+
+    size_t maxavail = m->mmio.filesize - offset;
+    if (maxsize && maxsize < maxavail)
+        maxsize = maxavail;
+
+    tio_error err = tio_mminit(&m->map, &m->mmio);
     if(err)
         return err;
 
@@ -243,10 +331,16 @@ static tio_error _streamInitMMIO(tio_Stream* sm, const tio_MMIO *mmio, size_t bl
     tio__TRACE("streamMMIOReadInit: Requested blocksize %u, alignment is %u",
         unsigned(blocksize), unsigned(aln));
 
+    // Choose an initial size if necessary
     if (!blocksize)
-        blocksize = autoblocksize(2, aln);
-    else
-        blocksize = ((blocksize + (aln - 1)) / aln) * aln;
+        blocksize = autoblocksize(1, aln);
+
+    // Doesn't make sense to request a ton of memory for small files
+    if (blocksize > maxavail)
+        blocksize = maxavail;
+
+    // Round it up to mmio alignment
+    blocksize = ((blocksize + (aln - 1)) / aln) * aln;
 
     tio__TRACE("streamMMIOReadInit: Using blocksize %u", unsigned(blocksize));
 
@@ -282,9 +376,13 @@ static size_t streamHandleWriteRefill(tio_Stream* sm)
     tio__ASSERT(sm->begin <= sm->end);
     tio__static_assert(sizeof(ptrdiff_t) <= sizeof(size_t));
     size_t todo = sm->end - sm->begin;
-    size_t done = (size_t)os_write(streamhandle(sm), sm->begin, todo);
-    if (todo != done)
-        tio_streamfail(sm); // not enough bytes written, that's an error right away
+    size_t done = 0;
+    tio_error err = os_write(streamhandle(sm), &done, sm->begin, todo);
+    if (err || todo != done)
+    {
+        sm->err = err;
+        return tio_streamfail(sm); // not enough bytes written, that's an error right away
+    }
     return done;
 }
 
@@ -301,71 +399,6 @@ tio_error streamHandleWriteInit(tio_Stream* sm, tio_Handle h, tio_StreamFlags fl
     sm->err = 0;
 
     return 0; // can't fail
-}
-
-static tio_error streamInitFromFileName(tio_Stream* sm, const char* fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
-{
-    if(mode & tio_R)
-    {
-        tioMMIOStreamData m;
-        tio__memzero(&m, sizeof(m));
-
-        // Streams for reading are best backed by MMIO
-        tio_error err = tio_mopen(&m.mmio, fn, mode, features);
-        if(!err)
-        {
-            err = _streamInitMMIO(sm, &m.mmio, blocksize, 0, 0, 0, flags);
-            if(err)
-                tio_mclose(&m.mmio);
-        }
-        else if(err == tio_Error_EmptyFile)
-        {
-            streamInitFail(sm, flags, 0);
-            err = 0;
-        }
-
-        tioMMIOStreamData* pm = (tioMMIOStreamData*)alloc(allocUD, NULL, tioStreamAllocMarker, sizeof(tioMMIOStreamData));
-        if (!pm)
-            return tio_Error_MemAllocFail;
-
-        *pm = m;
-        pm->alloc = alloc;
-        pm->allocUD = allocUD;
-        sm->priv.extra = pm;
-
-        return err;
-    }
-
-    // When writing, we'll receive pointers, which we can write out to a file handle
-    tio_Handle hFile;
-    OpenMode om;
-    tio_error err = openfile(&hFile, &om, fn, mode, features);
-    if(err)
-        return err;
-
-    return streamHandleWriteInit(sm, hFile, flags);
-}
-
-TIO_PRIVATE tio_error initfilestream(tio_Stream* sm, const char* fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
-{
-    features |= tioF_Sequential; // streams are sequential by nature
-
-    if ((mode & tio_RW) == tio_RW) // either R or W, not both
-        return tio_Error_ParamError;
-
-    sm->Refill = NULL; // os_initstream() will set this if there is a custom impl
-    sm->common.flags = flags;
-
-    // Check if we have an OS-specific init function
-    int err = os_initstream(sm, fn, mode, features, flags, blocksize, alloc, allocUD);
-    if(err)
-        return err;
-
-    // No special handling, init whatever generic stream will work
-    if(!sm->Refill)
-        err = streamInitFromFileName(sm, fn, mode, features, flags, blocksize, alloc, allocUD);
-
-    return err;
 }
 
 static size_t streamRefillMemRead(tio_Stream* sm)
@@ -408,7 +441,7 @@ static size_t streamRefillMemWrite(tio_Stream* sm)
     return cp;
 }
 
-TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, void *mem, size_t memsize, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize)
+TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, void *mem, size_t memsize, tio_Mode mode, tio_StreamFlags flags, size_t blocksize)
 {
     size_t (*pRefill)(tio_Stream *s);
     int write = 0;
@@ -421,7 +454,7 @@ TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, void *mem, size_t memsize, t
         write = 1;
     }
     else
-        return tio_Error_ParamError;
+        return tio_Error_RTFM;
 
     tio__memzero(sm, sizeof(*sm));
     sm->Refill = pRefill;
@@ -434,12 +467,97 @@ TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, void *mem, size_t memsize, t
     return 0;
 }
 
-TIO_PRIVATE tio_error initmmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize)
+TIO_PRIVATE tio_error initmmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
 {
-    if(!(mode == tio_W || mode == tio_R))
-        return tio_Error_ParamError;
+    if (!(mode == tio_W || mode == tio_R))
+        return tio_Error_RTFM;
+
+    tioMMIOStreamData* pm = (tioMMIOStreamData*)alloc(allocUD, NULL, tioStreamAllocMarker, sizeof(tioMMIOStreamData));
+    if (!pm)
+        return tio_Error_MemAllocFail;
 
     tio__memzero(sm, sizeof(*sm));
 
-    return _streamInitMMIO(sm, mmio, blocksize, offset, maxsize, mode == tio_W, flags);
+    pm->mmio = *mmio; // dumb copy is as good as a move
+    pm->alloc = alloc;
+    pm->allocUD = allocUD;
+    sm->priv.extra = pm;
+    tio_error err = _streamInitMapping(sm, blocksize, offset, maxsize, mode == tio_W, flags);
+    if (err)
+        alloc(allocUD, pm, sizeof(*pm), 0);
+    return err;
+}
+
+// One successful refill of 0 bytes, after that fail
+static size_t streamRefillEmptyReadOnce(tio_Stream* sm)
+{
+    sm->cursor = sm->begin = sm->end = someptr(sm);
+    sm->Refill = streamEOF;
+    return 0;
+}
+
+static void streamInitEmptyReadOnce(tio_Stream* sm)
+{
+    sm->cursor = sm->begin = sm->end = 0;
+    sm->Close = invalidate;
+    sm->Refill = streamRefillEmptyReadOnce;
+}
+
+static tio_error streamInitFromFileName(tio_Stream* sm, const char* fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD)
+{
+    // For reading, use MMIO unless explicitly told not to
+    if ((mode & tio_R) && !(features & tioF_AvoidMMIO))
+    {
+        tio__ASSERT(!(mode & tio_W)); // should have been caught by caller
+        tio_MMIO mmio;
+        tio_error err = tio_mopen(&mmio, fn, mode & ~tio_W, features);
+        if (!err)
+        {
+            // Don't pass mode as-is. This is read-only and tio_mopen() should already have taken care of whatever mode specifies.
+            err = initmmiostream(sm, &mmio, 0, 0, tio_R, features, flags | tioS_CloseBoth, blocksize, alloc, allocUD);
+            if(err)
+                tio_mclose(&mmio);
+        }
+        else if (err == tio_Error_Empty) // MMIO doesn't work with empty files, but an empty stream is fine
+        {
+            streamInitEmptyReadOnce(sm);
+            err = 0;
+        }
+
+        return err;
+    }
+
+    // When writing, we'll receive pointers, which we can write out to a file handle
+    tio_Handle hFile;
+    OpenMode om;
+    tio_error err = openfile(&hFile, &om, fn, mode, features);
+    if (err)
+        return err;
+
+    if (mode & tio_R)
+        return streamHandleReadInit(sm, hFile, blocksize, alloc, allocUD);
+
+    return streamHandleWriteInit(sm, hFile, flags);
+}
+
+TIO_PRIVATE tio_error initfilestream(tio_Stream* sm, const char* fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD)
+{
+    features |= tioF_Sequential; // streams are sequential by nature
+
+    tio__ASSERT((mode & tio_RW) != tio_RW); // either R or W, not both
+
+    tio__memzero(sm, sizeof(*sm));
+    //sm->Refill = NULL; // os_initstream() will set this if there is a custom impl
+    sm->common.flags = flags;
+
+    // Check if we have an OS-specific init function
+    int err = os_initstream(sm, fn, mode, features, flags, blocksize, alloc, allocUD);
+    if (err)
+        return err;
+
+    // No special handling, init whatever generic stream will work
+    if (!sm->Refill)
+        err = streamInitFromFileName(sm, fn, mode, features, flags, blocksize, alloc, allocUD);
+
+    return err;
 }

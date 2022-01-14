@@ -291,7 +291,7 @@ static void *defaultalloc(void *user, void *ptr, size_t osize, size_t nsize)
 }
 #endif
 
-tiov_FS* tiov_FS::New(const tiov_Backend* bk, tiov_Alloc alloc, void* allocUD, size_t extrasize)
+tiov_FS* tiov_FS::New(const tiov_Backend* bk, tio_Alloc alloc, void* allocUD, size_t extrasize)
 {
     if(!alloc)
     {
@@ -310,7 +310,7 @@ tiov_FS* tiov_FS::New(const tiov_Backend* bk, tiov_Alloc alloc, void* allocUD, s
     return TIOV_PLACEMENT_NEW(mem) tiov_FS(bk, alloc, allocUD, totalsize);
 }
 
-tiov_FS::tiov_FS(const tiov_Backend* bk, tiov_Alloc alloc, void* allocUD, size_t totalsize)
+tiov_FS::tiov_FS(const tiov_Backend* bk, tio_Alloc alloc, void* allocUD, size_t totalsize)
 : Allocator(alloc, allocUD)
 , backend(*bk)
 , Mount(NULL)

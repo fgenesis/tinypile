@@ -58,12 +58,6 @@ extern "C" {
 /* Opaque "file handle", like FILE*. Do not confuse this with tio_Handle! */
 struct tiov_FH;
 
-/* Universal allocator interface.
-   Hint: This is API-compatible with LuaAlloc, if you need a fast block allocator.
-   (See https://github.com/fgenesis/tinypile/).
-   If you use tio_vfs from multiple threads, this must be thread-safe! */
-typedef void *(*tiov_Alloc)(void *ud, void *ptr, size_t osize, size_t nsize);
-
 /* For string comparisons. Returns 1 when equal, 0 when not, and <0 on error.
    The strings can be of different lengths. 'ud' is optional opaque userdata.*/
 typedef int (*tiov_StringEqualFunc)(const char *a, const char *b, void *ud);
@@ -93,10 +87,10 @@ struct tiov_FS;
 
 /* The physical filesystem, ie. what the OS sees. Delete when no longer needed.
    There's no reason to allocate more than one of this. */
-TIO_EXPORT tiov_FS *tiov_sysfs(tiov_Alloc alloc, void *allocUD);
+TIO_EXPORT tiov_FS *tiov_sysfs(tio_Alloc alloc, void *allocUD);
 
 /* Allocate a new virtual file system for mounting stuff into. */
-TIO_EXPORT tiov_FS *tiov_vfs(tiov_Alloc alloc, void *allocUD);
+TIO_EXPORT tiov_FS *tiov_vfs(tio_Alloc alloc, void *allocUD);
 
 /* Wrap an existing FS to try harder to find a file.
    What happens internally is that if a file/dir is not found, the parent directory
@@ -213,7 +207,7 @@ TIO_EXPORT tio_error tiov_fsname(const tiov_FS *fs, const char *path, tiov_FsNam
 
 /*=========================================================================================
 --- Advanced section --- Internals --- */
-/* 
+/*
 -------------------------------------------------------------------------------------------
 For testing, advanced usage and extensions.
 As a library user, there is REALLY AND ABSOLUTELY NO REASON to use any of these functions.
@@ -241,12 +235,12 @@ struct tiov_Backend
        If an error is returned, *hDst is automatically destroyed if it's not NULL.
        Close() is not called in this case. */
     tio_error (*Fopen)(tiov_FH **hDst, const tiov_FS *fs, const char *fn, tio_Mode mode, tio_Features features);
-    
+
     tio_error (*Mopen)(tio_MMIO *mmio, const tiov_FS *fs, const char *fn, tio_Mode mode, tio_Features features);
     tio_error (*Sopen)(tio_Stream *sm, const tiov_FS *fs, const char *fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize);
     tio_error (*DirList)(const tiov_FS *fs, const char *path, tio_FileCallback callback, void *ud);
     tio_FileType (*FileInfo)(const tiov_FS *fs, const char *path, tiosize *psz);
-    
+
     // TODO this is for later
     //tio_error (*CreateDir)(const tiov_FS *fs, const char *path); // TODO: decide about this.
 };
@@ -273,7 +267,7 @@ struct tiov_FileOps
    Unless you have a very good reason to, just forward an allocator passed in by the user.
    'extrasize' bytes of storage will be allocated for user data;
    you can get a pointer to this area via tiov_fsudata(). */
-TIO_EXPORT  tiov_FS *tiov_setupFS(const tiov_Backend *backend, tiov_Alloc alloc, void *allocUD, size_t extrasize);
+TIO_EXPORT  tiov_FS *tiov_setupFS(const tiov_Backend *backend, tio_Alloc alloc, void *allocUD, size_t extrasize);
 
 /* Allocate a file handle from a tiov_FileOps definition.
    The file handle is allocated via fs' allocator.
@@ -291,7 +285,7 @@ TIO_EXPORT void *tiov_fsudata(tiov_FS *fs);
 TIO_EXPORT void *tiov_fhudata(tiov_FH *fh);
 
 /* Get allocator associated with a FS */
-TIO_EXPORT void tiov_getAlloc(tiov_FS *fs, tiov_Alloc *pAlloc, void **pAllocUD);
+TIO_EXPORT void tiov_getAlloc(const tiov_FS *fs, tio_Alloc *pAlloc, void **pAllocUD);
 
 /* Lexically resolve a path. Does not check whether the target exists in the backend.
    The backend mounted at the found location is put in impl and the virtual path under which

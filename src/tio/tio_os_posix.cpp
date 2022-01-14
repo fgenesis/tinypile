@@ -1,5 +1,7 @@
 #ifdef TIO_USE_POSIX
 
+// TODO: look into MAP_HUGETLB -- requirements should be ok since the win32 code already requires a specific alignment and such
+
 // All the largefile defines for POSIX.
 // Needs to be defined before including any other headers.
 #ifndef _LARGEFILE_SOURCE
@@ -35,6 +37,27 @@ typedef size_t IOSizeT;
 static inline int h2fd(tio_Handle h) { return (int)(intptr_t)h; }
 static inline tio_Handle fd2h(int fd) { return (tio_Handle)(intptr_t)fd; }
 
+static tio_Error oserror()
+{
+    const int e = errno;
+    switch (e)
+    {
+        case ENOENT:   return tio_Error_NotFound;
+        case EACCESS:  return tio_Error_Forbidden;
+        case EFBIG:    return tio_Error_TooBig;
+        case ENOSPC:   return tio_Error_DeviceFull;
+        case EBADF:
+        case EINVAL:   return tio_Error_OSParamError;
+        case EIO:      return tio_Error_IOError;
+        case ENOMEM:   return tio_Error_MemAllocFail;
+        case EROFS:
+        case EACCES:   return tio_Error_Forbidden;
+        case EMFILE:   return tio_Error_ResAllocFail;
+        case ENOSYS:   return tio_Error_Unsupported;
+    }
+    return tio_Error_Unspecified;
+}
+
 TIO_PRIVATE char os_pathsep()
 {
     return OS_PATHSEP;
@@ -43,8 +66,50 @@ TIO_PRIVATE char os_pathsep()
 TIO_PRIVATE tio_error os_init()
 {
     tio__TRACE("POSIX dirent has d_type member: %d", int(Has_d_type<dirent>::value));
+
+#ifdef _HAVE_POSIX_MADVISE
+    tio__TRACE("Supports posix_madvise");
+#else
+    tio__TRACE("MISSING posix_madvise: Not compiled in",);
+#endif
+
+#ifdef _HAVE_POSIX_FADVISE
+    tio__TRACE("Supports posix_fadvise");
+#else
+    tio__TRACE("MISSING posix_fadvise: Not compiled in", );
+#endif
+
     return 0;
 }
+
+static void advise_sequential(int fd)
+{
+#ifdef _HAVE_POSIX_FADVISE
+    posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
+}
+
+static void advise_sequential(void* p, size_t sz)
+{
+#ifdef _HAVE_POSIX_FADVISE
+    posix_madvise(p, sz, POSIX_MADV_SEQUENTIAL);
+#endif
+}
+
+static void advise_willneed(int fd)
+{
+#ifdef _HAVE_POSIX_FADVISE
+    posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED);
+#endif
+}
+
+static void advise_willneed(void* p, size_t sz)
+{
+#ifdef _HAVE_POSIX_MADVISE
+    posix_madvise(p, sz, POSIX_MADV_WILLNEED);
+#endif
+}
+
 
 TIO_PRIVATE size_t os_pagesize()
 {
@@ -53,9 +118,7 @@ TIO_PRIVATE size_t os_pagesize()
 
 TIO_PRIVATE void os_preloadvmem(void* p, size_t sz)
 {
-#if defined(_HAVE_POSIX_MADVISE)
-    posix_madvise(p, sz, POSIX_MADV_WILLNEED);
-#endif
+    advise_willneed(p, sz);
 }
 
 /* ---- Begin Handle ---- */
@@ -77,40 +140,58 @@ TIO_PRIVATE tio_error os_closehandle(tio_Handle h)
     return ::close(h2fd(h));
 }
 
-TIO_PRIVATE tio_error os_openfile(tio_Handle* out, const char* fn, const OpenMode om, tio_Features features, unsigned osflags)
+// just opens a file and does nothing else
+// minimal support for tio_Features that are always safe to set
+// returns fd
+TIO_PRIVATE int simpleopen(const char* fn, const OpenMode om, tio_Features feature, unsigned osflags)
 {
     static const int _openflag[] = { O_RDONLY, O_WRONLY, O_RDWR };
     const int flag = osflags | _openflag[mode] | O_LARGEFILE;
-    if(features & tioF_NoBuffer)
+    if (features & tioF_NoBuffer)
         flag |= O_DSYNC; // could also be O_SYNC if O_DSYNC doesn't exist. Also check O_DIRECT
     const int fd = open(fn, flag);
-    *out = fd2h(fd);
-    if(fd != -1)
+    if (fd != -1)
     {
-#ifdef _HAVE_POSIX_FADVISE
-        if(features & tioF_Sequential)
-            posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
-        if(features & tioF_Preload)
-            posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED);
-#endif
-        return 0;
+        if (features & tioF_Sequential)
+            advise_sequential(fd);
     }
+    return fd;
+}
+
+// for when user requests a tio_Handle
+// apply all tio_Features
+TIO_PRIVATE tio_error os_openfile(tio_Handle* out, const char* fn, const OpenMode om, tio_Features features, unsigned osflags)
+{
+    const int fd = simpleopen(fn, om, features, osflags);
+    *out = fd2h(fd); // always write
+    if (fd == -1)
+        return oserror();
+
+    if (features & tioF_Background)
+        advise_willneed(fd);
+    return 0;
 }
 
 TIO_PRIVATE tio_error os_getsize(tio_Handle h, tiosize* psz)
 {
     struct stat st;
-    int err = !!::fstat(fd, &st);
-    *psz = err ? 0 : st.st_size;
+    tio_error err = 0;
+    tiosize sz = 0;
+    if (::fstat(fd, &st))
+        err = oserror();
+    else
+        sz = st.st_size;
+
+    *psz = sz;
     return err;
 }
 
-TIO_PRIVATE tiosize os_read(tio_Handle hFile, void* dst, tiosize n)
+TIO_PRIVATE tio_error os_read(tio_Handle hFile, size_t *psz, void* dst, size_t n)
 {
     return 0;
 }
 
-TIO_PRIVATE tiosize os_write(tio_Handle hFile, const void* src, tiosize n)
+TIO_PRIVATE tio_error os_write(tio_Handle hFile, size_t *psz, const void* src, size_t n)
 {
     return 0;
 }

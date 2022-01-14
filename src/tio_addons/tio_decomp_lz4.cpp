@@ -414,14 +414,14 @@ static size_t header(tio_Stream* sm)
         if (!(priv->flg & (1u << 3u))) // content size present?
             goto readHC;
 
-        $getbyte(2, c); sm->totalsize = tiosize(c); // optional: content size (8 bytes)
-        $getbyte(3, c); sm->totalsize |= (tiosize(c) << tiosize(8));
-        $getbyte(4, c); sm->totalsize |= (tiosize(c) << tiosize(16));
-        $getbyte(5, c); sm->totalsize |= (tiosize(c) << tiosize(24));
-        $getbyte(6, c); sm->totalsize |= (tiosize(c) << tiosize(32));
-        $getbyte(7, c); sm->totalsize |= (tiosize(c) << tiosize(40));
-        $getbyte(8, c); sm->totalsize |= (tiosize(c) << tiosize(48));
-        $getbyte(9, c); sm->totalsize |= (tiosize(c) << tiosize(56));
+        $getbyte(2, c); // ignored: content size (8 bytes)
+        $getbyte(3, c);
+        $getbyte(4, c);
+        $getbyte(5, c);
+        $getbyte(6, c);
+        $getbyte(7, c);
+        $getbyte(8, c);
+        $getbyte(9, c);
 
         // dictID bit is known to be 0, so we know there is no u32 dictID here
 
@@ -473,14 +473,17 @@ static tio_error commonInit(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags 
     if (!priv)
         return tio_Error_MemAllocFail;
 
-    sm->Close = close;
-    sm->common.flags = flags;
-    sm->priv.aux = packed;
-
+    TIOX_MEMSET(priv, 0, sizeof(*priv));
     priv->alloc = alloc;
     priv->allocUD = allocUD;
     priv->onBlockEnd = onBlockEnd;
     priv->blocksize = blocksize;
+
+    sm->Close = close;
+    sm->common.flags = flags;
+    sm->priv.aux = packed;
+    sm->priv.extra = priv;
+
     return 0;
 }
 
@@ -490,7 +493,6 @@ TIO_EXPORT tio_error tio_sdecomp_LZ4_block(tio_Stream* sm, tio_Stream* packed, s
 {
     TIOX_MEMSET(sm, 0, sizeof(*sm));
     sm->Refill = lz4d::decomp;
-    sm->totalsize = 0;
     return lz4d::commonInit(sm, packed, flags, alloc, allocUD, tio_streamfail, packedbytes);
 }
 
@@ -498,6 +500,5 @@ TIO_EXPORT tio_error tio_sdecomp_LZ4_frame(tio_Stream* sm, tio_Stream* packed, t
 {
     TIOX_MEMSET(sm, 0, sizeof(*sm));
     sm->Refill = lz4d::magic;
-    sm->totalsize = tiosize(-1);
     return lz4d::commonInit(sm, packed, flags, alloc, allocUD, lz4d::blockend, 0);
 }

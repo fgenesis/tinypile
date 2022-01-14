@@ -11,12 +11,6 @@ TIO_PRIVATE OpenMode checkmode(unsigned& mode, tio_Features& features)
     }
     tio__ASSERT(mode & tio_RW);
 
-    if (!(mode & tio_R))
-    {
-        tio__ASSERT(!(features & tioF_Preload) && "tioF_Preload and write-only makes no sense");
-        features &= ~tioF_Preload;
-    }
-
     OpenMode om =
     {
         tio_byte(0),
@@ -49,7 +43,7 @@ TIO_PRIVATE tio_error openfile(tio_Handle *hOut, OpenMode *om, const char *fn, t
 {
     *om = checkmode(mode, features);
     if(!om->good)
-        return tio_Error_ParamError;
+        return tio_Error_RTFM;
     return os_openfile(hOut, fn, *om, features, wflags);
 }
 

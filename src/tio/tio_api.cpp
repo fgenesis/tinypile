@@ -3,6 +3,27 @@
 
 /* ---- Begin public API ---- */
 
+// Always report API misuse safely
+#define checkapi_ret(expr, msg, r) do { tio__ASSERT((expr) && msg); if(!(expr)) return (r); } while(0,0)
+
+#ifdef _DEBUG
+#define checkhandle_ret(h, r) do { tio__ASSERT(isvalidhandle(h)); if(!isvalidhandle(h)) return (r); } while(0,0)
+#define checknotnull(ptr) tio__ASSERT((ptr != NULL) &&  #ptr " is NULL") /* then let it crash */
+#else
+#define checkhandle_ret(h, r) /* let the OS sort it out */
+#define checknotnull(ptr) /* let it crash */
+#endif
+
+// for use in functions that return tio_error
+#define checkhandle_err(h) checkhandle_ret(h, tio_Error_OSParamError)
+#define checkapi_err(expr, msg) checkapi_ret(expr, msg, tio_Error_RTFM)
+#define checknotnull_err(ptr) checknotnull(ptr)
+
+// for use in functions that return a size
+#define checkhandle_0(h) checkhandle_ret(h, 0)
+#define checkapi_0(expr, msg) checkapi_ret(expr, msg, 0)
+#define checknotnull_0(ptr) checknotnull(ptr)
+
 extern "C" {
 
 // Path/file names passed to the public API must be cleaned using this macro.
@@ -45,7 +66,7 @@ TIO_EXPORT size_t tio_pagesize()
 
 TIO_EXPORT tio_error tio_stdhandle(tio_Handle* hDst, tio_StdHandle id)
 {
-    tio__ASSERT(id <= tio_stderr && "RTFM: tio_StdHandle out of range");
+    checkapi_err(id <= tio_stderr, "tio_StdHandle out of range");
     tio_error err = -1;
     if (id <= tio_stderr)
     {
@@ -60,8 +81,12 @@ TIO_EXPORT tio_error tio_stdhandle(tio_Handle* hDst, tio_StdHandle id)
 }
 
 
-TIO_EXPORT tio_error tio_kopen(tio_Handle* hDst, const char* fn, tio_Mode mode, unsigned features)
+TIO_EXPORT tio_error tio_kopen(tio_Handle* hDst, const char* fn, tio_Mode mode, tio_Features features)
 {
+    checknotnull_err(hDst);
+    checknotnull_err(fn);
+    *hDst = os_getInvalidHandle();
+
     char* s;
     SANITIZE_PATH(s, fn, 0, 0);
 
@@ -74,89 +99,108 @@ TIO_EXPORT tio_error tio_kopen(tio_Handle* hDst, const char* fn, tio_Mode mode, 
     return 0;
 }
 
-TIO_EXPORT tio_error tio_kclose(tio_Handle h)
+TIO_EXPORT tio_error tio_kclose(tio_Handle fh)
 {
-    return os_closehandle(h);
+    checkhandle_err(fh);
+    return os_closehandle(fh);
 }
 
 TIO_EXPORT size_t tio_kread(tio_Handle fh, void* dst, size_t bytes)
 {
-    tio__ASSERT(isvalidhandle(fh));
-
+    checkhandle_0(fh);
     if (!bytes)
         return 0;
+    checknotnull_0(dst);
 
-    return os_read(fh, dst, bytes);
+    size_t sz = 0;
+    os_read(fh, &sz, dst, bytes);
+    return sz;
+}
+
+TIO_EXPORT tio_error tio_kreadx(tio_Handle fh, size_t *psz, void* dst, size_t bytes)
+{
+    checkhandle_err(fh);
+    checknotnull_err(psz);
+    if (!bytes)
+        return 0;
+    checknotnull_err(dst);
+
+    return os_read(fh, psz, dst, bytes);
 }
 
 TIO_EXPORT size_t tio_kreadat(tio_Handle fh, void* dst, size_t bytes, tiosize offset)
 {
-    tio__ASSERT(isvalidhandle(fh));
-
+    checkhandle_0(fh);
+    checkapi_0(!bytes || dst, "dst is NULL but would write to it");
     if (!bytes)
         return 0;
+    checknotnull_0(dst);
 
-    return os_readat(fh, dst, bytes, offset);
+    size_t sz = 0;
+    os_readat(fh, &sz, dst, bytes, offset);
+    return sz;
 }
 
 TIO_EXPORT size_t tio_kwrite(tio_Handle fh, const void* src, size_t bytes)
 {
-    tio__ASSERT(isvalidhandle(fh));
-
+    checkhandle_0(fh);
     if (!bytes)
         return 0;
+    checknotnull_0(src);
 
-    return os_write(fh, src, bytes);
+    size_t sz = 0;
+    os_write(fh, &sz, src, bytes);
+    return sz;
 }
 
 TIO_EXPORT size_t tio_kwriteat(tio_Handle fh, const void* src, size_t bytes, tiosize offset)
 {
-    tio__ASSERT(isvalidhandle(fh));
-
+    checkhandle_0(fh);
     if (!bytes)
         return 0;
+    checknotnull_0(src);
 
-    return os_writeat(fh, src, bytes, offset);
+    size_t sz = 0;
+    os_writeat(fh, &sz, src, bytes, offset);
+    return sz;
 }
 
 TIO_EXPORT tio_error tio_kseek(tio_Handle fh, tiosize offset, tio_Seek origin)
 {
-    return origin <= tio_SeekEnd
-        ? os_seek(fh, offset, origin)
-        : -1;
+    checkhandle_err(fh);
+    checkapi_err(origin <= tio_SeekEnd, "invalid tio_Seek constant");
+    return os_seek(fh, offset, origin);
 }
 
 TIO_EXPORT tio_error tio_ktell(tio_Handle fh, tiosize *poffset)
 {
+    checkhandle_err(fh);
+    checknotnull_err(poffset);
     return os_tell(fh, poffset);
 }
 
 TIO_EXPORT tio_error tio_kflush(tio_Handle fh)
 {
+    checkhandle_err(fh);
     return os_flush(fh);
-}
-
-TIO_EXPORT int tio_keof(tio_Handle fh)
-{
-    //return os_eof(fh); // TODO
-    return 0;
 }
 
 TIO_EXPORT tio_error  tio_ksetsize(tio_Handle fh, tiosize bytes)
 {
     //os_setsize(fh, bytes); // TODO
-    return -1;
+    return tio_Error_Unsupported;
 }
 
 TIO_EXPORT tio_error tio_kgetsize(tio_Handle h, tiosize* psize)
 {
-    //if(psize)
-    //    *psize = 0;
+    checkhandle_err(h);
+    checknotnull_err(psize);
     return os_getsize(h, psize);
 }
 
 TIO_EXPORT tiosize tio_ksize(tio_Handle h)
 {
+    checkhandle_0(h);
     tiosize sz;
     if (os_getsize(h, &sz))
         sz = 0;
@@ -167,7 +211,10 @@ TIO_EXPORT tiosize tio_ksize(tio_Handle h)
 
 TIO_EXPORT tio_error tio_mopen(tio_MMIO* mmio, const char* fn, tio_Mode mode, tio_Features features)
 {
+    checknotnull_err(mmio);
     tio__memzero(mmio, sizeof(*mmio));
+    checknotnull_err(fn);
+    checkapi_err(!(mode & tio_A), "MMIO doesn't support tio_A");
 
     char* s;
     SANITIZE_PATH(s, fn, 0, 0);
@@ -177,12 +224,15 @@ TIO_EXPORT tio_error tio_mopen(tio_MMIO* mmio, const char* fn, tio_Mode mode, ti
 
 TIO_EXPORT void* tio_mopenmap(tio_Mapping *map, tio_MMIO *mmio, const char* fn, tio_Mode mode, tiosize offset, size_t size, tio_Features features)
 {
+    checknotnull(map);
+
     void* p = NULL;
     if (!tio_mopen(mmio, fn, mode, features))
     {
         if(!tio_mminit(map, mmio))
         {
-            p = tio_mmremap(map, offset, size, features);
+            tio_error err = tio_mmremap(map, offset, size, features);
+            p = err ? NULL : map->begin;
             if(!p)
                 tio_mmdestroy(map);
         }
@@ -194,6 +244,8 @@ TIO_EXPORT void* tio_mopenmap(tio_Mapping *map, tio_MMIO *mmio, const char* fn, 
 
 TIO_EXPORT tio_error tio_mclose(tio_MMIO* mmio)
 {
+    checknotnull_err(mmio);
+
     tio_error (*pfClose)(tio_MMIO*) = mmio->backend->close;
     mmio->backend = NULL;
     return pfClose(mmio); // tail call
@@ -201,26 +253,31 @@ TIO_EXPORT tio_error tio_mclose(tio_MMIO* mmio)
 
 TIO_EXPORT tio_error tio_mminit(tio_Mapping *map, const tio_MMIO *mmio)
 {
+    checknotnull_err(map);
+    checknotnull_err(mmio);
+
     map->begin = map->end = NULL;
     return mmio->backend->init(map, mmio); // tail call
 }
 
 TIO_EXPORT void tio_mmdestroy(tio_Mapping *map)
 {
+    tio__ASSERT(map != NULL);
+
     void (*pfDestroy)(tio_Mapping *map) = map->backend->destroy;
     map->backend = NULL;
     pfDestroy(map); // tail call
 }
 
-TIO_EXPORT void* tio_mmremap(tio_Mapping *map, tiosize offset, size_t size, tio_Features features)
+TIO_EXPORT tio_error tio_mmremap(tio_Mapping *map, tiosize offset, size_t size, tio_Features features)
 {
-    void* p = map->backend->remap(map, offset, size, features);
-    tio__ASSERT(p == map->begin);
-    return p;
+    checknotnull_err(map);
+    return map->backend->remap(map, offset, size, features);
 }
 
 TIO_EXPORT void tio_mmunmap(tio_Mapping* map)
 {
+    tio__ASSERT(map != NULL);
     map->backend->unmap(map);
     map->begin = NULL; // can only set these after the call in case the backend uses them for something
     map->end = NULL;
@@ -228,6 +285,9 @@ TIO_EXPORT void tio_mmunmap(tio_Mapping* map)
 
 TIO_EXPORT tio_error tio_mmflush(tio_Mapping* map, tio_FlushMode flush)
 {
+    checknotnull_err(map);
+    checkapi_err(flush <= tio_FlushToDisk, "invalid tio_FlushMode");
+
     if(!map->end) // Empty mapping?
         return 0;
 
@@ -236,19 +296,23 @@ TIO_EXPORT tio_error tio_mmflush(tio_Mapping* map, tio_FlushMode flush)
 
 // ---- Stream API ----
 
-TIO_EXPORT tio_error tio_sopen(tio_Stream* sm, const char* fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize)
+TIO_EXPORT tio_error tio_sopen(tio_Stream* sm, const char* fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD)
 {
+    checkapi_err((mode & tio_RW) != tio_RW, "either specify tio_R or tio_W, but not both");
+    checknotnull_err(alloc);
+
     char* s;
     SANITIZE_PATH(s, fn, 0, 0);
-    tio_error err = initfilestream(sm, s, mode, features, flags, blocksize);
+    tio_error err = initfilestream(sm, s, mode, features, flags, blocksize, alloc, allocUD);
     sm->err = err;
     return err;
 }
 
 TIO_EXPORT tiosize tio_swrite(tio_Stream* sm, const void* ptr, size_t bytes)
 {
-    tio__ASSERT(sm->common.write); // Can't write to a read-only stream
-    if (!sm->common.write || sm->err)
+    checknotnull_0(sm);
+    checkapi_0(sm->common.write, "Can't write to a read-only stream");
+    if (sm->err || !bytes)
         return 0;
 
     char* const oldcur = sm->cursor;
@@ -271,8 +335,9 @@ TIO_EXPORT tiosize tio_swrite(tio_Stream* sm, const void* ptr, size_t bytes)
 
 TIO_EXPORT tiosize tio_sread(tio_Stream* sm, void* ptr, size_t bytes)
 {
-    tio__ASSERT(!sm->common.write); // Can't read from a write-only stream
-    if (sm->common.write || sm->err || !bytes)
+    checknotnull_0(sm);
+    checkapi_0(!sm->common.write, "Can't read from a write-only stream");
+    if (sm->err || !bytes)
         return 0;
 
     size_t done = 0;
@@ -299,17 +364,20 @@ TIO_EXPORT tiosize tio_sread(tio_Stream* sm, void* ptr, size_t bytes)
 
 TIO_EXPORT size_t tio_streamfail(tio_Stream* sm)
 {
+    checknotnull_0(sm);
     return streamfail(sm);
 }
 
-TIO_EXPORT tio_error tio_memstream(tio_Stream *sm, void *mem, size_t memsize, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize)
+TIO_EXPORT tio_error tio_memstream(tio_Stream *sm, void *mem, size_t memsize, tio_Mode mode, tio_StreamFlags flags, size_t blocksize)
 {
-    return initmemstream(sm, mem, memsize, mode, features, flags, blocksize);
+    checknotnull_err(sm);
+    return initmemstream(sm, mem, memsize, mode, flags, blocksize);
 }
 
-TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize)
+TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
 {
-    return initmmiostream(sm, mmio, offset, maxsize, mode, features, flags, blocksize);
+    checknotnull_err(sm);
+    return initmmiostream(sm, mmio, offset, maxsize, mode, features, flags, blocksize, alloc, allocUD);
 }
 
 // ---- Path and files API ----
@@ -317,6 +385,7 @@ TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosiz
 
 TIO_EXPORT tio_FileType tio_fileinfo(const char* fn, tiosize* psz)
 {
+    checknotnull(fn);
     char* s;
     SANITIZE_PATH(s, fn, 0, 0);
     return os_fileinfo(s, psz);
@@ -324,6 +393,8 @@ TIO_EXPORT tio_FileType tio_fileinfo(const char* fn, tiosize* psz)
 
 TIO_EXPORT tio_error tio_dirlist(const char* path, tio_FileCallback callback, void* ud)
 {
+    checknotnull_err(path);
+    checknotnull_err(callback);
     char* s;
     SANITIZE_PATH(s, path, tio_Clean_EndWithSep, 0);
     return os_dirlist(s, callback, ud);
@@ -331,6 +402,7 @@ TIO_EXPORT tio_error tio_dirlist(const char* path, tio_FileCallback callback, vo
 
 TIO_EXPORT tio_error tio_createdir(const char* path)
 {
+    checknotnull_err(path);
     char* s;
     SANITIZE_PATH(s, path, 0, 0);
 
@@ -351,17 +423,22 @@ TIO_EXPORT tio_error tio_createdir(const char* path)
 
 TIO_EXPORT tio_error tio_cleanpath(char* dst, const char* path, size_t dstsize, tio_CleanFlags flags)
 {
+    checknotnull_err(path);
     tio_error err = sanitizePath(dst, path, dstsize, tio__strlen(path), flags);
     if (err)
         *dst = 0;
     return err;
 }
 
-TIO_EXPORT size_t tio_joinpath(char *dst, size_t dstsize, const char * const *parts, size_t numparts, char sep)
+TIO_EXPORT size_t tio_joinpath(char *dst, size_t dstsize, const char * const *parts, size_t numparts, tio_CleanFlags flags)
 {
+    tio__ASSERT(!flags); // FIXME: respect this
+
     size_t req = 1; // the terminating \0
     for(size_t i = 0; i < numparts; ++i)
         req += tio__strlen(parts[i]) + 1; // + dirsep
+
+    const char sep = (flags & tio_Clean_SepNative) ? os_pathsep() : '/';
 
     if(req < dstsize)
     {

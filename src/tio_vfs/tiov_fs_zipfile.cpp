@@ -45,7 +45,7 @@ static bool checkEndRecord(ZipFooter *dst, const char *p, const char *end)
     size_t diff = end - p;
     if(diff < ZIP_END_HDR_SIZE)
         return false;
-    
+
     size_t spaceForComment = diff - ZIP_END_HDR_SIZE;
     size_t commentLen = read16LE(p + 20);
     if(spaceForComment < commentLen)
@@ -116,12 +116,14 @@ static bool readIndex(tio_Mapping *map)
 
     }
 
-    
+
     unsigned numEntries;
     {
         ZipFooter ft;
-        const char *foot = (const char*)tio_mmremap(map, offset, mapsize, 0);
-        const char *end = foot + mapsize;
+        if (tio_mmremap(map, offset, mapsize, 0))
+            return false;
+        const char* foot = map->begin;
+        const char* end = map->end;
 
         if(!findEndRecord(&ft, foot, end))
             return false;
@@ -134,8 +136,11 @@ static bool readIndex(tio_Mapping *map)
         numEntries = ft.numEntries;
     }
 
-    const char *cdrp = (const char*)tio_mmremap(map, offset, mapsize, tioF_Sequential);
-    const char *end = cdrp + mapsize;
+    if (tio_mmremap(map, offset, mapsize, tioF_Sequential))
+        return false;
+
+    const char* cdrp = map->begin;
+    const char* end = map->end;
 
     for(unsigned i = 0; i < numEntries; ++i)
     {
@@ -264,7 +269,7 @@ static const tiov_Backend backend =
     NULL, // CreateDir */
 };
 
-TIO_EXPORT tiov_FS *tiov_zipfs(tiov_FS *fs, const char *fn, tiov_Alloc alloc, void *allocUD)
+TIO_EXPORT tiov_FS *tiov_zipfs(tiov_FS *fs, const char *fn, tio_Alloc alloc, void *allocUD)
 {
     return tiov_setupFS(&backend, alloc, allocUD, 0);
 }

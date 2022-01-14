@@ -27,7 +27,7 @@ TIO_EXPORT void *tiov_fhudata(tiov_FH *fh)
     return fhudata(fh);
 }
 
-TIO_EXPORT void tiov_getAlloc(tiov_FS *fs, tiov_Alloc *pAlloc, void **pAllocUD)
+TIO_EXPORT void tiov_getAlloc(const tiov_FS *fs, tio_Alloc *pAlloc, void **pAllocUD)
 {
     if(pAlloc)
         *pAlloc = fs->_alloc;
@@ -35,7 +35,7 @@ TIO_EXPORT void tiov_getAlloc(tiov_FS *fs, tiov_Alloc *pAlloc, void **pAllocUD)
         *pAllocUD = fs->_allocUD;
 }
 
-TIO_EXPORT tiov_FS *tiov_setupFS(const tiov_Backend *backend, tiov_Alloc alloc, void *allocdata, size_t extrasize)
+TIO_EXPORT tiov_FS *tiov_setupFS(const tiov_Backend *backend, tio_Alloc alloc, void *allocdata, size_t extrasize)
 {
     return tiov_FS::New(backend, alloc, allocdata, extrasize);
 }
@@ -56,7 +56,7 @@ TIO_EXPORT int tiov_resolvepath(const tiov_FS *fs, const char *path, tiov_Resolv
 {
     if(fs->Resolve)
         return fs->Resolve(fs, path, cb, ud);
-    
+
     // Not a VFS? pass through
     cb(fs, path, ud);
     return 0;
@@ -219,7 +219,8 @@ TIO_EXPORT void *tiov_mopenmap(tio_Mapping *map, tio_MMIO *mmio, const tiov_FS *
     {
         if(!tio_mminit(map, mmio))
         {
-            p = tio_mmremap(map, offset, size, features);
+            tio_error err = tio_mmremap(map, offset, size, features);
+            p = err ? NULL : map->begin;
             if(!p)
                 tio_mmdestroy(map);
         }

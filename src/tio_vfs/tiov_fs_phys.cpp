@@ -45,7 +45,7 @@ static tio_error f_flush(tiov_FH *f)
 }
 static int f_eof(tiov_FH *f)
 {
-    return tio_keof($H);
+    return -1; // tio_keof($H); // FIXME
 }
 static tio_error f_getsize(tiov_FH *f, tiosize *psize)
 {
@@ -96,9 +96,12 @@ static tio_error sysfs_Mopen(tio_MMIO *mmio, const tiov_FS *, const char *fn, ti
 {
     return tio_mopen(mmio, fn, mode, features);
 }
-static tio_error sysfs_Sopen(tio_Stream *sm, const tiov_FS *, const char *fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize)
+static tio_error sysfs_Sopen(tio_Stream *sm, const tiov_FS *fs, const char *fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize)
 {
-    return tio_sopen(sm, fn, mode, features, flags, blocksize);
+    void* allocUD;
+    tio_Alloc alloc;
+    tiov_getAlloc(fs, &alloc, &allocUD);
+    return tio_sopen(sm, fn, mode, features, flags, blocksize, alloc, allocUD);
 }
 static tio_error sysfs_DirList(const tiov_FS *, const char *path, tio_FileCallback callback, void *ud)
 {
@@ -124,7 +127,7 @@ static const tiov_Backend backend =
     //sysfs_CreateDir,
 };
 
-TIO_EXPORT tiov_FS *tiov_sysfs(tiov_Alloc alloc, void *allocUD)
+TIO_EXPORT tiov_FS *tiov_sysfs(tio_Alloc alloc, void *allocUD)
 {
     return tiov_setupFS(&backend, alloc, allocUD, 0);
 }

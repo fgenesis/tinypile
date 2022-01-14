@@ -102,28 +102,6 @@ template<typename T> inline T tio_min(T a, T b) { return (a) < (b) ? (a) : (b); 
 
 typedef unsigned char tio_byte;
 
-template<typename T, T x> struct _MaxIOBlockSizeNext
-{
-    enum
-    {
-        next = x << T(1),
-        value = x < next ? next : 0 // handle overflow to 0 or negative
-    };
-};
-
-template<typename T, T x> struct _MaxIOBlockSize
-{
-    enum
-    {
-        next = _MaxIOBlockSizeNext<T, x>::value,
-        value = next ? next : x
-    };
-};
-template<typename T> struct MaxIOBlockSize
-{
-    enum { value = _MaxIOBlockSize<T, 1>::value };
-};
-
 static const tiosize tio_MaxArchMask = (size_t)(tiosize)(uintptr_t)(void*)(intptr_t)(-1); // cast away as many high bits as possible on this little round-trip
 
 struct AutoFreea
@@ -146,11 +124,12 @@ struct OpenMode
 // Internal utility functions
 TIO_PRIVATE OpenMode checkmode(unsigned& mode, tio_Features& features);
 TIO_PRIVATE size_t streamfail(tio_Stream* sm);
+TIO_PRIVATE size_t streamEOF(tio_Stream* sm); // sets err = EOF, then calls streamfail()
 TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, size_t srcsize, tio_CleanFlags flags);
 TIO_PRIVATE tio_error openfile(tio_Handle *hOut, OpenMode *om, const char *fn, tio_Mode mode, tio_Features& features, unsigned wflags = 0);
-TIO_PRIVATE tio_error initfilestream(tio_Stream* sm, const char* fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize);
-TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, void *mem, size_t memsize, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize);
-TIO_PRIVATE tio_error initmmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize);
+TIO_PRIVATE tio_error initfilestream(tio_Stream* sm, const char* fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
+TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, void *mem, size_t memsize, tio_Mode mode, tio_StreamFlags flags, size_t blocksize);
+TIO_PRIVATE tio_error initmmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
 
 
 // Higher-level mmio API
@@ -171,17 +150,17 @@ TIO_PRIVATE tio_error os_init();
 TIO_PRIVATE size_t os_pagesize();
 TIO_PRIVATE tio_Handle os_getInvalidHandle();
 
-TIO_PRIVATE tio_Handle os_stdhandle(tio_StdHandle id);
+TIO_PRIVATE tio_Handle os_stdhandle (tio_StdHandle id);
 TIO_PRIVATE tio_error os_closehandle(tio_Handle h);
-TIO_PRIVATE tio_error os_openfile(tio_Handle* out, const char* fn, OpenMode om, tio_Features features, unsigned osflags);
-TIO_PRIVATE size_t os_read(tio_Handle fh, void* dst, size_t n);
-TIO_PRIVATE size_t os_readat(tio_Handle fh, void* dst, size_t n, tiosize offset);
-TIO_PRIVATE size_t os_write(tio_Handle fh, const void* src, tiosize n);
-TIO_PRIVATE size_t os_writeat(tio_Handle fh, const void* src, tiosize n, tiosize offset);
-TIO_PRIVATE tio_error os_seek(tio_Handle hFile, tiosize offset, tio_Seek origin);
-TIO_PRIVATE tio_error os_tell(tio_Handle hFile, tiosize* poffset);
-TIO_PRIVATE tio_error os_flush(tio_Handle hFile);
-TIO_PRIVATE tio_error os_getsize(tio_Handle h, tiosize* psz);
+TIO_PRIVATE tio_error os_openfile   (tio_Handle* out, const char* fn, OpenMode om, tio_Features features, unsigned osflags);
+TIO_PRIVATE tio_error os_read       (tio_Handle fh, size_t *psz, void* dst, size_t n);
+TIO_PRIVATE tio_error os_readat     (tio_Handle fh, size_t *psz, void* dst, size_t n, tiosize offset);
+TIO_PRIVATE tio_error os_write      (tio_Handle fh, size_t *psz, const void* src, tiosize n);
+TIO_PRIVATE tio_error os_writeat    (tio_Handle fh, size_t *psz, const void* src, tiosize n, tiosize offset);
+TIO_PRIVATE tio_error os_seek       (tio_Handle hFile, tiosize offset, tio_Seek origin);
+TIO_PRIVATE tio_error os_tell       (tio_Handle hFile, tiosize* poffset);
+TIO_PRIVATE tio_error os_flush      (tio_Handle hFile);
+TIO_PRIVATE tio_error os_getsize    (tio_Handle h, tiosize* psz);
 
 // Low-level mmio functions. Only called via the mm_*()-functions
 // These functions may use {mmio|map}->priv.os freely, but must not change mmio->priv.mm

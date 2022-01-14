@@ -576,7 +576,7 @@ static const tiov_Backend backend =
     NULL, // CreateDir // TODO*/
 };
 
-TIO_EXPORT tiov_FS *tiov_vfs(tiov_Alloc alloc, void *allocUD)
+TIO_EXPORT tiov_FS *tiov_vfs(tio_Alloc alloc, void *allocUD)
 {
     tiov_FS *vfs = tiov_setupFS(&backend, alloc, allocUD, sizeof(Vfsdata));
     vfs->Mount = vfs_Mount;

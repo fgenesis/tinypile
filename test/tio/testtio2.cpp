@@ -24,17 +24,24 @@ int main()
     tiov_deleteVFS(vfs);*/
 
 
-    const char* fn = "eats.txt.lz4";
+    //const char* fn = "eats.txt.lz4";
+    const char* fn = "save-0000.aqs";
     tio_Stream sm, packed;
-    if (tio_sopen(&packed, fn, tio_R, 0, 0, 0))
+    if (tio_sopen(&packed, fn, tio_R, tioF_Background, 0, 0, myalloc, NULL))
         exit(1);
-    if (tio_sdecomp_LZ4_frame(&sm, &packed, tioS_CloseBoth, myalloc, NULL))
+    //if (tio_sdecomp_LZ4_frame(&sm, &packed, tioS_CloseBoth, myalloc, NULL))
+    //    exit(2);
+    if (tio_sdecomp_zlib(&sm, &packed, tioS_CloseBoth, myalloc, NULL))
         exit(2);
 
-    for (size_t n; (n = tio_srefill(&sm)); )
+    for(;;)
     {
+        size_t n = tio_srefill(&sm);
+        if (sm.err)
+            break;
         fwrite(sm.begin, 1, n, stdout);
     }
+    printf("\nsm.err = %d\n", sm.err);
     tio_sclose(&sm);
 
     return 0;

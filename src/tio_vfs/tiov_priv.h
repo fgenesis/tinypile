@@ -44,10 +44,10 @@ inline void  operator delete(void*, tiov__NewDummy, void*)       {}
 class Allocator
 {
 public:
-    tiov_Alloc _alloc;
+    tio_Alloc _alloc;
     void * _allocUD;
 
-    Allocator(tiov_Alloc a, void *ud) : _alloc(a), _allocUD(ud) {}
+    Allocator(tio_Alloc a, void *ud) : _alloc(a), _allocUD(ud) {}
     Allocator(const Allocator& a) : _alloc(a._alloc), _allocUD(a._allocUD) {}
 
     inline void *Alloc(size_t sz) const
@@ -74,10 +74,10 @@ struct tiov_FS : public Allocator
 
     const size_t totalsize;
 
-    static tiov_FS *New(const tiov_Backend *bk, tiov_Alloc alloc, void *allocUD, size_t extrasize);
+    static tiov_FS *New(const tiov_Backend *bk, tio_Alloc alloc, void *allocUD, size_t extrasize);
 
 private:
-    tiov_FS(const tiov_Backend *bk, tiov_Alloc alloc, void *allocUD, size_t totalsize);
+    tiov_FS(const tiov_Backend *bk, tio_Alloc alloc, void *allocUD, size_t totalsize);
 
     // ... + extra stuff behind the struct, depends on the backend
 };

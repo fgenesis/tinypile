@@ -6,6 +6,9 @@
 // Other notes:
 // https://github.com/ziglang/zig/issues/7751
 
+// Inspired by:
+// http://vec3.ca/using-win32-asynchronous-io/
+
 #ifdef TIO_USE_WIN32
 
 /* TODO:
@@ -43,8 +46,8 @@ typedef DWORD IOSizeT;
 
 enum
 {
-    win32MaxIOBlockSize = MaxIOBlockSize<IOSizeT>::value, // max. power-of-2 size that can be safely used by the OS native read/write calls
-    win32SafeWriteSize = 1024 * 1024 * 16, // MSDN is a bit unclear, something about 31.97 MB, so 16MB should be safe in all cases
+    win32MaxOverlappedIOBlocks = sizeof(uintptr_t) < 8 ? 4 : 16, // win64 can keep so much more in flight
+    win32MaxIOBlockSize = 1024 * 1024 * 16, // MSDN is a bit unclear, something about 31.97 MB, so 16MB should be safe in all cases
     win32PathExtraSpace = 4 // for UNC prefix: "\\?\"
 };
 
@@ -79,6 +82,7 @@ TIO_PRIVATE tio_error os_init()
         tio__TRACE("PrefetchVirtualMemory = %p", (void*)WIN_PrefetchVirtualMemory);
     }
     tio__TRACE("win32MaxIOBlockSize = %u", win32MaxIOBlockSize);
+    tio__TRACE("win32MaxOverlappedIOBlocks = %u", win32MaxOverlappedIOBlocks);
     return 0;
 }
 
@@ -175,37 +179,45 @@ static inline OVERLAPPED win32_overlappedOffset(tiosize offset)
     return ov;
 }
 
-static size_t win32_read(tio_Handle hFile, void* dst, tiosize n, LPOVERLAPPED ov)
+static tio_error win32_read(tio_Handle hFile, size_t *psz, void* dst, tiosize n, LPOVERLAPPED ov)
 {
-    BOOL ok;
     size_t done = 0;
+    tio_error err = 0;
     do
     {
         DWORD rd = 0, remain = (DWORD)tio_min<size_t>(n, win32MaxIOBlockSize);
         // MSDN says: The system updates the OVERLAPPED offset before ReadFile returns (if present)
-        ok = ::ReadFile((HANDLE)hFile, dst, remain, &rd, ov);
+        BOOL ok = ::ReadFile((HANDLE)hFile, dst, remain, &rd, ov);
+        if (!ok)
+            break;
         done += rd;
+        if (rd < remain) // eof?
+            break;
         n -= rd;
-    } while (ok && n);
-    return done;
+    } while (n);
+    *psz = done;
+    return err;
 }
 
-TIO_PRIVATE size_t os_read(tio_Handle hFile, void* dst, tiosize n)
+TIO_PRIVATE tio_error os_read(tio_Handle hFile, size_t *psz, void* dst, size_t n)
 {
-    return win32_read(hFile, dst, n, NULL);
+    return win32_read(hFile, psz, dst, n, NULL);
 }
 
-TIO_PRIVATE size_t os_readat(tio_Handle hFile, void* dst, tiosize n, tiosize offset)
+TIO_PRIVATE tio_error os_readat(tio_Handle hFile, size_t *psz, void* dst, tiosize n, tiosize offset)
 {
     OVERLAPPED ov = win32_overlappedOffset(offset);
-    return win32_read(hFile, dst, n, &ov);
+    return win32_read(hFile, psz, dst, n, &ov);
 }
 
-TIO_PRIVATE size_t win32_write(tio_Handle hFile, const void* src, size_t n, LPOVERLAPPED ov)
+// FIXME: clean up, make more robust, and always respect maxio
+TIO_PRIVATE tio_error win32_write(tio_Handle hFile, size_t *psz, const void* src, size_t n, LPOVERLAPPED ov)
 {
+    tio__ASSERT(0 && "this needs testing first");
     tiosize done = 0;
     DWORD remain = (DWORD)tio_min<size_t>(n, win32MaxIOBlockSize);
     unsigned fail = 0;
+    tio_error err = 0;
     do // First time try to write the entire thing in one go, if that fails, switch to smaller blocks
     {
         DWORD written = 0;
@@ -213,20 +225,21 @@ TIO_PRIVATE size_t win32_write(tio_Handle hFile, const void* src, size_t n, LPOV
         fail += !!::WriteFile((HANDLE)hFile, src, remain, &written, ov);
         done += written;
         n -= written;
-        remain = (DWORD)tio_min<size_t>(n, fail ? win32SafeWriteSize : win32MaxIOBlockSize);
+        remain = (DWORD)tio_min<size_t>(n, win32MaxIOBlockSize);
     } while (n && fail < 2);
-    return done;
+    *psz = done;
+    return err;
 }
 
-TIO_PRIVATE size_t os_write(tio_Handle hFile, const void* src, tiosize n)
+TIO_PRIVATE tio_error os_write(tio_Handle hFile, size_t* psz, const void* src, size_t n)
 {
-    return win32_write(hFile, src, n, NULL);
+    return win32_write(hFile, psz, src, n, NULL);
 }
 
-TIO_PRIVATE size_t os_writeat(tio_Handle hFile, const void* src, tiosize n, tiosize offset)
+TIO_PRIVATE tio_error os_writeat(tio_Handle hFile, size_t* psz, const void* src, tiosize n, tiosize offset)
 {
     OVERLAPPED ov = win32_overlappedOffset(offset);
-    return win32_write(hFile, src, n, &ov);
+    return win32_write(hFile, psz, src, n, &ov);
 }
 
 // FIXME: fix origin != begin.
@@ -325,14 +338,13 @@ static size_t mulCheckOverflow0(size_t a, size_t b)
 
 struct tioWin32OverlappedExtra
 {
-    enum { NumEvents = 4 };
     size_t nextToRequest;
     size_t blocksInUse;
-    unsigned err;
+    DWORD win32err; // win32 error code from GetLastError()
     tio_Features features;
-    HANDLE events[NumEvents];
-    void* ptrs[NumEvents];
-    OVERLAPPED ovs[NumEvents];
+    HANDLE events[win32MaxOverlappedIOBlocks];
+    void* ptrs[win32MaxOverlappedIOBlocks];
+    OVERLAPPED ovs[win32MaxOverlappedIOBlocks];
     tio_Alloc alloc;
     void *allocUD;
 };
@@ -342,7 +354,7 @@ struct tioWin32OverlappedStreamOverlay
 {
     tio_Handle hFile; // HANDLE
     tioWin32OverlappedExtra *extra;
-    size_t chunk; // next available block; lags behind nextToRequest
+    size_t chunk; // next available block; lags behind extra->nextToRequest
     size_t blockSize; // aligned to some OS value
     void *vmem; // via VirtualAlloc()
 };
@@ -374,18 +386,19 @@ static void streamWin32OverlappedClose(tio_Stream* sm)
     tio_Handle hFile = ov->hFile;
     ov->hFile = os_getInvalidHandle();
     os_closehandle(hFile); // this also cancels all in-flight overlapped IO
-    enum { N = tioWin32OverlappedExtra::NumEvents };
     tioWin32OverlappedExtra *ex = _memoverlay(sm);
-    for (size_t i = 0; i < N; ++i)
+    for (size_t i = 0; i < win32MaxOverlappedIOBlocks; ++i)
         if (HANDLE ev = ex->events[i])
             ::CloseHandle(ev);
     ::VirtualFree(ov->vmem, 0, MEM_RELEASE);
+    ex->alloc(ex->allocUD, ex, sizeof(*ex), 0);
 }
 
 static void _streamWin32OverlappedRequestNextChunk(tio_Stream* sm)
 {
+    tioWin32OverlappedStreamOverlay* ovl = _streamoverlay(sm);
     tioWin32OverlappedExtra * ex = _memoverlay(sm);
-    if (ex->err)
+    if (ex->win32err)
         return;
 
     size_t chunk = ex->nextToRequest++;
@@ -402,19 +415,19 @@ static void _streamWin32OverlappedRequestNextChunk(tio_Stream* sm)
     ov->Pointer = NULL;
     tio__ASSERT(ov->hEvent);
 
-    const size_t blocksize = sm->priv.blockSize;
+    const size_t blocksize = ovl->blockSize;
+    tio__ASSERT(blocksize);
     LARGE_INTEGER offset;
-    offset.QuadPart = chunk * blocksize;
+    offset.QuadPart = chunk;
+    offset.QuadPart *= blocksize; // make sure this is a 64bit multiply
     ov->Offset = offset.LowPart;
     ov->OffsetHigh = offset.HighPart;
 
     ::SetLastError(0);
 
-    tioWin32OverlappedStreamOverlay *ovl = _streamoverlay(sm);
-
     // fail/EOF will be recorded in OVERLAPPED so we can ignore the return value here
     BOOL ok = ::ReadFile((HANDLE)ovl->hFile, dst, (DWORD)blocksize, NULL, ov);
-    tio__TRACE("[%u] Overlapped ReadFile(%p) chunk %u -> ok = %u",
+    tio__TRACE("[inflight: %u] Overlapped ReadFile(%p) chunk %u -> ok = %u",
         overlappedInflight(sm), dst, unsigned(chunk), ok);
     if (ok)
         return;
@@ -422,16 +435,14 @@ static void _streamWin32OverlappedRequestNextChunk(tio_Stream* sm)
     DWORD err = ::GetLastError();
     if (err != ERROR_IO_PENDING)
     {
-        ex->err = err;
+        ex->win32err = err; // this may be EOF, or not. Handle this once we've reached processing this block.
         ex->ptrs[chunkidx] = NULL;
-        tio__TRACE("... failed with error %u", unsigned(err));
+        tio__TRACE("... failed with error %u (is EOF: %u)", unsigned(err), err == ERROR_HANDLE_EOF);
     }
-}
-
-static size_t streamWin32RefillEOF(tio_Stream *sm)
-{
-    sm->err = tio_Error_EOF;
-    return tio_streamfail(sm);
+    else
+    {
+        tio__TRACE("... IO pending...");
+    }
 }
 
 static size_t streamWin32OverlappedRefill(tio_Stream* sm)
@@ -445,8 +456,8 @@ static size_t streamWin32OverlappedRefill(tio_Stream* sm)
     char* p = (char*)ex->ptrs[chunkidx];
     if (!p)
     {
-        tio__TRACE("streamWin32OverlappedRefill hit end at chunk %u, err = %u",
-            unsigned(chunk), ex->err);
+        tio__TRACE("streamWin32OverlappedRefill hit end at chunk %u, win32err = %u",
+            unsigned(chunk), ex->win32err);
         return tio_streamfail(sm);
     }
 
@@ -459,23 +470,31 @@ static size_t streamWin32OverlappedRefill(tio_Stream* sm)
     DWORD done = 0;
     BOOL wait = (ex->features & tioF_Nonblock) ? FALSE : TRUE; // don't wait in async mode
     BOOL ok = ::GetOverlappedResult(hFile, ov, &done, wait);
-    tio__TRACE("[%u] GetOverlappedResult(%p) chunk %u -> read %u, ok = %u",
+    tio__TRACE("[inflight: %u] GetOverlappedResult(%p) chunk %u -> read %u, ok = %u",
         overlappedInflight(sm), (void*)p, unsigned(chunk), unsigned(done), ok);
+    DWORD err = 0;
     if (ok)
     {
+        // For small files, blockSize == 1. This would kick off another request only to fail later,
+        // so we can skip that and handle EOF now.
+        if (done < ovl->blockSize)
+            goto eof;
         ovl->chunk = chunk + 1;
         _streamWin32OverlappedRequestNextChunk(sm);
     }
     else
     {
-        switch (DWORD err = ::GetLastError())
+        err = ::GetLastError();
+        switch (err)
         {
         default:
             tio__TRACE("GetOverlappedResult(): unhandled return %u, done = %u", unsigned(err), unsigned(done));
             sm->Refill = streamfail; // Use the current buffer, but fail next time
             break;
         case ERROR_HANDLE_EOF:
-            sm->Refill = streamWin32RefillEOF;
+eof:
+            tio__TRACE("... hit EOF! Now using the last block.");
+            sm->Refill = streamEOF;
             break;
         case ERROR_IO_INCOMPLETE:
             sm->cursor = sm->begin = sm->end = p;
@@ -502,27 +521,26 @@ static tio_error streamWin32OverlappedInit(tio_Stream* sm, tio_Handle hFile, siz
 
     tiosize fullsize;
     if (os_getsize(hFile, &fullsize))
-        return tio_Error_EmptyFile;
+        return tio_Error_Empty;
 
     // use dtor to free this in case of error; otherwise the error path would become too messy
     PtrHolder exh(alloc, allocUD, sizeof(tioWin32OverlappedExtra), tioStreamAllocMarker);
     if (!exh.ptr)
         return tio_Error_MemAllocFail;
 
-    enum { N = tioWin32OverlappedExtra::NumEvents };
-
     const size_t aln = mmio_alignment();
     if (!blocksize)
         blocksize = (1 << 4) * aln; //4 * aln; //autoblocksize(1, aln);
-    else if (blocksize > win32MaxIOBlockSize / N)
-        blocksize = win32MaxIOBlockSize / N;
+
+    if (blocksize > win32MaxIOBlockSize / win32MaxOverlappedIOBlocks)
+        blocksize = win32MaxIOBlockSize / win32MaxOverlappedIOBlocks;
 
     if (blocksize > fullsize)
         blocksize = (size_t)fullsize;
     const size_t alignedBlocksize = alignedRound(blocksize, aln);
 
     const tiosize reqblocks = (fullsize + (alignedBlocksize - 1)) / alignedBlocksize;
-    const size_t useblocks = (size_t)tio_min<tiosize>(N, reqblocks);
+    const size_t useblocks = (size_t)tio_min<tiosize>(win32MaxOverlappedIOBlocks, reqblocks);
     // FIXME: round so that blocksize is the max. allocation size instead, and subdivide that
     const size_t reqbufmem = (size_t)tio_min<tiosize>(mulCheckOverflow0(useblocks, alignedBlocksize), fullsize);
     if (!reqbufmem) // Zero size is useless, and overflow is dangerous
@@ -531,7 +549,7 @@ static tio_error streamWin32OverlappedInit(tio_Stream* sm, tio_Handle hFile, siz
 
     tio__ASSERT(allocsize % aln == 0);
     tio__TRACE("streamWin32OverlappedInit: %u/%u blocks of size %u, total %u",
-        unsigned(useblocks), unsigned(reqblocks), unsigned(blocksize), unsigned(allocsize));
+        unsigned(useblocks), unsigned(reqblocks), unsigned(alignedBlocksize), unsigned(allocsize));
     if (!allocsize)
         return tio_Error_Unspecified;
 
@@ -546,6 +564,8 @@ static tio_error streamWin32OverlappedInit(tio_Stream* sm, tio_Handle hFile, siz
     tio__memzero(ovl, sizeof(*ovl));
     tio__memzero(ex, sizeof(*ex));
 
+    ex->alloc = alloc;
+    ex->allocUD = allocUD;
     ex->blocksInUse = useblocks;
     ex->features = features;
 
@@ -570,13 +590,13 @@ static tio_error streamWin32OverlappedInit(tio_Stream* sm, tio_Handle hFile, siz
         pdata += alignedBlocksize;
     }
 
+    ovl->extra = ex;
     exh.keep();
 
     ovl->hFile = hFile;
     ovl->vmem = mem;
     ovl->blockSize = alignedBlocksize;
     ovl->chunk = 0; // next chunk to read
-    sm->totalsize = fullsize;
     sm->err = 0;
     sm->common.write = 0;
 
@@ -585,7 +605,8 @@ static tio_error streamWin32OverlappedInit(tio_Stream* sm, tio_Handle hFile, siz
 
     // Keep one block free -- external code will be working on that one block
     // while the OS processes the others in the background.
-    const size_t run = tio_min<size_t>(1, useblocks - 1);
+    tio__ASSERT(useblocks > 0);
+    const size_t run = tio_min<size_t>(useblocks, win32MaxOverlappedIOBlocks - 1);
     for (i = 0; i < run; ++i)
         _streamWin32OverlappedRequestNextChunk(sm);
 
@@ -628,6 +649,20 @@ TIO_PRIVATE tio_FileType os_fileinfo(char* path, tiosize* psz)
         s.LowPart = attr.nFileSizeLow;
         s.HighPart = attr.nFileSizeHigh;
         sz = s.QuadPart;
+        // Special treatment for symlinks:
+        // The size is reported as 0, so if we want the size, query it specifically
+        if (psz && !sz && (attr.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+        {
+            // Luckily CreateFile() follows symlinks by default
+            HANDLE ff = ::CreateFileW(wpath, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (ff != INVALID_HANDLE_VALUE)
+            {
+                if (::GetFileSizeEx(ff, &s))
+                    sz = s.QuadPart;
+                ::CloseHandle(ff);
+            }
+        }
+
         t = win32_getFileType(attr.dwFileAttributes);
     }
 
@@ -797,7 +832,7 @@ TIO_PRIVATE size_t os_pathExtraSpace()
 
 TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
 {
-    if ((features & tioF_Preload) && (mode & tio_R))
+    if ((features & tioF_Background) && (mode & tio_R))
     {
         DWORD wflags = FILE_FLAG_OVERLAPPED;
         if (features & tioF_NoBuffer)

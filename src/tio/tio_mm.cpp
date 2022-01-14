@@ -14,12 +14,11 @@ static tio_error mm_flush(tio_Mapping *map, tio_FlushMode flush)
     return os_flush(map->priv.mm.hFile);
 }
 
-static void* mm_fail(tio_Mapping *map)
+static void mm_fail(tio_Mapping *map)
 {
     map->begin = NULL;
     map->end = NULL;
     map->priv.mm.base = NULL;
-    return NULL;
 }
 
 static void mm_unmap(tio_Mapping *map)
@@ -28,12 +27,15 @@ static void mm_unmap(tio_Mapping *map)
     // API sets begin, end = NULL
 }
 
-static void* mm_remap(tio_Mapping *map, tiosize offset, size_t size, tio_Features features)
+static tio_error mm_remap(tio_Mapping *map, tiosize offset, size_t size, tio_Features features)
 {
     tio__ASSERT(isvalidhandle(map->priv.mm.hFile));
 
     if (offset >= map->filesize)
-        return mm_fail(map);
+    {
+        mm_fail(map);
+        return tio_Error_EOF;
+    }
 
     const size_t alignment = mmio_alignment();
     const tiosize mapOffs = (offset / alignment) * alignment; // mmap offset must be page-aligned
@@ -64,21 +66,27 @@ static void* mm_remap(tio_Mapping *map, tiosize offset, size_t size, tio_Feature
     }
     tio__ASSERT(size <= mapsize);
     if (mapsize >= tio_MaxArchMask) // overflow or file won't fit into address space?
-        return mm_fail(map);
+    {
+        mm_fail(map);
+        return tio_Error_TooBig;
+    }
 
     char* base = (char*)os_mmap(map, mapOffs, mapsize);
-    if(!base)
-        return mm_fail(map);
+    if (!base)
+    {
+        mm_fail(map);
+        return tio_Error_ResAllocFail;
+    }
 
     char* const p = base + ptrOffs;
 
-    if (features & tioF_Preload)
+    if (features & tioF_Background)
         os_preloadvmem(p, size);
 
     map->begin = p;
     map->end = p + size;
     map->priv.mm.base = base;
-    return p;
+    return 0;
 }
 
 tio_error mm_init(tio_Mapping *map, const tio_MMIO *mmio)
@@ -125,7 +133,7 @@ static tio_error mmio_initFromHandle(tio_MMIO *mmio, tio_Handle hFile, const Ope
     if(err)
         return err;
     if(!mmio->filesize)
-        return tio_Error_EmptyFile;
+        return tio_Error_Empty;
 
     mmio->backend = &s_mm_backend;
     mmio->priv.mm.hFile = hFile;
