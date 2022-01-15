@@ -96,12 +96,12 @@ static tio_error sysfs_Mopen(tio_MMIO *mmio, const tiov_FS *, const char *fn, ti
 {
     return tio_mopen(mmio, fn, mode, features);
 }
-static tio_error sysfs_Sopen(tio_Stream *sm, const tiov_FS *fs, const char *fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize)
+static tio_error sysfs_Sopen(tio_Stream *sm, const tiov_FS *fs, const char *fn, tio_Features features, tio_StreamFlags flags, size_t blocksize)
 {
     void* allocUD;
     tio_Alloc alloc;
     tiov_getAlloc(fs, &alloc, &allocUD);
-    return tio_sopen(sm, fn, mode, features, flags, blocksize, alloc, allocUD);
+    return tio_sopen(sm, fn, features, flags, blocksize, alloc, allocUD);
 }
 static tio_error sysfs_DirList(const tiov_FS *, const char *path, tio_FileCallback callback, void *ud)
 {

@@ -514,7 +514,7 @@ static int sopenCB(const tiov_FS *fs, const char *path, void *ud)
         return 0; // continue resolving
 
     OpenParams *op = (OpenParams*)ud;
-    tio_error err = fs->backend.Sopen(op->dst.sm, fs, path, op->mode, op->features, op->u.s.flags, op->u.s.blocksize);
+    tio_error err = fs->backend.Sopen(op->dst.sm, fs, path, op->features, op->u.s.flags, op->u.s.blocksize);
     op->result.err = err;
     return !err;
 }
@@ -542,12 +542,12 @@ static tio_error vfs_Mopen(tio_MMIO *mmio, const tiov_FS *fs, const char *fn, ti
     return op.result.err;
 }
 
-static tio_error vfs_Sopen(tio_Stream *sm, const tiov_FS *fs, const char *fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize)
+static tio_error vfs_Sopen(tio_Stream *sm, const tiov_FS *fs, const char *fn, tio_Features features, tio_StreamFlags flags, size_t blocksize)
 {
     OpenParams op;
     op.dst.sm = sm;
     op.result.err = -1;
-    op.mode = mode;
+    op.mode = tio_R;
     op.features = features;
     op.u.s.flags = flags;
     op.u.s.blocksize = blocksize;

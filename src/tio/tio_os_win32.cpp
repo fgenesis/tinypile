@@ -598,7 +598,6 @@ static tio_error streamWin32OverlappedInit(tio_Stream* sm, tio_Handle hFile, siz
     ovl->blockSize = alignedBlocksize;
     ovl->chunk = 0; // next chunk to read
     sm->err = 0;
-    sm->common.write = 0;
 
     sm->Refill = streamWin32OverlappedRefill;
     sm->Close = streamWin32OverlappedClose;
@@ -830,9 +829,9 @@ TIO_PRIVATE size_t os_pathExtraSpace()
     return win32PathExtraSpace;
 }
 
-TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
+TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
 {
-    if ((features & tioF_Background) && (mode & tio_R))
+    if (features & tioF_Background)
     {
         DWORD wflags = FILE_FLAG_OVERLAPPED;
         if (features & tioF_NoBuffer)
@@ -840,7 +839,7 @@ TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Mode mode, tio
 
         tio_Handle hFile;
         OpenMode om;
-        tio_error err = openfile(&hFile, &om, fn, mode, features, wflags);
+        tio_error err = openfile(&hFile, &om, fn, tio_R, features, wflags);
         if (err)
             return err; // couldn't open it without the extra flags either; don't even have to check
         err = streamWin32OverlappedInit(sm, hFile, blocksize, features, alloc, allocUD);

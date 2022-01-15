@@ -595,7 +595,6 @@ struct tio_Stream
     /* --- Private, read-only. Commonly used by stream internals. */
     struct
     {
-        unsigned write; /* 0 if reading, 1 if writing */
         unsigned flags; /* Used by tio_streamfail() */
     } common;
 
@@ -618,7 +617,7 @@ struct tio_Stream
    The actually used value will be rounded to a multiple of an OS-defined I/O block size
    and may be different from what was specified.
    Streams opened for reading have no initial data -- you must refill the stream first to get an initial batch of data. */
-TIO_EXPORT tio_error tio_sopen(tio_Stream *sm, const char *fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
+TIO_EXPORT tio_error tio_sopen(tio_Stream *sm, const char *fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
 
 /* Close a stream and free associated resources. The stream will become invalid. */
 inline static tio_error tio_sclose(tio_Stream *sm) { sm->Close(sm); return sm->err; }
@@ -645,12 +644,6 @@ inline static size_t tio_srefill(tio_Stream *sm) { return sm->Refill(sm); }
 
 /* Return number of bytes available for reading, in [cursor, end). */
 inline static size_t tio_savail(tio_Stream *sm) { return sm->end - sm->cursor; }
-
-/* Write data to stream. Returns 0 immediately if the stream's error flag is set.
-   Does not use sm->cursor. Does not modify begin, end, cursor.
-   The stream's error flag will be set if not all bytes could be written.
-   Returns how many bytes were actually written. */
-TIO_EXPORT tiosize tio_swrite(tio_Stream *sm, const void *src, size_t bytes);
 
 /* Read from stream into buffer. Refills the stream as necessary.
    Reads up to the the requested number of bytes if possible. Returns how many bytes were actually read.
@@ -684,7 +677,7 @@ TIO_EXPORT size_t tio_streamfail(tio_Stream *sm);
    The block size is exact, except the tail end may be smaller.
    Pass blocksize == 0 to use the entire memory as a single block. */
 TIO_EXPORT tio_error tio_memstream(tio_Stream *sm, void *mem, size_t memsize,
-    tio_Mode mode, tio_StreamFlags flags, size_t blocksize);
+    tio_StreamFlags flags, size_t blocksize);
 
 /* Wrap an existing tio_MMIO into a stream.
    Upon the first Refill(), the stream maps the first blocksize bytes of memory starting at offset,
@@ -702,7 +695,7 @@ TIO_EXPORT tio_error tio_memstream(tio_Stream *sm, void *mem, size_t memsize,
    derived from this mmio exists when the stream is closed. */
 // FIXME: should we just keep a ptr instead? (stacked streams also just keep pointers to source streams) -- also tioS_CloseBoth will have no effect (mmio is CONST!)
 TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize,
-    tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize,
+     tio_Features features, tio_StreamFlags flags, size_t blocksize,
     tio_Alloc alloc, void *allocUD);
 
 

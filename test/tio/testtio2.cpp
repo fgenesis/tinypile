@@ -27,7 +27,7 @@ int main()
     //const char* fn = "eats.txt.lz4";
     const char* fn = "save-0000.aqs";
     tio_Stream sm, packed;
-    if (tio_sopen(&packed, fn, tio_R, tioF_Background, 0, 0, myalloc, NULL))
+    if (tio_sopen(&packed, fn, tioF_Background, 0, 0, myalloc, NULL))
         exit(1);
     //if (tio_sdecomp_LZ4_frame(&sm, &packed, tioS_CloseBoth, myalloc, NULL))
     //    exit(2);

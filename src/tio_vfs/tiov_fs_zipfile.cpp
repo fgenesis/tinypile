@@ -237,7 +237,7 @@ static tio_error zipfs_Mopen(tio_MMIO *mmio, const tiov_FS *, const char *fn, ti
 {
     return -1;
 }
-static tio_error zipfs_Sopen(tio_Stream *sm, const tiov_FS *, const char *fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize)
+static tio_error zipfs_Sopen(tio_Stream *sm, const tiov_FS *, const char *fn, tio_Features features, tio_StreamFlags flags, size_t blocksize)
 {
     return -1;
 }

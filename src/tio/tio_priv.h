@@ -127,9 +127,9 @@ TIO_PRIVATE size_t streamfail(tio_Stream* sm);
 TIO_PRIVATE size_t streamEOF(tio_Stream* sm); // sets err = EOF, then calls streamfail()
 TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, size_t srcsize, tio_CleanFlags flags);
 TIO_PRIVATE tio_error openfile(tio_Handle *hOut, OpenMode *om, const char *fn, tio_Mode mode, tio_Features& features, unsigned wflags = 0);
-TIO_PRIVATE tio_error initfilestream(tio_Stream* sm, const char* fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
-TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, void *mem, size_t memsize, tio_Mode mode, tio_StreamFlags flags, size_t blocksize);
-TIO_PRIVATE tio_error initmmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
+TIO_PRIVATE tio_error initfilestream(tio_Stream* sm, const char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
+TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, void *mem, size_t memsize, tio_StreamFlags flags, size_t blocksize);
+TIO_PRIVATE tio_error initmmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
 
 
 // Higher-level mmio API
@@ -208,7 +208,7 @@ TIO_PRIVATE size_t os_pathExtraSpace();
 // Return 0 to proceed with generic stream init.
 // Return 1 to use the stream as inited by this function.
 // Return a negative value to abort stream creation and report that error.
-TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD);
+TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD);
 
 // Optional OS-specific mmio init. Same purpose and return values as os_initstream().
 // If you don't use this, the default mmio implementation based on file handles

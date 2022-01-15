@@ -100,7 +100,6 @@ static tio_error _tio_sdecomp_miniz(tio_Stream* sm, tio_Stream* packed, tio_Stre
     memset(sm, 0, sizeof(*sm));
     sm->Refill = decomp_deflate_refill;
     sm->Close = decomp_deflate_close;
-    sm->common.write = 0;
     sm->common.flags = flags;
     sm->priv.aux = packed;
     sm->priv.extra = priv;

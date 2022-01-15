@@ -190,10 +190,10 @@ TIO_EXPORT tio_error tiov_mopen(tio_MMIO *mmio, const tiov_FS *fs, const char *f
         : tio_Error_Unsupported;
 }
 
-TIO_EXPORT tio_error tiov_sopen(tio_Stream *sm, const tiov_FS *fs, const char *fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize)
+TIO_EXPORT tio_error tiov_sopen(tio_Stream *sm, const tiov_FS *fs, const char *fn, tio_Features features, tio_StreamFlags flags, size_t blocksize)
 {
     return fs->backend.Sopen
-        ? fs->backend.Sopen(sm, fs, fn, mode, features, flags, blocksize)
+        ? fs->backend.Sopen(sm, fs, fn, features, flags, blocksize)
         : tio_Error_Unsupported;
 }
 

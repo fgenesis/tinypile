@@ -146,7 +146,7 @@ TIO_EXPORT void *tiov_mopenmap(tio_Mapping *map, tio_MMIO *mmio, const tiov_FS *
 Same as tio_sopen(), but takes an extra fs as 2nd parameter.
 Use the other tio_s*() functions from tio.h to use it. */
 
-TIO_EXPORT tio_error tiov_sopen(tio_Stream *sm, const tiov_FS *fs, const char *fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize);
+TIO_EXPORT tio_error tiov_sopen(tio_Stream *sm, const tiov_FS *fs, const char *fn, tio_Features features, tio_StreamFlags flags, size_t blocksize);
 
 
 
@@ -237,7 +237,7 @@ struct tiov_Backend
     tio_error (*Fopen)(tiov_FH **hDst, const tiov_FS *fs, const char *fn, tio_Mode mode, tio_Features features);
 
     tio_error (*Mopen)(tio_MMIO *mmio, const tiov_FS *fs, const char *fn, tio_Mode mode, tio_Features features);
-    tio_error (*Sopen)(tio_Stream *sm, const tiov_FS *fs, const char *fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize);
+    tio_error (*Sopen)(tio_Stream *sm, const tiov_FS *fs, const char *fn, tio_Features features, tio_StreamFlags flags, size_t blocksize);
     tio_error (*DirList)(const tiov_FS *fs, const char *path, tio_FileCallback callback, void *ud);
     tio_FileType (*FileInfo)(const tiov_FS *fs, const char *path, tiosize *psz);
 

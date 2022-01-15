@@ -50,7 +50,7 @@ int main()
 
     tio_Stream sm;
     tiosize total = 0;
-    if(tio_sopen(&sm, f, tio_R, tioF_NoBuffer | tioF_Background, 0, 0, myalloc, NULL))
+    if(tio_sopen(&sm, f, tioF_NoBuffer | tioF_Background, 0, 0, myalloc, NULL))
         return 1;
 
     sha3_ctx sha;

@@ -296,47 +296,20 @@ TIO_EXPORT tio_error tio_mmflush(tio_Mapping* map, tio_FlushMode flush)
 
 // ---- Stream API ----
 
-TIO_EXPORT tio_error tio_sopen(tio_Stream* sm, const char* fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD)
+TIO_EXPORT tio_error tio_sopen(tio_Stream* sm, const char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD)
 {
-    checkapi_err((mode & tio_RW) != tio_RW, "either specify tio_R or tio_W, but not both");
     checknotnull_err(alloc);
 
     char* s;
     SANITIZE_PATH(s, fn, 0, 0);
-    tio_error err = initfilestream(sm, s, mode, features, flags, blocksize, alloc, allocUD);
+    tio_error err = initfilestream(sm, s, features, flags, blocksize, alloc, allocUD);
     sm->err = err;
     return err;
-}
-
-TIO_EXPORT tiosize tio_swrite(tio_Stream* sm, const void* ptr, size_t bytes)
-{
-    checknotnull_0(sm);
-    checkapi_0(sm->common.write, "Can't write to a read-only stream");
-    if (sm->err || !bytes)
-        return 0;
-
-    char* const oldcur = sm->cursor;
-    char* const oldbegin = sm->begin;
-    char* const oldend = sm->end;
-
-    sm->cursor = NULL; // To make sure Refill() doesn't rely on it
-    sm->begin = (char*)ptr;
-    sm->end = (char*)ptr + bytes;
-
-    const size_t done = sm->Refill(sm);
-    tio__ASSERT((done == bytes) || sm->err); // err must be set if we didn't write enough bytes
-
-    sm->cursor = oldcur;
-    sm->begin = oldbegin;
-    sm->end = oldend;
-
-    return done;
 }
 
 TIO_EXPORT tiosize tio_sread(tio_Stream* sm, void* ptr, size_t bytes)
 {
     checknotnull_0(sm);
-    checkapi_0(!sm->common.write, "Can't read from a write-only stream");
     if (sm->err || !bytes)
         return 0;
 
@@ -368,16 +341,16 @@ TIO_EXPORT size_t tio_streamfail(tio_Stream* sm)
     return streamfail(sm);
 }
 
-TIO_EXPORT tio_error tio_memstream(tio_Stream *sm, void *mem, size_t memsize, tio_Mode mode, tio_StreamFlags flags, size_t blocksize)
+TIO_EXPORT tio_error tio_memstream(tio_Stream *sm, void *mem, size_t memsize, tio_StreamFlags flags, size_t blocksize)
 {
     checknotnull_err(sm);
-    return initmemstream(sm, mem, memsize, mode, flags, blocksize);
+    return initmemstream(sm, mem, memsize, flags, blocksize);
 }
 
-TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
+TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
 {
     checknotnull_err(sm);
-    return initmmiostream(sm, mmio, offset, maxsize, mode, features, flags, blocksize, alloc, allocUD);
+    return initmmiostream(sm, mmio, offset, maxsize, features, flags, blocksize, alloc, allocUD);
 }
 
 // ---- Path and files API ----

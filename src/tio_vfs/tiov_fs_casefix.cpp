@@ -242,11 +242,11 @@ static tio_error casefix_Mopen(tio_MMIO *mmio, const tiov_FS *wrap, const char *
     const char *xfn = chk.lookup(fn);
     return xfn ? tiov_mopen(mmio, chk.fs, xfn, mode, features) : tio_Error_NotFound;
 }
-static tio_error casefix_Sopen(tio_Stream *sm, const tiov_FS *wrap, const char *fn, tio_Mode mode, tio_Features features, tio_StreamFlags flags, size_t blocksize)
+static tio_error casefix_Sopen(tio_Stream *sm, const tiov_FS *wrap, const char *fn, tio_Features features, tio_StreamFlags flags, size_t blocksize)
 {
     CaseFixHelper chk(wrap);
     const char *xfn = chk.lookup(fn);
-    return xfn ? tiov_sopen(sm, chk.fs, xfn, mode, features, flags, blocksize) : tio_Error_NotFound;
+    return xfn ? tiov_sopen(sm, chk.fs, xfn, features, flags, blocksize) : tio_Error_NotFound;
 }
 static tio_error casefix_DirList(const tiov_FS *wrap, const char *path, tio_FileCallback callback, void *ud)
 {
