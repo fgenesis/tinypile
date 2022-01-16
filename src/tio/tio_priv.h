@@ -98,11 +98,16 @@ enum tioConstants
 
 
 template<typename T> inline T tio_min(T a, T b) { return (a) < (b) ? (a) : (b); }
+template<typename T> inline T tio_max(T a, T b) { return (b) < (a) ? (a) : (b); }
 
 
 typedef unsigned char tio_byte;
 
 static const tiosize tio_MaxArchMask = (size_t)(tiosize)(uintptr_t)(void*)(intptr_t)(-1); // cast away as many high bits as possible on this little round-trip
+enum
+{
+    tioMaxStreamPrefetchBlocks = sizeof(uintptr_t) < 8 ? 4 : 16
+};
 
 struct AutoFreea
 {

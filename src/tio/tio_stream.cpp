@@ -122,6 +122,8 @@ static size_t streamHandleReadRefill(tio_Stream* sm)
     char* p = (char*)sm->priv.extra;
     size_t done = 0;
     tio_error err = os_readat((tio_Handle)sm->priv.aux, &done, p, n, sm->priv.offset);
+    tio__TRACE("streamHandleReadRefill: Read %u bytes at offset %u, err = %d",
+        unsigned(done), unsigned(sm->priv.offset), err);
     if (done < n || err == tio_Error_EOF)
         sm->Refill = streamHandleReadEOF;
     else if(err)
@@ -134,8 +136,8 @@ static size_t streamHandleReadRefill(tio_Stream* sm)
 
 static tio_error streamHandleReadInit(tio_Stream* sm, tio_Handle h, size_t blocksize, tio_Alloc alloc, void *allocUD)
 {
-    if(!blocksize)
-        blocksize = mmio_alignment();
+    if (!blocksize)
+        blocksize = tio_max<size_t>(4 * mmio_alignment(), 1024 * 128); // FIXME
 
     streamHandleReadBufferHeader* buf = (streamHandleReadBufferHeader*)
         alloc(allocUD, 0, tioStreamAllocMarker, blocksize + sizeof(streamHandleReadBufferHeader));
@@ -162,6 +164,9 @@ struct tioMMIOStreamData
 {
     tio_MMIO mmio;
     tio_Mapping map;
+    tiosize readahead; // for prefetching
+    tiosize numblocks; // for prefetching. 0 if disabled.
+    size_t mapBlockSize; // a multiple of priv->blockSize
     tio_Alloc alloc;
     void* allocUD;
 };
@@ -176,24 +181,39 @@ static void streamMMIOClose(tio_Stream* sm)
     invalidate(sm);
 }
 
-static inline tio_error smmremap(tio_Stream* sm, size_t sz, tio_Features features)
+static void streamMMIOPrefetchBlocks(tio_Stream* sm, unsigned blocks)
 {
     tioMMIOStreamData* m = streamdata<tioMMIOStreamData>(sm);
-    return tio_mmremap(&m->map, sm->priv.offset, sz, features);
+    os_preloadvmem(m->map.begin, sm->priv.blockSize * blocks);
 }
 
 static size_t streamMMIOReadRefill(tio_Stream* sm)
 {
     tioMMIOStreamData* m = streamdata<tioMMIOStreamData>(sm);
-    tio_error err = smmremap(sm, sm->priv.blockSize, tioF_Background);
+
+    tio_error err = tio_mmremap(&m->map, sm->priv.offset, m->mapBlockSize, 0);
     if (err)
     {
         sm->err = err;
         return streamfail(sm);
     }
 
+    // Prefetch tail block if enabled and we're not yet at EOF
+    if (m->readahead < m->numblocks)
+    {
+        tio__TRACE("streamMMIOReadRefill: Mapped block %u, prefetching block %u",
+            unsigned(sm->priv.offset / sm->priv.blockSize), unsigned(m->readahead));
+        os_preloadvmem(m->map.begin + sm->priv.blockSize - sm->priv.blockSize, sm->priv.blockSize);
+        ++m->readahead;
+    }
+    else
+    {
+        tio__TRACE("streamMMIOReadRefill: Mapped block %u, no prefetch",
+            unsigned(sm->priv.offset / sm->priv.blockSize));
+    }
+
     char* p = m->map.begin;
-    size_t sz = tio_mmsize(&m->map);
+    size_t sz = tio_min(tio_mmsize(&m->map), sm->priv.blockSize);
     sm->priv.offset += sz;
     sm->begin = sm->cursor = p;
     sm->end = p + sz;
@@ -231,7 +251,7 @@ static tio_error _streamInitMapping(tio_Stream* sm, size_t blocksize, tiosize of
 
     // Choose an initial size if necessary
     if (!blocksize)
-        blocksize = autoblocksize(1, aln);
+        blocksize = autoblocksize(2, aln);
 
     // Doesn't make sense to request a ton of memory for small files
     if (blocksize > maxavail)
@@ -240,7 +260,10 @@ static tio_error _streamInitMapping(tio_Stream* sm, size_t blocksize, tiosize of
     // Round it up to mmio alignment
     blocksize = ((blocksize + (aln - 1)) / aln) * aln;
 
-    tio__TRACE("streamMMIOReadInit: Using blocksize %u", unsigned(blocksize));
+    m->numblocks = (m->mmio.filesize + (blocksize - 1)) / blocksize;
+
+    tio__TRACE("streamMMIOReadInit: Using blocksize %u, total %u blocks",
+        unsigned(blocksize), unsigned(m->numblocks));
 
     sm->priv.size = maxsize;
     sm->priv.blockSize = blocksize;
@@ -288,7 +311,7 @@ TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, void *mem, size_t memsize, t
     return 0;
 }
 
-TIO_PRIVATE tio_error initmmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
+TIO_PRIVATE tio_error initmmiostream(tio_Stream* sm, const tio_MMIO* mmio, tiosize offset, tiosize maxsize, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD)
 {
     tioMMIOStreamData* pm = (tioMMIOStreamData*)alloc(allocUD, NULL, tioStreamAllocMarker, sizeof(tioMMIOStreamData));
     if (!pm)
@@ -297,12 +320,44 @@ TIO_PRIVATE tio_error initmmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosi
     tio__memzero(sm, sizeof(*sm));
 
     pm->mmio = *mmio; // dumb copy is as good as a move
+    pm->readahead = 0;
+    pm->numblocks = 0;
     pm->alloc = alloc;
     pm->allocUD = allocUD;
     sm->priv.extra = pm;
     tio_error err = _streamInitMapping(sm, blocksize, offset, maxsize, flags);
     if (err)
+    {
         alloc(allocUD, pm, sizeof(*pm), 0);
+        return err;
+    }
+
+    if (features & tioF_Background)
+    {
+        unsigned blocks = (unsigned)tio_min<tiosize>(pm->numblocks, tioMaxStreamPrefetchBlocks);
+        pm->mapBlockSize = sm->priv.blockSize * blocks;
+
+        // map and initiate prefetch of the first few blocks
+        err = tio_mmremap(&pm->map, sm->priv.offset, pm->mapBlockSize, 0);
+        if (!err)
+        {
+            tio__TRACE("initmmiostream: Prefetching the first %u blocks (%u bytes)",
+                blocks, unsigned(pm->mapBlockSize));
+            os_preloadvmem(pm->map.begin, pm->mapBlockSize);
+            pm->readahead = blocks;
+        }
+        else
+        {
+            tio__TRACE("initmmiostream: Inited successfully, but failed initial prefetch");
+            tio_sclose(sm);
+        }
+    }
+    else
+    {
+        pm->numblocks = 0;
+        pm->mapBlockSize = sm->priv.blockSize;
+    }
+
     return err;
 }
 
@@ -324,7 +379,7 @@ static void streamInitEmptyReadOnce(tio_Stream* sm)
 static tio_error streamInitFromFileName(tio_Stream* sm, const char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD)
 {
     // For reading, use MMIO unless explicitly told not to
-    if (!(features & tioF_AvoidMMIO))
+    if (features & tioF_PreferMMIO)
     {
         tio_MMIO mmio;
         tio_error err = tio_mopen(&mmio, fn, tio_R, features);

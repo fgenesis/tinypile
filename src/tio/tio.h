@@ -161,8 +161,7 @@ enum tio_Mode_
                                 (This is *not* POSIX append mode, ie. it will not
                                 change how writing to the file behaves. You can seek
                                 elsewhere afterwards and the file will behave normally)
-                                Also works when tioF_Sequential is set, and is thus
-                                the only way to open a stream to append to a file.
+                                Also works when tioF_Sequential is set.
                                 Changes default flags:
                                 - Sets tio_W if not set
                                 - tioM_Keep becomes the default if nothing is specified.
@@ -183,7 +182,7 @@ typedef unsigned tio_Seek;
    This allows to pick the best I/O method for a task or to give the OS extra detail it may use to increase performance.
    Note that these hints are really just hints and the underlying implementation is free to ignore them.
    --- Suggestions / TL;DR ---
-   - Whenever possible, use tio_Stream and add tioF_Background for good measure
+   - Whenever possible, use tio_Stream and add tioF_Background (and maybe tioF_PreferMMIO) for good measure
 */
 enum tio_Features_
 {
@@ -215,9 +214,9 @@ enum tio_Features_
     tioF_Nonblock = 0x10, /* Enable nonblocking I/O. Calls may read/write less data than requested, or no data at all.
                              In this mode, less or no bytes processed does not mean failure! */
 
-    tioF_AvoidMMIO   = 0x20, /* Use this flag to not use MMIO and instead prefer some other fail-safe method.
-                                Might be useful if reading from unreliable media or if MMIO is an inferior choice in your use case.
-                                Ignored by functions that explicitly do MMIO. */
+    tioF_PreferMMIO   = 0x20, /* Use this flag to prefer MMIO instead of the fail-safe tio_kread()-based implementation.
+                                 Might be more efficient, but may cause problems on unreliable media. Test it.
+                                 Recommended to combine with tioF_Background. Ignored by functions that do MMIO anyway. */
 };
 typedef unsigned tio_Features;
 
@@ -259,7 +258,7 @@ enum tio_error_
     /* > 0  : we're done */
     tio_Error_EOF = 1,            /* Reached end of file; all previous operations were successful.
                                      Primarily used to easily get out of loops like while(!err)
-                                     or while(err == tio_NoError) */
+                                     ie. while(err == tio_NoError) */
     /* == 0 : all good so far */
     tio_NoError = 0,
     /* < 0  : real errors */
@@ -338,12 +337,6 @@ typedef void* (*tio_Alloc)(void* ud, void* ptr, size_t osize, size_t nsize);
 /* ---- Low-level file API -- [tio_k*()] ---- */
 /* ------------------------------------------ */
 
-
-
-/* ------------------------------------------ */
-/* ---- Low-level file API -- [tio_k*()] ---- */
-/* ------------------------------------------ */
-
 /* Raw file handle. This is a raw OS handle:
    - Windows: A HANDLE as returned by CreateFileW()
    - POSIX: A file descriptor (int) as returned by open() casted to a pointer
@@ -369,7 +362,7 @@ TIO_EXPORT tio_error  tio_kgetsize(tio_Handle fh, tiosize *pbytes); /* Get total
 TIO_EXPORT tio_error  tio_ksetsize(tio_Handle fh, tiosize bytes); /* Change file size on disk, truncate or enlarge. New areas' content is undefined. */
 TIO_EXPORT tiosize    tio_ksize   (tio_Handle fh); /* Shortcut for tio_kgetsize(), returns size of file or 0 on error */
 
-/* Extended read/write that returns an error code.
+/* Extended read/write that return an error code instead of the size.
    The number of bytes processed is written to *psz.
    There are data to process if *psz > 0 even if there was an error. */
 TIO_EXPORT tio_error  tio_kreadx  (tio_Handle fh, size_t *psz, void* ptr, size_t bytes);
@@ -408,14 +401,16 @@ To successfully memory-map a file the file must 1) exist, 2) be accessible, and 
 A file's size can not be changed by memory-mapping and writing to it; any access past the end is undefined behavior.
 tio_A (append mode) is not supported anywhere in the MMIO API; if passed, the call will always fail.
 
-Basic usage example: FIXME: adapt to new API
+Basic usage example, suitable for small files:
 
-    tio_MMIO m;
-    if(const char *p = (const char*)tio_mopenmap(&m, "file.txt", tio_R, 0, 0, 0)) // mmap the entire file
+    tio_MMIO mio;
+    tio_Mapping m;
+    if(const char *p = (const char*)tio_mopenmap(&m, &mio, "file.txt", tio_R, 0, 0, 0)) // mmap the entire file
     {
         for( ; p < m.end; ++p) // do something with the contents
             putchar(*p);
-        tio_mclose(&m); // p, m now invalid
+        tio_mmdestroy(&m); // p, m now invalid
+        tio_mclose(&mio); // mio now invalid
     }
 */
 
@@ -473,17 +468,16 @@ TIO_EXPORT void *tio_mopenmap(tio_Mapping *map, tio_MMIO *mmio, const char *fn, 
 
 /* One memory-mapped region, initialized via tio_MMIO.
    You can have many of these for a single tio_MMIO.
-   The begin & end pointers and filesize are read-only.
+   The begin & end pointers and filesize are for the user.
    Ignore the rest. Don't change ANY of the fields, ever. */
 struct tio_Mapping
 {
     /* Read-only by caller. */
-    char *begin; /* pointer to beginning of mapped area */
-    char *end;   /* one past the end */
+    char *begin;      /* pointer to beginning of mapped area */
+    char *end;        /* one past the end */
+    tiosize filesize; /* Total size of the mapped file */
 
-    tiosize filesize; /* Total size of the file */
-
-    const tio_MMFunc *backend;
+    const tio_MMFunc *backend; /* Internal use */
 
     /* For internal use. The implementation may use the underlying memory freely;
        it may or may not follow the struct layout suggested here. */
@@ -544,15 +538,15 @@ TIO_EXPORT tio_error tio_mmflush(tio_Mapping *map, tio_FlushMode flush);
 /* ---------------------------------- */
 
 /* Streams are not seekable but avoid copying data around.
+   They are also read-only (ie. as if mode == tio_R was passed).
    The stream consumer gets an unspecified amount of bytes to deal with (up to the stream to decide).
    Read https://fgiesen.wordpress.com/2011/11/21/buffer-centric-io/ for the basic idea.
    The error flag will be set on EOF or I/O error and is sticky;
    there is no way errors could be missed.
    There are some changes in this implementation compared to the link above, most notably:
-   - Refill() may spuriously return 0 bytes. You can just keep reading if this happens.
+   - Refill() may spuriously return 0 bytes. Just keep reading if this happens.
    - On EOF or error, the stream stops providing data (ie. Refill() returns 0 every time).
    - Passing tioS_Infinite makes a stream infinite like in the above link.
-   -
    */
 
 /* Control stream behavior */
@@ -560,14 +554,27 @@ enum tio_StreamFlags_
 {
     /* On EOF or error, by default a stream stops providing data (cursor == begin == end),
     means it will will always report 0 bytes processed.
-    Specify this flag to instead emit an infinite trickle of zeros when reading,
-    or to consume (and ignore) all bytes when writing. */
+    Specify this flag to instead emit an infinite trickle of zeros when reading.
+    This may simplify your error handling if your stream consumer detects this as invalid
+    data and gracefully stops on its own. */
     tioS_Infinite = 0x01,
 
-    /* Normally, when an overlay stream is closed, its data source stream stays open.
-    Set this flag to close the underlying stream whenever the overlay stream is closed.
-    This flag is ignored for streams that do not wrap another stream. */
-    tioS_CloseBoth = 0x2
+    /* This flag is for composed streams (ie. a stream A that gets its data from a stream B,
+    and B pulls its data from somewhere else like a file.) or streams that use some external
+    data source. Normally, when a composed stream is closed, its data source stays open.
+    Set this flag to close the underlying source whenever this stream is closed.
+    This flag is ignored for streams that do not depend on other data sources. */
+    tioS_CloseBoth = 0x02,
+
+
+    /* --- Internal --- */
+
+    /* Exposed for extensions. Don't pass this to stream init functions.
+    Whenever tioF_Nonblock was passed and the stream is actually nonblocking,
+    this must be set by the backend implementation.
+    With this flag we can check whether a zero-byte Refill() is spurious or it's better to get out.
+    Used e.g. by tio_sskip(). */
+    tioS_Marker_Nonblocking = 0x10000
 };
 typedef unsigned tio_StreamFlags;
 
@@ -580,26 +587,27 @@ struct tio_Stream
                        The valid range is within [begin, end).
                        Unused and ignored when WRITING. */
 
-    /* When open for READING: public, MUST NOT be changed by user, changed by Refill() */
-    /* When open for WRITING: public, MUST BE set by user (to user's memory block to be written), consumed & reset by Refill() */
+    /* public, MUST NOT be changed by user, changed by Refill() */
     char *begin;    /* start of buffer */
     char *end;      /* one past the end */
+
+    /* public, callable, changed by Refill and Close. */
+    size_t (*Refill)(tio_Stream *s); /* Required. Sets cursor, begin, end. Sets err on failure. Returns #bytes refilled. */
+    void   (*Close)(tio_Stream *s);  /* Required. Must set cursor, begin, end, Refill, Close to NULL. Must NOT touch err. */
 
     /* public, read only */
     tio_error err;  /* != 0 is error. Set by Refill(). Sticky -- once set, stays set. */
 
-    /* public, callable, changed by Refill and Close. */
-    size_t (*Refill)(tio_Stream *s); /* Required. Sets err on failure. Returns #bytes refilled. */
-    void   (*Close)(tio_Stream *s);  /* Required. Must also set cursor, begin, end, Refill, Close to NULL. */
 
-    /* --- Private, read-only. Commonly used by stream internals. */
+    /* --- Private. Don't touch, ever. --- */
+
+    /* Used by common stream handling code */
     struct
     {
-        unsigned flags; /* Used by tio_streamfail() */
+        unsigned flags; /* actually tio_StreamFlags */
     } common;
 
-    /* --- Private. Don't touch, ever. Not even for reading. ---
-       The implementation may use the underlying memory freely;
+    /* The backend implementation may use the underlying memory freely;
        it may or may not follow the struct layout suggested here. */
     struct
     {
@@ -610,10 +618,10 @@ struct tio_Stream
     } priv;
 };
 
-/* Init a tio_Stream struct from a file name. tio_RW mode is not allowed.
+/* Init a tio_Stream struct from a file name. A stream is always read-only.
    Blocksize is only relevant for reading; it's a suggestion for the number bytes to read between refills:
    * 0 to use a suitable size based on the system's capabilities (the most portable option).
-   * any other number to try and read blocks of roughly this size.
+   * any other number to try and read blocks of roughly this size (in bytes).
    The actually used value will be rounded to a multiple of an OS-defined I/O block size
    and may be different from what was specified.
    Streams opened for reading have no initial data -- you must refill the stream first to get an initial batch of data. */
@@ -625,21 +633,15 @@ inline static tio_error tio_sclose(tio_Stream *sm) { sm->Close(sm); return sm->e
 /* Refill a stream.
    Sets sm->err if there is an error or EOF is reached. In this case there are
    no remaining data to process and you can fail immediately.
-   - When reading, begin and end pointers are set, and cursor is set to begin.
-     The memory region in [begin, end) may then be read by the caller.
-     On EOF or I/O error, the error flag is set, and the stream will transition
-     to the failure mode as previously set in tio_sopen().
-     Returns the number of bytes available for reading (ie. end - begin).
-     0 bytes read is NOT an error! There are cases where a stream can not deliver data
-     for whatever reason (ie. an async stream that is busy reading bytes in the background
-     but that has nothing available right now).
-     If this happens and a stream is async, try again in a bit. Otherwise just keep reading.
-   - When writing, the block of memory in [begin, end) will be written to storage.
-     This means the caller has to set the two pointers and then call refill.
-     If writing is not possible, the stream's error flag is set,
-     and further attempts to write are ignored.
-     The stream's cursor, begin, end pointers will be unchanged after the call.
-     Returns the number of bytes written. */
+   When reading, begin and end pointers are set, and cursor is set to begin.
+   The memory region in [begin, end) may then be read by the caller.
+   On EOF or I/O error, the error flag is set, and the stream will transition
+   to the failure mode as previously set in tio_sopen().
+   Returns the number of bytes available for reading (ie. end - begin).
+   0 bytes read is NOT an error! There are cases where a stream can not deliver data
+   for whatever reason (ie. a nonblocking stream that is busy reading bytes in the background
+   but that has nothing available right now).
+   If this happens and a stream is async, try again in a bit. Otherwise just keep reading. */
 inline static size_t tio_srefill(tio_Stream *sm) { return sm->Refill(sm); }
 
 /* Return number of bytes available for reading, in [cursor, end). */
@@ -650,8 +652,24 @@ inline static size_t tio_savail(tio_Stream *sm) { return sm->end - sm->cursor; }
    Uses sm->cursor to keep track of partial transfers.
    Returns immediately if a stream has no data or if the error flag is set.
    Note that this function is provided for convenience but defeats the zero-copy advantage of a stream.
-   Use only if you absolutely have to copy a stream's data to a contiguous block of memory. */
+   Use only if you absolutely *have to* copy a stream's data to a contiguous block of memory. */
 TIO_EXPORT tiosize tio_sread(tio_Stream *sm, void *dst, size_t bytes);
+
+/* Advance the stream cursor and refill the stream as necessary. Skips up to 'bytes'.
+   Returns how many bytes were skipped.
+   Stops on error or if a nonblocking stream refills 0 bytes. Spurious zero-refills are fine.
+   If you know your stream is blocking (ie. you didn't specify tioF_Nonblock),
+   you can just call this function once:
+     tiosize skipped = tio_sskip(sm, N); // returns < N only if EOF or error
+   If you need to skip exacly N bytes and your stream may be nonblocking:
+     while(!sm->err)
+     {
+         N -= tio_sskip(sm, N);
+         if(!N) break;
+         do something else for a bit while sm is struggling to provide data;
+     }
+*/
+TIO_EXPORT tiosize tio_sskip(tio_Stream *sm, tiosize bytes);
 
 /* [For extensions! Ignore this function if you're just a library user!]
    Close a valid stream and cleanly transition into the previously set failure state:

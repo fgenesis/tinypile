@@ -39,9 +39,9 @@ int main()
 
     //tio_dirlist(".", showdir, NULL);
 
-    const char *f = "../hugefile";
+    //const char *f = "../hugefile";
     //const char *f = "D:/fg-wii-sd.7z"; // slow hdd
-    //const char *f = "E:/games/Oblivion/Data/Oblivion - Textures - Compressed.bsa"; // fast
+    const char *f = "E:/games/Oblivion/Data/Oblivion - Textures - Compressed.bsa"; // fast
     //const char* f = "eats.txt.lz4";
     // 5d840f
 
@@ -50,18 +50,21 @@ int main()
 
     tio_Stream sm;
     tiosize total = 0;
-    if(tio_sopen(&sm, f, tioF_NoBuffer | tioF_Background, 0, 0, myalloc, NULL))
+    if(tio_sopen(&sm, f, tioF_NoBuffer | tioF_Background | tioF_PreferMMIO, 0, 0, myalloc, NULL))
         return 1;
 
     sha3_ctx sha;
     rhash_sha3_512_init(&sha);
 
+    unsigned ck = 0;
     for(;;)
     {
         size_t n = tio_srefill(&sm);
         if (sm.err)
             break;
         total += n;
+        for (char* p = sm.begin; p < sm.end; ++p)
+            ck += (unsigned char)*p;
         //rhash_sha3_update(&sha, (const unsigned char*)sm.begin, n);
         //fwrite(sm.begin, 1, n, stdout);
     }
@@ -74,6 +77,7 @@ int main()
     unsigned char hash[512/8];
     rhash_sha3_final(&sha, hash);
 
+    std::cout << "checksum: " << ck << "\n";
     std::cout << "sha3-512: ";
     for(size_t i = 0; i < sizeof(hash); ++i)
         printf("%02X", hash[i]);

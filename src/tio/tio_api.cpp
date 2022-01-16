@@ -117,17 +117,6 @@ TIO_EXPORT size_t tio_kread(tio_Handle fh, void* dst, size_t bytes)
     return sz;
 }
 
-TIO_EXPORT tio_error tio_kreadx(tio_Handle fh, size_t *psz, void* dst, size_t bytes)
-{
-    checkhandle_err(fh);
-    checknotnull_err(psz);
-    if (!bytes)
-        return 0;
-    checknotnull_err(dst);
-
-    return os_read(fh, psz, dst, bytes);
-}
-
 TIO_EXPORT size_t tio_kreadat(tio_Handle fh, void* dst, size_t bytes, tiosize offset)
 {
     checkhandle_0(fh);
@@ -139,6 +128,35 @@ TIO_EXPORT size_t tio_kreadat(tio_Handle fh, void* dst, size_t bytes, tiosize of
     size_t sz = 0;
     os_readat(fh, &sz, dst, bytes, offset);
     return sz;
+}
+
+TIO_EXPORT tio_error tio_kreadx(tio_Handle fh, size_t* psz, void* dst, size_t bytes)
+{
+    checkhandle_err(fh);
+    checknotnull_err(psz);
+    if (!bytes)
+    {
+        *psz = 0;
+        return 0;
+    }
+    checknotnull_err(dst);
+
+    return os_read(fh, psz, dst, bytes);
+}
+
+TIO_EXPORT tio_error tio_kreadatx(tio_Handle fh, size_t *psz, void* dst, size_t bytes, tiosize offset)
+{
+    checkhandle_err(fh);
+    checknotnull_err(psz);
+    checkapi_err(!bytes || dst, "dst is NULL but would write to it");
+    if (!bytes)
+    {
+        *psz = 0;
+        return 0;
+    }
+    checknotnull_err(dst);
+
+    return os_readat(fh, psz, dst, bytes, offset);
 }
 
 TIO_EXPORT size_t tio_kwrite(tio_Handle fh, const void* src, size_t bytes)
@@ -163,6 +181,34 @@ TIO_EXPORT size_t tio_kwriteat(tio_Handle fh, const void* src, size_t bytes, tio
     size_t sz = 0;
     os_writeat(fh, &sz, src, bytes, offset);
     return sz;
+}
+
+TIO_EXPORT tio_error tio_kwritex(tio_Handle fh, size_t *psz, const void* src, size_t bytes)
+{
+    checkhandle_err(fh);
+    checknotnull_err(psz);
+    if (!bytes)
+    {
+        *psz = 0;
+        return 0;
+    }
+    checknotnull_err(src);
+
+    return os_write(fh, psz, src, bytes);
+}
+
+TIO_EXPORT tio_error tio_kwriteatx(tio_Handle fh, size_t* psz, const void* src, size_t bytes, tiosize offset)
+{
+    checkhandle_err(fh);
+    checknotnull_err(psz);
+    if (!bytes)
+    {
+        *psz = 0;
+        return 0;
+    }
+    checknotnull_err(src);
+
+    return os_writeat(fh, psz, src, bytes, offset);
 }
 
 TIO_EXPORT tio_error tio_kseek(tio_Handle fh, tiosize offset, tio_Seek origin)
@@ -298,6 +344,7 @@ TIO_EXPORT tio_error tio_mmflush(tio_Mapping* map, tio_FlushMode flush)
 
 TIO_EXPORT tio_error tio_sopen(tio_Stream* sm, const char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD)
 {
+    checkapi_err((flags & tioS_Marker_Nonblocking), "Don't pass tio_Marker_Nonblocking as a flag!");
     checknotnull_err(alloc);
 
     char* s;
@@ -333,6 +380,34 @@ TIO_EXPORT tiosize tio_sread(tio_Stream* sm, void* ptr, size_t bytes)
         }
     } while (bytes);
     return done;
+}
+
+TIO_EXPORT tiosize tio_sskip(tio_Stream* sm, tiosize bytes)
+{
+    checknotnull_0(sm);
+    if (sm->err || !bytes)
+        return 0;
+
+    const tiosize prevbytes = bytes;
+    size_t avail = tio_savail(sm);
+    unsigned gtfo = 0;
+    goto loopstart;
+    for(;;)
+    {
+        avail = tio_srefill(sm);
+        if (sm->err || (!avail && gtfo))
+            break;
+        gtfo = !avail && (sm->common.flags & tioS_Marker_Nonblocking); // try again once. then get out if nonblocking
+loopstart:
+        if (avail < bytes)
+            bytes -= avail;
+        else
+        {
+            sm->cursor += bytes;
+            break;
+        }
+    }
+    return prevbytes - bytes;
 }
 
 TIO_EXPORT size_t tio_streamfail(tio_Stream* sm)
