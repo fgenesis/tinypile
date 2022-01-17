@@ -213,7 +213,6 @@ TIO_PRIVATE tio_error os_readat(tio_Handle hFile, size_t *psz, void* dst, tiosiz
 // FIXME: clean up, make more robust, and always respect maxio
 TIO_PRIVATE tio_error win32_write(tio_Handle hFile, size_t *psz, const void* src, size_t n, LPOVERLAPPED ov)
 {
-    tio__ASSERT(0 && "this needs testing first");
     tiosize done = 0;
     DWORD remain = (DWORD)tio_min<size_t>(n, win32MaxIOBlockSize);
     unsigned fail = 0;
@@ -222,7 +221,8 @@ TIO_PRIVATE tio_error win32_write(tio_Handle hFile, size_t *psz, const void* src
     {
         DWORD written = 0;
         // FIXME: do we need to adjust the OVERLAPPED offset?
-        fail += !!::WriteFile((HANDLE)hFile, src, remain, &written, ov);
+        BOOL ok = ::WriteFile((HANDLE)hFile, src, remain, &written, ov);
+        fail += !ok;
         done += written;
         n -= written;
         remain = (DWORD)tio_min<size_t>(n, win32MaxIOBlockSize);

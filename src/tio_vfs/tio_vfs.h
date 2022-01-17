@@ -83,14 +83,12 @@ TIO_EXPORT int tiov_utf8CaseEqualSimple(const char *a, const char *b, void *igno
 */
 struct tiov_FS;
 
-/* --- VFS init/teardown --- */
+/* --- Native file system -- not all that exciting just yet --- */
 
 /* The physical filesystem, ie. what the OS sees. Delete when no longer needed.
-   There's no reason to allocate more than one of this. */
+   There's no reason to allocate more than one of this unless you want to use
+   different allocators for each instance. */
 TIO_EXPORT tiov_FS *tiov_sysfs(tio_Alloc alloc, void *allocUD);
-
-/* Allocate a new virtual file system for mounting stuff into. */
-TIO_EXPORT tiov_FS *tiov_vfs(tio_Alloc alloc, void *allocUD);
 
 /* Wrap an existing FS to try harder to find a file.
    What happens internally is that if a file/dir is not found, the parent directory
@@ -132,7 +130,7 @@ TIO_EXPORT tio_error  tiov_fgetsize(tiov_FH *fh, tiosize *pbytes); /* Get total 
 TIO_EXPORT tio_error  tiov_fsetsize(tiov_FH *fh, tiosize bytes); /* Change file size on disk, truncate or enlarge. New areas' content is undefined. */
 TIO_EXPORT tiosize    tiov_fsize   (tiov_FH *fh); /* Shortcut for tio_fgetsize(), returns size of file or 0 on error */
 
-// TODO: readat, writeat
+// TODO: readat, readx, readatx, writeat, writex, writeatx
 
 /* ---- MMIO ----
 Same as tio_mopen() and tio_mopenmap(), but takes an extra fs as 2nd parameter.
@@ -157,18 +155,50 @@ TIO_EXPORT tio_FileType tiov_fileinfo(const tiov_FS *fs, const char *path, tiosi
 // TODO: this is for later
 //TIO_EXPORT tio_error tiov_createdir(const tio_VFS *vfs, const char *path);
 
-/* Mounting */
-/*
-tiov_FS *sysfs = tiov_newFS(tiov_sys(), NULL, NULL);
+
+
+
+/* ---- VFS and Mounting ----
+
+/* Allocate a new virtual file system for mounting stuff into. */
+TIO_EXPORT tiov_FS* tiov_vfs(tio_Alloc alloc, void* allocUD);
+
+
+
+/* Mount table. Supplies the entirety of all mount points to register in a VFS.
+   Some examples:
 
 const tiov_MountDef mtab[] =
 {
-    { "cfg", sysfs, "C:\\Documents and Settings\\..." },
-    { ".", sysfs, "." }
+    // Mount the sysfs working directory into the vfs working dir
+    // (if you don't do this, only the things you actually mount end up in the VFS)
+    { ".", sysfs, "." },
+
+    // Make it so that when we ask for "cfg/*", we actually end up
+    // asking sysfs for "C:\\Users\\user\\Documents\\*"
+    { "doc", sysfs, "C:\\Users\\user\\Documents" },
+
+    // Also add the directory where the executable is located to the vfs working dir
+    { ".", fuzzy, GetExeDir() },   // On windows, something something GetModuleFileName()
+
+    // Mount something into a vfs subdirectory
+    // This time with slashes and a trailing slash because it doesn't matter
+#ifdef _WIN32
+    { "save/replays", sysfs, "C:/Users/user/My Games/whatever/replays/" },
+#else // When we're on a POSIX system, use some other location
+      // but the virtual path stays the same
+    { "save/replays", sysfs, "~/.local/whatever/replays" },
+#endify
+
+    // Mount some patch dirs that supply updated replacement files into "data"
+    // Note that the vfs mounts its own subdirs into itself here,
+    // so that "data" is a union view over all dubdirs that contribute to it.
+    { "data", vfs, "patch1" },
+    { "data", vfs, "patch2" },
+    { "data", vfs, "patch3" },
 };
-
+The above examples only forward to sysfs, but you can use any tiov_FS really.
 */
-
 struct tiov_MountDef
 {
     const char *dstpath; // Destination in the virtual tree

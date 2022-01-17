@@ -58,8 +58,7 @@ How to use?
 /* --- Stream-to-stream functions. See the note at the top for details. ---
     Initializes 'sm' and stores a pointer to 'packed' in it.
     'packed' must stay alive while 'sm' is used.
-    You MUST pass an allocator. Pass (tiox_defaultalloc, NULL) if you don't care.
-    Hint: Pass flags = tioS_CloseBoth if 'packed' contains only compressed data
+    You MUST pass an allocator.
 */
 
 /* Decompress deflate data with zlib header and footer */

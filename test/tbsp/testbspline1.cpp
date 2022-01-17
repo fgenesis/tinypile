@@ -31,12 +31,12 @@ static const float bvec[] = { 20, 30, 40 };
 template<typename M>
 void matprint(const M& a)
 {
-    printf("Matrix[%u, %u]:\n", a.w, a.h);
+    printf("Matrix[%u, %u]:\n", unsigned(a.w), unsigned(a.h));
     for(size_t y = 0; y < a.h; ++y)
     {
         for(size_t x = 0; x < a.w; ++x)
             std::cout << '\t' << a(x,y);
-        puts("");
+        std::cout << '\n';
     }
 }
 
@@ -47,7 +47,7 @@ void vecprint(const M& a)
     printf("Vector[%u]:\n", (unsigned)a.size());
     for(size_t x = 0; x < a.size(); ++x)
         std::cout << '\t' << a[x];
-    puts("");
+    std::cout << '\n';
 }
 
 void solveChol()

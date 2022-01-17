@@ -344,7 +344,7 @@ TIO_EXPORT tio_error tio_mmflush(tio_Mapping* map, tio_FlushMode flush)
 
 TIO_EXPORT tio_error tio_sopen(tio_Stream* sm, const char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD)
 {
-    checkapi_err((flags & tioS_Marker_Nonblocking), "Don't pass tio_Marker_Nonblocking as a flag!");
+    checkapi_err(!(flags & tioS_Marker_Nonblocking), "Don't pass tio_Marker_Nonblocking as a flag!");
     checknotnull_err(alloc);
 
     char* s;

@@ -582,16 +582,14 @@ struct tio_Stream
 {
     /* public, read, modify */
     char *cursor;   /* Cursor in buffer. Typically used by the stream consumer to store partial
-                       progress through the buffer.
-                       Set to begin by Refill() when READING.
-                       The valid range is within [begin, end).
-                       Unused and ignored when WRITING. */
+                       progress through the buffer. The valid range is within [begin, end).
+                       Refill() sets cursor = begin. */
 
     /* public, MUST NOT be changed by user, changed by Refill() */
     char *begin;    /* start of buffer */
     char *end;      /* one past the end */
 
-    /* public, callable, changed by Refill and Close. */
+    /* public, callable, changed by Refill and Close. Prefer calling tio_srefill() and tio_sclose() instead. */
     size_t (*Refill)(tio_Stream *s); /* Required. Sets cursor, begin, end. Sets err on failure. Returns #bytes refilled. */
     void   (*Close)(tio_Stream *s);  /* Required. Must set cursor, begin, end, Refill, Close to NULL. Must NOT touch err. */
 
@@ -795,4 +793,3 @@ struct tio_MMFunc
 #ifdef __cplusplus
 } // end extern "C"
 #endif
-
