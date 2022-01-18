@@ -24,8 +24,6 @@
 // TODO: Some use memory.h? Not sure
 #endif
 
-#define tio__static_assert(cond) switch((int)!!(cond)){case 0:;case(!!(cond)):;}
-
 // Used libc functions. Optionally replace with your own.
 #include <string.h> // memcpy, memset, strlen
 #ifndef tio__memzero

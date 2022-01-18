@@ -790,6 +790,10 @@ struct tio_MMFunc
     tio_error (*close)(tio_MMIO* mmio);
 };
 
+/* Needs to be in a function; doesn't work on file scope */
+#define tio__static_assert(cond) switch((int)!!(cond)){case 0:;case(!!(cond)):;}
+
+
 #ifdef __cplusplus
 } // end extern "C"
 #endif

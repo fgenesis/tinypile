@@ -3,6 +3,8 @@
 #include "tio_zstd.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include <iostream>
+#include "sha3.h"
 
 static void *myalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 {
@@ -17,16 +19,27 @@ static void *myalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 
 static void dump(tio_Stream* sm, tio_Handle out)
 {
+    sha3_ctx sha;
+    rhash_sha3_512_init(&sha);
     for (;;)
     {
         size_t n = tio_srefill(sm);
         if (sm->err)
             break;
-        fwrite(sm->begin, 1, n, stdout);
+        //fwrite(sm->begin, 1, n, stdout);
         tio_kwrite(out, sm->begin, n);
+        rhash_sha3_update(&sha, (const unsigned char*)sm->begin, n);
     }
     printf("\nsm.err = %d\n", sm->err);
     tio_sclose(sm);
+
+    unsigned char hash[512 / 8];
+    rhash_sha3_final(&sha, hash);
+
+    std::cout << "sha3-512: ";
+    for (size_t i = 0; i < sizeof(hash); ++i)
+        printf("%02X", hash[i]);
+    std::cout << "\n";
 }
 
 static void unpack(tio_Stream *ppacked)

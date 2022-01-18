@@ -340,6 +340,7 @@ struct tioWin32OverlappedExtra
 {
     size_t nextToRequest;
     size_t blocksInUse;
+    tiosize totalsize;
     DWORD win32err; // win32 error code from GetLastError()
     HANDLE events[win32MaxOverlappedIOBlocks];
     void* ptrs[win32MaxOverlappedIOBlocks];
@@ -424,10 +425,13 @@ static void _streamWin32OverlappedRequestNextChunk(tio_Stream* sm)
 
     ::SetLastError(0);
 
+    tiosize canread = ex->totalsize - offset.QuadPart;
+    DWORD willread = (DWORD)tio_min<tiosize>(blocksize, canread);
+
     // fail/EOF will be recorded in OVERLAPPED so we can ignore the return value here
-    BOOL ok = ::ReadFile((HANDLE)ovl->hFile, dst, (DWORD)blocksize, NULL, ov);
-    tio__TRACE("[inflight: %u] Overlapped ReadFile(%p) chunk %u -> ok = %u",
-        overlappedInflight(sm), dst, unsigned(chunk), ok);
+    BOOL ok = ::ReadFile((HANDLE)ovl->hFile, dst, willread, NULL, ov);
+    tio__TRACE("[inflight: %u] Overlapped ReadFile(%p) bytes=%u chunk %u -> ok = %u",
+        overlappedInflight(sm), dst, willread, unsigned(chunk), ok);
     if (ok)
         return;
 
@@ -566,6 +570,7 @@ static tio_error streamWin32OverlappedInit(tio_Stream* sm, tio_Handle hFile, siz
     ex->alloc = alloc;
     ex->allocUD = allocUD;
     ex->blocksInUse = useblocks;
+    ex->totalsize = fullsize;
 
     char *pdata = ((char *)mem);
     tio__ASSERT((uintptr_t)pdata % aln == 0);
