@@ -88,12 +88,6 @@
 // bounded, non-zero stack allocation
 #define tio__checked_alloca(n) (((n) && (n) <= TIO_MAX_STACK_ALLOC) ? tio__alloca(n) : NULL)
 
-enum tioConstants
-{
-    tioAllocMarker       = 't' | ('i' << 8) | ('o' << 16) | ('_' << 24),
-    tioStreamAllocMarker = 't' | ('i' << 8) | ('o' << 16) | ('S' << 24)
-};
-
 
 template<typename T> inline T tio_min(T a, T b) { return (a) < (b) ? (a) : (b); }
 template<typename T> inline T tio_max(T a, T b) { return (b) < (a) ? (a) : (b); }

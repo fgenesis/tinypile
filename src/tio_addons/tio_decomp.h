@@ -54,6 +54,9 @@ How to use?
 
 */
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* --- Stream-to-stream functions. See the note at the top for details. ---
     Initializes 'sm' and stores a pointer to 'packed' in it.
@@ -79,3 +82,8 @@ TIO_EXPORT tio_error tio_sdecomp_deflate(tio_Stream* sm, tio_Stream* packed, tio
 /* Decompress a raw LZ4 block. Since there is no end marker,
    the length of the compressed stream has to be supplied by the user. */
 TIO_EXPORT tio_error tio_sdecomp_LZ4_block(tio_Stream *sm, tio_Stream *packed, size_t packedbytes, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD);
+
+
+#ifdef __cplusplus
+}
+#endif

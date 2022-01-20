@@ -2,8 +2,6 @@
 #include <zstd.h>
 #include "tio_zstd.h"
 
-// TODO: alloc markers instead of 0
-
 struct tioZstdStreamExtra
 {
     ZSTD_DCtx* dc;
@@ -13,13 +11,17 @@ struct tioZstdStreamExtra
 
 enum
 {
-    tioZstdAllocExtraSize = sizeof(size_t) < 8 ? 8 : sizeof(size_t)
+    // The zstd allocator doesn't pass the size upon free(), so we need to store it somewhere
+    // Zstd also wants its memory to be 8-byte aligned, so make sure that's not changed
+    tioZstdAllocExtraSize = sizeof(size_t) < 8 ? 8 : sizeof(size_t),
+    // Just for allocation tracking
+    zstdAllocMarker = 'Z' | ('S' << 8) | ('T' << 16) | ('D' << 24)
 };
 
 void* _zstdAllocWrap(void* opaque, size_t size)
 {
     tioZstdStreamExtra* const z = (tioZstdStreamExtra*)opaque;
-    char* p = (char*)z->alloc(z->allocUD, NULL, 0, size + tioZstdAllocExtraSize);
+    char* p = (char*)z->alloc(z->allocUD, NULL, zstdAllocMarker, size + tioZstdAllocExtraSize);
     if (p)
     {
         *(size_t*)p = size;
@@ -119,9 +121,9 @@ static void tioZstdStreamClose(tio_Stream* sm)
     z->alloc(z->allocUD, z, sizeof(*z), 0);
 }
 
-TIO_EXPORT tio_error tio_sdecomp_zstd(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD)
+extern "C" TIO_EXPORT tio_error tio_sdecomp_zstd(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD)
 {
-    tioZstdStreamExtra* z = (tioZstdStreamExtra*)alloc(allocUD, 0, 0, sizeof(tioZstdStreamExtra));
+    tioZstdStreamExtra* z = (tioZstdStreamExtra*)alloc(allocUD, NULL, tioStreamAllocMarker, sizeof(tioZstdStreamExtra));
     if (!z)
         return tio_Error_MemAllocFail;
 

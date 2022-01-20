@@ -790,6 +790,13 @@ struct tio_MMFunc
     tio_error (*close)(tio_MMIO* mmio);
 };
 
+/* Markers so that a custom allocator can see who requested memory. */
+enum tioAllocConstants
+{
+    tioAllocMarker = 't' | ('i' << 8) | ('o' << 16) | ('_' << 24),
+    tioStreamAllocMarker = 't' | ('i' << 8) | ('o' << 16) | ('S' << 24)
+};
+
 /* Needs to be in a function; doesn't work on file scope */
 #define tio__static_assert(cond) switch((int)!!(cond)){case 0:;case(!!(cond)):;}
 
