@@ -33,7 +33,7 @@ static void dump(tio_Stream* sm, tio_Handle out)
         if (sm->err)
             break;
         //fwrite(sm->begin, 1, n, stdout);
-        //tio_kwrite(out, sm->begin, n);
+        tio_kwrite(out, sm->begin, n);
         rhash_sha3_update(&sha, (const unsigned char*)sm->begin, n);
     }
     printf("\nsm.err = %d\n", sm->err);
@@ -58,8 +58,8 @@ static void unpack(tio_Stream *ppacked)
         exit(2);
 
     tio_Handle out = 0;
-    /*if (tio_kopen(&out, "outfile", tio_W, 0))
-        exit(3);*/
+    if (tio_kopen(&out, "outfile", tio_W, 0))
+        exit(3);
 
     dump(&sm, out);
 }
@@ -73,7 +73,8 @@ int main()
     //const char* fn = "win98.bmp.zst";
     //const char* fn = "screen-0001.zga";
     //const char* fn = "cgproj.ncb.zst";
-    const char* fn = "win98.bmp.lz4";
+    const char* fn = "cgproj.ncb.lz4";
+    //const char* fn = "win98.bmp.lz4";
     tio_Stream packed;
     if (tiov_sopen(&packed, sys, fn, tioF_Background, 0, 0))
         exit(1);

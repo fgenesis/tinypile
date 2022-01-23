@@ -1,7 +1,5 @@
 #include "tio_decomp_priv.h"
 
-#include <assert.h>
-
 // Streaming LZ4 decompressor
 // No support for dictionary decompression for now
 // Warning: goto-hell ahead.
@@ -37,6 +35,7 @@ enum LZ4State
 
 namespace lz4d {
 
+
 static size_t transition(tio_Stream* sm, size_t(*f)(tio_Stream*))
 {
     tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)&sm->priv;
@@ -44,6 +43,22 @@ static size_t transition(tio_Stream* sm, size_t(*f)(tio_Stream*))
     sm->Refill = f;
     return f(sm);
 }
+
+#define _LZ4_BEGIN_STATE_OR_REFILL(newstate) \
+    if (p == end)         \
+    {                     \
+        state = newstate; \
+        goto refill;      \
+    }                     \
+    case newstate: /* At least 1 byte can be read from p now */
+
+#define _LZ4_ADVANCE_DICT_OR_YIELD(adv, curstate) \
+    dict_ofs = (dict_ofs + (adv)) & (_LZ4_WINDOW_SIZE - 1); \
+    if (!dict_ofs && (adv)) \
+    {                     \
+        state = curstate; \
+        goto saveandexit; \
+    }
 
 static size_t decomp(tio_Stream* sm)
 {
@@ -66,7 +81,7 @@ static size_t decomp(tio_Stream* sm)
     if (p == end)
     {
         refill:
-        if (!tio_srefill(sm)) // possibly 0 bytes if async or EOF
+        if (!tio_srefill(src)) // possibly 0 bytes if async or EOF
         {
             if (!src->err)
                 goto saveandexit; // out of the outer loop
@@ -80,196 +95,93 @@ static size_t decomp(tio_Stream* sm)
         end = (const unsigned char*)sm->end;
     }
 
-    for (;;) switch (state)
+    switch (state) for (;;)
     {
-        gettoken:
-            if (p == end)
-            {
-                state = lz4s_gettoken;
-                goto refill;
-            }
-        case lz4s_gettoken:
-            assert(totaldone < _LZ4_WINDOW_SIZE);
-            {
-                unsigned char token = *p++;
-                copylen = token & 0xf;
-                literallen = (token >> 4u) & 0xf;
-            }
-            if (!literallen)
-                goto beginmatch; // no literals, start match right away
-            else if(literallen != 0xf)
-                goto literalrun; // less than 0xf literals, start copying those
-            // else fall through; extra length bytes follow
-            for (;;)
-            {
-                if (p == end)
+        _LZ4_BEGIN_STATE_OR_REFILL(lz4s_gettoken);
+        {
+            unsigned char token = *p++;
+            copylen = token & 0xf;
+            literallen = (token >> 4u) & 0xf;
+        }
+        if (literallen)
+        {
+            if (literallen == 0xf)
+                for (;;)
                 {
-                    state = lz4s_literallen;
-                    goto refill;
+                    _LZ4_BEGIN_STATE_OR_REFILL(lz4s_literallen);
+                    unsigned char add = *p++;
+                    literallen += add;
+                    if (add != 0xff)
+                        break;
                 }
-        case lz4s_literallen:
-                unsigned char add = *p++;
-                literallen += add;
-                if (add != 0xff)
-                    break;
-            }
-            // fall through
-        case lz4s_literalrun:
-            literalrun:
-            for (;;)
+            do
             {
-                size_t space = _LZ4_WINDOW_SIZE - dict_ofs; // how many bytes until the dict wraps around
-                size_t avail = end - p; // available input bytes
+                _LZ4_BEGIN_STATE_OR_REFILL(lz4s_literalrun);
+
+                const size_t space = _LZ4_WINDOW_SIZE - dict_ofs; // how many bytes until the dict wraps around
+                const size_t avail = end - p; // available input bytes
                 // 3-way min: cancopy = min(literallen, space, avail)
-                size_t cancopy = literallen < space ? literallen : space;
-                cancopy = avail < cancopy ? avail : cancopy;
+                const size_t tmp = avail < space ? avail : space;
+                const size_t cancopy = literallen < tmp ? literallen : tmp;
 
                 TIOX_MEMCPY(priv->dict + dict_ofs, p, cancopy);
 
                 p += cancopy;
                 totaldone += cancopy;
-                assert(totaldone <= _LZ4_WINDOW_SIZE);
                 literallen -= cancopy;
-                dict_ofs = (dict_ofs + cancopy) & (_LZ4_WINDOW_SIZE - 1);
 
-                if(!dict_ofs) // output buffer is full, return to caller
-                {
-                    state = lz4s_literalrun;
-                    goto saveandexit;
-                }
-                if (!literallen)
-                    break; // all good and done, continue below (to fall through)
-                if (p == end)
-                {
-                    state = lz4s_literalrun;
-                    goto refill;
-                }
+                _LZ4_ADVANCE_DICT_OR_YIELD(cancopy, lz4s_literalrun);
             }
+            while (literallen);
             // "The last sequence contains only literals. The block ends right after them"
             if (priv->blocksize <= size_t((char*)p - src->cursor)) // unlikely
-            {
-                if (priv->blocksize == ((char*)p - src->cursor))
-                {
-                    priv->state = 0;
-                    sm->Refill = priv->onBlockEnd;
-                    goto finish;
-                }
-
-                // probably a data error. missed the sequence boundary -> decompressed too far. no good.
-                dataerror:
-                sm->err = tio_Error_DataError;
-                return tio_streamfail(sm);
-            }
-            // fall through
-
-        beginmatch:
-            if (p == end)
-            {
-                state = lz4s_offs_low;
-                goto refill;
-            }
-        case lz4s_offs_low:
-            offset = *p++;
-            // fall through
-            if (p == end)
-            {
-                state = lz4s_offs_hi;
-                goto refill;
-            }
-        case lz4s_offs_hi:
-            offset |= (*p++ << 8);
-            if (!offset)
-                goto dataerror;
-            copylen += 4; // as per spec
-
-            if(copylen == 0xf+4)
-                for (;;)
-                {
-                    if (p == end)
-                    {
-                        state = lz4s_matchlen;
-                        goto refill;
-                    }
-        case lz4s_matchlen:
-                    unsigned char add = *p++;
-                    copylen += add;
-                    if (add != 0xff)
-                        break;
-                }
-            // fall through
-        case lz4s_outputmatch:
-        {
-            if (copylen <= offset) // non-overlapping buffers, can use memcpy
-            {
-                for (;;)
-                {
-                    unsigned back_ofs = (dict_ofs - offset) & (_LZ4_WINDOW_SIZE - 1);
-                    size_t inspace = _LZ4_WINDOW_SIZE - back_ofs;
-                    size_t outspace = _LZ4_WINDOW_SIZE - dict_ofs; // how many bytes until the dict wraps around
-
-                    size_t cancopy = inspace < outspace ? inspace : outspace;
-                    cancopy = copylen < cancopy ? copylen : cancopy;
-
-                    TIOX_MEMCPY(priv->dict + dict_ofs, priv->dict + back_ofs, cancopy);
-
-                    copylen -= cancopy;
-                    totaldone += cancopy;
-                    assert(totaldone <= _LZ4_WINDOW_SIZE);
-                    dict_ofs = (dict_ofs + cancopy) & (_LZ4_WINDOW_SIZE - 1);
-                    if (!dict_ofs) // did we just wrap around? -> output is full, return to caller
-                    {
-                        state = state = copylen ? lz4s_outputmatch : lz4s_gettoken;
-                        goto saveandexit;
-                    }
-                    if (!copylen)
-                        goto gettoken; // sequence done; start from the beginning
-                }
-            }
-            else if (offset == 1) // overlap match special case (included for speed)
-            {
-                do
-                {
-                    unsigned back_ofs = (dict_ofs - offset) & (_LZ4_WINDOW_SIZE - 1);
-                    size_t outspace = _LZ4_WINDOW_SIZE - dict_ofs; // how many bytes until the dict wraps around
-                    size_t cancopy = copylen < outspace ? copylen : outspace;
-                    TIOX_MEMSET(priv->dict + dict_ofs, priv->dict[back_ofs], cancopy);
-                    dict_ofs = (dict_ofs + cancopy) & (_LZ4_WINDOW_SIZE - 1);
-                    copylen -= cancopy;
-                    totaldone += cancopy;
-                    assert(totaldone <= _LZ4_WINDOW_SIZE);
-                    if (!dict_ofs)
-                    {
-                        state = copylen ? lz4s_outputmatch : lz4s_gettoken;
-                        goto saveandexit;
-                    }
-                }
-                while (copylen);
-                goto gettoken;
-            }
-            else
-            {
-                // it's an overlap match, copy carefully
-                char* dict = priv->dict;
-                const size_t oldcopylen = copylen;
-                do
-                {
-                    const unsigned back_ofs = (dict_ofs - offset) & (_LZ4_WINDOW_SIZE - 1);
-                    dict[dict_ofs] = dict[back_ofs];
-                    dict_ofs = (dict_ofs + 1) & (_LZ4_WINDOW_SIZE - 1);
-                    if (!dict_ofs)
-                    {
-                        totaldone += oldcopylen - copylen;
-                        assert(totaldone <= _LZ4_WINDOW_SIZE);
-                        state = oldcopylen != copylen ? lz4s_outputmatch : lz4s_gettoken;
-                        goto saveandexit;
-                    }
-                }
-                while (--copylen);
-                totaldone += oldcopylen;
-                assert(totaldone <= _LZ4_WINDOW_SIZE);
-                goto gettoken; // sequence done; start from the beginning
-            }
+                goto lastblock;
         }
+        // begin match
+        _LZ4_BEGIN_STATE_OR_REFILL(lz4s_offs_low);
+        offset = *p++;
+        // fall through
+        _LZ4_BEGIN_STATE_OR_REFILL(lz4s_offs_hi);
+        offset |= (*p++ << 8);
+        if (!offset)
+            goto dataerror;
+        copylen += 4; // as per spec
+
+        if(copylen == 0xf+4)
+            for (;;)
+            {
+                _LZ4_BEGIN_STATE_OR_REFILL(lz4s_matchlen);
+                unsigned char add = *p++;
+                copylen += add;
+                if (add != 0xff)
+                    break;
+            }
+        // fall through
+        case lz4s_outputmatch:
+            do
+            {
+                const unsigned back_ofs = (dict_ofs - offset) & (_LZ4_WINDOW_SIZE - 1);
+                // figure out how many bytes can be copied until either read or write pos hit the end of the window...
+                const size_t outspace1 = _LZ4_WINDOW_SIZE - dict_ofs;
+                const size_t outspace2 = _LZ4_WINDOW_SIZE - back_ofs;
+                const size_t untilend = outspace1 < outspace2 ? outspace1 : outspace2;
+                // and how many we can copy, out of how many we want to copy
+                const size_t cancopy = untilend < copylen ? untilend : copylen;
+
+                char* d = priv->dict;
+                if(copylen <= offset) // Normal match (can use memcpy since the memory regions are non-overlapping)
+                    TIOX_MEMCPY(d + dict_ofs, d + back_ofs, cancopy);
+                else if (offset == 1) // Overlap match; repeat last byte (special-cased for speed)
+                    TIOX_MEMSET(d + dict_ofs, d[back_ofs], cancopy);
+                else // Overlap match, copy carefully
+                    for (char* const thisend = d + cancopy; d < thisend; ++d)
+                        d[dict_ofs] = d[back_ofs];
+
+                totaldone += cancopy;
+                copylen -= cancopy;
+                _LZ4_ADVANCE_DICT_OR_YIELD(cancopy, lz4s_outputmatch);
+            }
+            while (copylen);
     }
 
 saveandexit:
@@ -282,10 +194,18 @@ saveandexit:
 finish:
     src->cursor = (char*)p;
     sm->end = sm->begin + totaldone;
-    assert(totaldone <= _LZ4_WINDOW_SIZE);
-    assert(sm->end - sm->begin == totaldone);
-    assert(&priv->dict[0] <= sm->begin && &priv->dict[0] <= sm->end);
     return totaldone;
+lastblock:
+    if (priv->blocksize == ((char*)p - src->cursor))
+    {
+        priv->state = 0;
+        sm->Refill = priv->onBlockEnd;
+        goto finish;
+    }
+    // probably a data error. missed the sequence boundary -> decompressed too far. no good.
+dataerror:
+    sm->err = tio_Error_DataError;
+    return tio_streamfail(sm);
 }
 
 // Probably not that fast. Only used by $getbyte() for header parsing.
