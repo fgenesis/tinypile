@@ -1,19 +1,21 @@
 #pragma once
 
 /*
-Public domain Jump Point Search implementation -- very fast pathfinding for uniform cost grids.
+Public domain C++ single header Jump Point Search + A* (A-star) implementation
+-- very fast pathfinding for uniform cost grids.
 Scroll down for compile config, usage tips, example code.
 
 License:
   Public domain, WTFPL, CC0 or your favorite permissive license; whatever is available in your country.
 
 Dependencies:
-  libc (stdlib.h, math.h) by default, change defines below to use your own functions. (realloc(), free(), sqrt())
+  libc (stdlib.h) by default, change defines below to use your own functions. (realloc(), free())
+  Optional: libm (math.h) if you enable floats (disabled by default). For sqrtf().
   Compiles as C++98, does not require C++11 nor the STL.
   Does not throw exceptions, works without RTTI, does not contain any virtual methods.
 
 Thread safety:
-  No global state. Searcher instances are not thread-safe. Grid template class is up to you.
+  There is no global state. Searcher instances are not thread-safe. Grid template class is up to you.
   If your grid access is read-only while pathfinding you may have many threads compute paths at the same time,
   each with its own Searcher instance.
 
@@ -164,6 +166,17 @@ If no exception is thrown (ie. you used JPS::PathVector) then the failure cases 
 
 You may abort a search anytime by starting a new one via findPathInit(), calling freeMemory(), or by destroying the searcher instance.
 Aborting or starting a search resets the values returned by .getStepsDone() and .getNodesExpanded() to 0.
+
+// -----------------------
+// --- The Manipulator ---
+// -----------------------
+
+(This feature is highly EXPERIMENTAL!)
+
+If you have specific needs that don't seem covered by the basic JPS/A* algorithms,
+search for NoManipulator further down in this file and read the comments there.
+It allows to attach a few bits of userdata to nodes and can be used to control node expansion,
+ie. to not accept nodes under whatever conditions.
 
 */
 
@@ -380,7 +393,7 @@ struct Node
     ScoreType f, g; // heuristic distances
     Position pos;
     int parentOffs; // no parent if 0
-    unsigned _flags;
+    unsigned _flags; // lower 2 bits used for open/closed status, upper 30 bits are free for userdata
 
     inline int hasParent() const { return parentOffs; }
     inline void setOpen() { _flags |= 1; }
@@ -393,6 +406,10 @@ struct Node
     inline const Node& getParent() const { JPS_ASSERT(parentOffs); return this[parentOffs]; }
     inline const Node *getParentOpt() const { return parentOffs ? this + parentOffs : 0; }
     inline void setParent(const Node& p) { JPS_ASSERT(&p != this); parentOffs = static_cast<int>(&p - this); }
+
+    // 30 bits of userdata, for use by the manipulator
+    inline void setUserBits(unsigned x) { _flags = (_flags & 3) | (x << 2); }
+    inline unsigned getUserBits() const { return _flags >> 2u; }
 };
 
 template<typename T>
@@ -834,16 +851,16 @@ protected:
         stepsDone = 0;
     }
 
-    void _expandNode(const Position jp, Node& jn, const Node& parent)
+    void _expandNode(Node& jn, const Node& parent, unsigned userbits)
     {
-        JPS_ASSERT(jn.pos == jp);
-        ScoreType extraG = JPS_HEURISTIC_ACCURATE(jp, parent.pos);
+        ScoreType extraG = JPS_HEURISTIC_ACCURATE(jn.pos, parent.pos);
         ScoreType newG = parent.g + extraG;
         if(!jn.isOpen() || newG < jn.g)
         {
             jn.g = newG;
-            jn.f = jn.g + JPS_HEURISTIC_ESTIMATE(jp, endPos);
+            jn.f = jn.g + JPS_HEURISTIC_ESTIMATE(jn.pos, endPos);
             jn.setParent(parent);
+            jn.setUserBits(userbits);
             if(!jn.isOpen())
             {
                 open.pushNode(&jn);
@@ -880,11 +897,73 @@ public:
     }
 };
 
-template <typename GRID> class Searcher : public SearcherBase
+// Slightly specialized but intermediate searcher base for functions that only depend on the grid
+// (Results in less code generation when using the same grid type but different manipulators)
+template <typename GRID>
+class GridSearcher : public SearcherBase
+{
+protected:
+    GridSearcher(const GRID& g, void* user = 0)
+        : SearcherBase(user), grid(g)
+    {}
+
+    Position jumpP(const Position& p, const Position& src);
+    Position jumpD(Position p, int dx, int dy);
+    Position jumpX(Position p, int dx);
+    Position jumpY(Position p, int dy);
+
+    unsigned findNeighborsAStar(const Node& n, Position* wptr);
+    unsigned findNeighborsJPS(const Node& n, Position* wptr) const;
+    Node* getNode(const Position& pos);
+
+    const GRID& grid;
+
+private:
+    // forbid any ops
+    GridSearcher& operator=(const GridSearcher&);
+    GridSearcher(const GridSearcher&);
+};
+
+// A manipulator controls certain advanced aspects of internal node generation.
+// If you don't care, just pass this NoManipulator.
+// Otherwise implement your own and pass it to your Searcher<>.
+struct NoManipulator
+{
+    /* Control creation and userdata attached to a node.
+       You may walk up the chain of parents and include them in the decision,
+       just note that the same position may be called multiple times
+       and your answer may or may not depend on the position alone.
+       It is very well possible that you can refuse a specific position because the
+       chain of parents isn't what you want, yet the same time, a node already exists
+       at that position or a later attempt with other parants might succeed.
+       Then you just don't allow this specific configuration and the search will try
+       other possibilities.
+       An existing node's bits are overwritten whenever a cheaper path is discovered.
+       - Return 0 if you don't care.
+       - Return < 0 if the node should not be created/expanded.
+       - Otherwise, the lowest 30 bits of the returned int will be stored in the
+         node for later use.
+
+       IMPORTANT: This will probably not do what you want when the JPS algorithm is used.
+                  (Since it only really expands nodes at certain key points aka jump points.)
+                  If your manipulator assumes that expanded nodes are adjacent,
+                  pass (JPS_Flag_AStarOnly | JPS_Flag_NoGreedy) to the search!
+    */
+    inline static int getNodeBits(Position pos, const Node& parent) { return 0; }
+
+    /* Version of the above call when the node has no parent,
+      ie. when start and end nodes of a path are checked or during the initial greedy check.
+      You can eg. forbid a position from being used even if the map grid
+      says that the position is fine. */
+    inline static int getNodeBitsNoParent(Position pos) { return 0; }
+};
+
+template <typename GRID, typename Manipulator = NoManipulator>
+class Searcher : public GridSearcher<GRID>
 {
 public:
-    Searcher(const GRID& g, void *user = 0)
-        : SearcherBase(user), grid(g)
+    Searcher(const GRID& g, const Manipulator& manip_ = Manipulator(), void *user = 0)
+        : GridSearcher(g, user), manip(manip_)
     {}
 
     // single-call
@@ -900,24 +979,16 @@ public:
 
 private:
 
-    const GRID& grid;
+    Manipulator manip;
 
-    Node *getNode(const Position& pos);
     bool identifySuccessors(const Node& n);
 
     bool findPathGreedy(Node *start, Node *end);
-    
-    unsigned findNeighborsAStar(const Node& n, Position *wptr);
 
-    unsigned findNeighborsJPS(const Node& n, Position *wptr) const;
-    Position jumpP(const Position& p, const Position& src);
-    Position jumpD(Position p, int dx, int dy);
-    Position jumpX(Position p, int dx);
-    Position jumpY(Position p, int dy);
 
     // forbid any ops
-    Searcher& operator=(const Searcher<GRID>&);
-    Searcher(const Searcher<GRID>&);
+    Searcher& operator=(const Searcher&);
+    Searcher(const Searcher&);
 };
 
 
@@ -989,13 +1060,15 @@ template<typename PV> JPS_Result SearcherBase::generatePath(PV& path, unsigned s
 
 //-----------------------------------------
 
-template <typename GRID> inline Node *Searcher<GRID>::getNode(const Position& pos)
+template <typename GRID>
+inline Node *GridSearcher<GRID>::getNode(const Position& pos)
 {
     JPS_ASSERT(grid(pos.x, pos.y));
     return nodemap(pos.x, pos.y);
 }
 
-template <typename GRID> Position Searcher<GRID>::jumpP(const Position &p, const Position& src)
+template <typename GRID>
+Position GridSearcher<GRID>::jumpP(const Position &p, const Position& src)
 {
     JPS_ASSERT(grid(p.x, p.y));
 
@@ -1015,7 +1088,8 @@ template <typename GRID> Position Searcher<GRID>::jumpP(const Position &p, const
     return npos;
 }
 
-template <typename GRID> Position Searcher<GRID>::jumpD(Position p, int dx, int dy)
+template <typename GRID>
+Position GridSearcher<GRID>::jumpD(Position p, int dx, int dy)
 {
     JPS_ASSERT(grid(p.x, p.y));
     JPS_ASSERT(dx && dy);
@@ -1060,7 +1134,8 @@ template <typename GRID> Position Searcher<GRID>::jumpD(Position p, int dx, int 
     return p;
 }
 
-template <typename GRID> inline Position Searcher<GRID>::jumpX(Position p, int dx)
+template <typename GRID>
+inline Position GridSearcher<GRID>::jumpX(Position p, int dx)
 {
     JPS_ASSERT(dx);
     JPS_ASSERT(grid(p.x, p.y));
@@ -1094,7 +1169,8 @@ template <typename GRID> inline Position Searcher<GRID>::jumpX(Position p, int d
     return p;
 }
 
-template <typename GRID> inline Position Searcher<GRID>::jumpY(Position p, int dy)
+template <typename GRID>
+inline Position GridSearcher<GRID>::jumpY(Position p, int dy)
 {
     JPS_ASSERT(dy);
     JPS_ASSERT(grid(p.x, p.y));
@@ -1133,7 +1209,8 @@ template <typename GRID> inline Position Searcher<GRID>::jumpY(Position p, int d
 #define JPS_ADDPOS_CHECK(dx, dy) do { if(JPS_CHECKGRID(dx, dy)) JPS_ADDPOS(dx, dy); } while(0)
 #define JPS_ADDPOS_NO_TUNNEL(dx, dy) do { if(grid(x+(dx),y) || grid(x,y+(dy))) JPS_ADDPOS_CHECK(dx, dy); } while(0)
 
-template <typename GRID> unsigned Searcher<GRID>::findNeighborsJPS(const Node& n, Position *wptr) const
+template <typename GRID>
+unsigned GridSearcher<GRID>::findNeighborsJPS(const Node& n, Position *wptr) const
 {
     Position *w = wptr;
     const unsigned x = n.pos.x;
@@ -1214,7 +1291,8 @@ template <typename GRID> unsigned Searcher<GRID>::findNeighborsJPS(const Node& n
 }
 
 //-------------- Plain old A* search ----------------
-template <typename GRID> unsigned Searcher<GRID>::findNeighborsAStar(const Node& n, Position *wptr)
+template <typename GRID>
+unsigned GridSearcher<GRID>::findNeighborsAStar(const Node& n, Position *wptr)
 {
     Position *w = wptr;
     const int x = n.pos.x;
@@ -1239,7 +1317,8 @@ template <typename GRID> unsigned Searcher<GRID>::findNeighborsAStar(const Node&
 #undef JPS_CHECKGRID
 
 
-template <typename GRID> bool Searcher<GRID>::identifySuccessors(const Node& n_)
+template <typename GRID, typename Manipulator>
+bool Searcher<GRID, Manipulator>::identifySuccessors(const Node& n_)
 {
     const SizeT nidx = storage.getindex(&n_);
     const Position np = n_.pos;
@@ -1262,19 +1341,26 @@ template <typename GRID> bool Searcher<GRID>::identifySuccessors(const Node& n_)
                 continue;
         }
         // Now that the grid position is definitely a valid jump point, we have to create the actual node.
+        // First, make sure that the manipulator allows us to create the node in the first place
+        const int userbits = manip.getNodeBits(jp, n_);
+        if (userbits < 0)
+            continue; // User doesn't want this node to be created
+
         Node *jn = getNode(jp); // this might realloc the storage and invalidate n_
         if(!jn)
             return false; // out of memory
 
-        Node& n = storage[nidx]; // get valid ref in case we realloc'd
+        const Node& n = storage[nidx]; // get valid ref in case we realloc'd
         JPS_ASSERT(jn != &n);
         if(!jn->isClosed())
-            _expandNode(jp, *jn, n);
+            _expandNode(*jn, n, unsigned(userbits));
     }
     return true;
 }
 
-template <typename GRID> template<typename PV> bool Searcher<GRID>::findPath(PV& path, Position start, Position end, unsigned step, JPS_Flags flags)
+template <typename GRID, typename Manipulator>
+template<typename PV>
+bool Searcher<GRID, Manipulator>::findPath(PV& path, Position start, Position end, unsigned step, JPS_Flags flags)
 {
     JPS_Result res = findPathInit(start, end, flags);
 
@@ -1303,7 +1389,8 @@ template <typename GRID> template<typename PV> bool Searcher<GRID>::findPath(PV&
     }
 }
 
-template <typename GRID> JPS_Result Searcher<GRID>::findPathInit(Position start, Position end, JPS_Flags flags)
+template <typename GRID, typename Manipulator>
+JPS_Result Searcher<GRID, Manipulator>::findPathInit(Position start, Position end, JPS_Flags flags)
 {
     // This just resets a few counters; container memory isn't touched
     this->clear();
@@ -1327,14 +1414,25 @@ template <typename GRID> JPS_Result Searcher<GRID>::findPathInit(Position start,
         if(!grid(end.x, end.y))
             return JPS_NO_PATH;
 
+    const int endBits = manip.getNodeBitsNoParent(end);
+    if (endBits < -1)
+        return JPS_NO_PATH;
+
     Node *endNode = getNode(end); // this might realloc the internal storage...
     if(!endNode)
         return JPS_OUT_OF_MEMORY;
+    endNode->setUserBits(endBits);
     endNodeIdx = storage.getindex(endNode); // .. so we keep this for later
+
+    const int startBits = manip.getNodeBitsNoParent(end);
+    if (endBits < -1)
+        return JPS_NO_PATH;
 
     Node *startNode = getNode(start); // this might also realloc
     if(!startNode)
         return JPS_OUT_OF_MEMORY;
+    startNode->setUserBits(startBits);
+
     endNode = &storage[endNodeIdx]; // startNode is valid, make sure that endNode is valid too in case we reallocated
 
     if(!(flags & JPS_Flag_NoGreedy))
@@ -1349,7 +1447,8 @@ template <typename GRID> JPS_Result Searcher<GRID>::findPathInit(Position start,
     return JPS_NEED_MORE_STEPS;
 }
 
-template <typename GRID> JPS_Result Searcher<GRID>::findPathStep(int limit)
+template <typename GRID, typename Manipulator>
+JPS_Result Searcher<GRID, Manipulator>::findPathStep(int limit)
 {
     stepsRemain = limit;
     do
@@ -1367,12 +1466,15 @@ template <typename GRID> JPS_Result Searcher<GRID>::findPathStep(int limit)
     return JPS_NEED_MORE_STEPS;
 }
 
-template<typename GRID> template<typename PV> JPS_Result Searcher<GRID>::findPathFinish(PV& path, unsigned step) const
+template<typename GRID, typename Manipulator>
+template<typename PV>
+JPS_Result Searcher<GRID, Manipulator>::findPathFinish(PV& path, unsigned step) const
 {
     return this->generatePath(path, step);
 }
 
-template<typename GRID> bool Searcher<GRID>::findPathGreedy(Node *n, Node *endnode)
+template<typename GRID, typename Manipulator>
+bool Searcher<GRID, Manipulator>::findPathGreedy(Node *n, Node *endnode)
 {
     Position midpos = npos;
     PosType x = n->pos.x;
@@ -1397,7 +1499,7 @@ template<typename GRID> bool Searcher<GRID>::findPathGreedy(Node *n, Node *endno
         const PosType tx = x + dx * minlen;
         while(x != tx)
         {
-            if(grid(x, y) && (grid(x+dx, y) || grid(x, y+dy))) // prevent tunneling as well
+            if(grid(x, y) && (grid(x+dx, y) || grid(x, y+dy)) && manip.getNodeBitsNoParent(Pos(x, y)) >= 0) // prevent tunneling as well
             {
                 x += dx;
                 y += dy;
@@ -1418,31 +1520,45 @@ template<typename GRID> bool Searcher<GRID>::findPathGreedy(Node *n, Node *endno
     if(!(x == endpos.x && y == endpos.y))
     {
         while(x != endpos.x)
-            if(!grid(x += dx, y))
+            if(!grid(x += dx, y) || manip.getNodeBitsNoParent(Pos(x, y)) < 0)
                 return false;
 
         while(y != endpos.y)
-            if(!grid(x, y += dy))
+            if(!grid(x, y += dy) || manip.getNodeBitsNoParent(Pos(x, y)) < 0)
                 return false;
 
         JPS_ASSERT(x == endpos.x && y == endpos.y);
     }
 
-    if(midpos.isValid())
+    Node* endParent = 0;
+    if (midpos.isValid())
     {
+        const int midbits = manip.getNodeBits(midpos, *n);
+        if (midbits < 0)
+            return false;
         const unsigned nidx = storage.getindex(n);
-        Node *mid = getNode(midpos); // this might invalidate n, endnode
-        if(!mid)
+        Node* mid = getNode(midpos); // this might invalidate n, endnode
+        if (!mid)
             return false;
         n = &storage[nidx]; // reload pointers
         endnode = &storage[endNodeIdx];
         JPS_ASSERT(mid && mid != n);
+        mid->setUserBits(midbits);
         mid->setParent(*n);
-        if(mid != endnode)
-            endnode->setParent(*mid);
+        if (mid != endnode)
+            endParent = mid;
     }
     else
-        endnode->setParent(*n);
+        endParent = n;
+
+    if (endParent)
+    {
+        const int endbits = manip.getNodeBits(endnode->pos, *endParent);
+        if (endbits < 0)
+            return false;
+        endnode->setUserBits(endbits);
+        endnode->setParent(*endParent);
+    }
 
     return true;
 }
@@ -1457,7 +1573,9 @@ template<typename GRID> bool Searcher<GRID>::findPathGreedy(Node *n, Node *endno
 
 } // end namespace Internal
 
+using Internal::Node;
 using Internal::Searcher;
+using Internal::NoManipulator;
 
 typedef Internal::PodVec<Position> PathVector;
 
@@ -1487,7 +1605,7 @@ SizeT findPath(PV& path, const GRID& grid, PosType startx, PosType starty, PosTy
                JPS_Flags flags = JPS_Flag_Default,
                void *user = 0)    // memory allocation userdata
 {
-    Searcher<GRID> search(grid, user);
+    Searcher<GRID, NoManipulator> search(grid, user);
     if(!search.findPath(path, Pos(startx, starty), Pos(endx, endy), step, flags))
         return 0;
     const SizeT done = search.getStepsDone();
