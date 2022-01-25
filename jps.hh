@@ -945,7 +945,7 @@ struct NoManipulator
          node for later use.
 
        IMPORTANT: This will probably not do what you want when the JPS algorithm is used.
-                  (Since it only really expands nodes at certain key points aka jump points.)
+                  (Since JPS only really expands nodes at certain jump points.)
                   If your manipulator assumes that expanded nodes are adjacent,
                   pass (JPS_Flag_AStarOnly | JPS_Flag_NoGreedy) to the search!
     */
@@ -962,7 +962,7 @@ template <typename GRID, typename Manipulator = NoManipulator>
 class Searcher : public GridSearcher<GRID>
 {
 public:
-    Searcher(const GRID& g, const Manipulator& manip_ = Manipulator(), void *user = 0)
+    Searcher(const GRID& g, void* user = 0, const Manipulator& manip_ = Manipulator())
         : GridSearcher(g, user), manip(manip_)
     {}
 

@@ -149,8 +149,6 @@ struct FenceHopperManip
         // Only allow passing over fences straight, not diagonally
         if (pc == 'F') // parent is on fence...
         {
-            if (!straight)
-                return -1;
             if (const JPS::Node* parent2 = parent.getParentOpt()) // parent-of-parent may not exist
                 if (!parent2 // parent must exist
                     || dir != direction(parent2->pos, parent.pos)) // path is also straight if same direction
@@ -198,7 +196,7 @@ struct TeleportManip
     const FenceHopperGrid& grid;
     const float teleportDistance;
 
-    inline int getNodeBits(JPS::Position pos, const JPS::Node& parent) const
+    int getNodeBits(JPS::Position pos, const JPS::Node& parent) const
     {
         assert(grid(pos.x, pos.y)); // this won't be called if not walkable
 
@@ -223,7 +221,7 @@ struct TeleportManip
         return grid.mapdata[pos.y][pos.x] == 'F';
     }
 
-    inline int getNodeBitsNoParent(JPS::Position pos) const
+    int getNodeBitsNoParent(JPS::Position pos) const
     {
         assert(grid(pos.x, pos.y)); // this won't be called if not walkable
         char c = grid.mapdata[pos.y][pos.x];
@@ -233,8 +231,23 @@ struct TeleportManip
     }
 };
 
+
+// Not used by JPS but added here for convenience
+static void manglePath(JPS::PathVector& pv)
+{
+    const size_t N = pv.size();
+    size_t w = 0;
+    for (size_t i = 0; i < N; ++i)
+    {
+        const JPS::Position& p = pv[i];
+        if (data[p.y][p.x] != 'F')
+            pv[w++] = p;
+    }
+    pv.resize(w);
+}
+
 template<typename GRID, typename Manipulator>
-void doRun(const GRID& grid, const Manipulator& manip, JPS_Flags flags)
+void doRun(const GRID& grid, const Manipulator& manip, JPS_Flags flags, bool mangle)
 {
     // Collect waypoints from map
     JPS::PathVector waypoints;
@@ -251,7 +264,7 @@ void doRun(const GRID& grid, const Manipulator& manip, JPS_Flags flags)
     }
 
     JPS::PathVector path;
-    JPS::Searcher<GRID, Manipulator> search(grid, manip);
+    JPS::Searcher<GRID, Manipulator> search(grid, NULL, manip);
     size_t totalsteps = 0, totalnodes = 0;
     for (size_t i = 1; i < waypoints.size(); ++i)
     {
@@ -265,6 +278,9 @@ void doRun(const GRID& grid, const Manipulator& manip, JPS_Flags flags)
         totalsteps += search.getStepsDone();
         totalnodes += search.getNodesExpanded();
     }
+
+    if(mangle)
+        manglePath(path);
 
     // visualize path
     unsigned c = 0;
@@ -291,21 +307,21 @@ int main(int argc, char **argv)
         std::cout << "\n---- Normal pathfinding run ----\n";
         MyNormalGrid grid(data);
         JPS::NoManipulator nomanip;
-        doRun(grid, nomanip, 0);
+        doRun(grid, nomanip, 0, false);
     }
 
     {
         std::cout << "\n---- Fence hopper can hop straight over 1 fence ----\n";
         FenceHopperGrid fhgrid(data);
         FenceHopperManip manip(fhgrid);
-        doRun(fhgrid, manip, JPS_Flag_AStarOnly);
+        doRun(fhgrid, manip, JPS_Flag_AStarOnly, false);
     }
 
     {
         std::cout << "\n---- Teleporter can teleport a short distance ----\n";
         FenceHopperGrid fhgrid(data);
         TeleportManip manip(fhgrid, 4.0f);
-        doRun(fhgrid, manip, JPS_Flag_AStarOnly);
+        doRun(fhgrid, manip, JPS_Flag_AStarOnly, true);
     }
 
     return 0;
