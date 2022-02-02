@@ -1,3 +1,4 @@
+include_directories(tio)
 add_subdirectory(tio)
 add_subdirectory(tio_addons)
 add_subdirectory(tio_vfs)

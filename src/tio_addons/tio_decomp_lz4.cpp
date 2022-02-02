@@ -91,8 +91,8 @@ static size_t decomp(tio_Stream* sm)
                 return tio_streamfail(sm);
             }
         }
-        p = (const unsigned char*)sm->cursor;
-        end = (const unsigned char*)sm->end;
+        p = (const unsigned char*)src->cursor;
+        end = (const unsigned char*)src->end;
     }
 
     switch (state) for (;;)
