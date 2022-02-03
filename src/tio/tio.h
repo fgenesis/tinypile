@@ -565,16 +565,6 @@ enum tio_StreamFlags_
     Set this flag to close the underlying source whenever this stream is closed.
     This flag is ignored for streams that do not depend on other data sources. */
     tioS_CloseBoth = 0x02,
-
-
-    /* --- Internal --- */
-
-    /* Exposed for extensions. Don't pass this to stream init functions.
-    Whenever tioF_Nonblock was passed and the stream is actually nonblocking,
-    this must be set by the backend implementation.
-    With this flag we can check whether a zero-byte Refill() is spurious or it's better to get out.
-    Used e.g. by tio_sskip(). */
-    tioS_Marker_Nonblocking = 0x10000
 };
 typedef unsigned tio_StreamFlags;
 
@@ -655,16 +645,14 @@ TIO_EXPORT tiosize tio_sread(tio_Stream *sm, void *dst, size_t bytes);
 
 /* Advance the stream cursor and refill the stream as necessary. Skips up to 'bytes'.
    Returns how many bytes were skipped.
-   Stops on error or if a nonblocking stream refills 0 bytes. Spurious zero-refills are fine.
-   If you know your stream is blocking (ie. you didn't specify tioF_Nonblock),
-   you can just call this function once:
-     tiosize skipped = tio_sskip(sm, N); // returns < N only if EOF or error
-   If you need to skip exacly N bytes and your stream may be nonblocking:
+   Stops on error or if a stream refills 0 bytes (which may be spurious or
+   because the stream is nonblocking and has no data).
+   To skip exactly N bytes, call this function multiple times if needed:
      while(!sm->err)
      {
          N -= tio_sskip(sm, N);
          if(!N) break;
-         do something else for a bit while sm is struggling to provide data;
+         // if stream is nonblocking, do something else for a bit here before trying again
      }
 */
 TIO_EXPORT tiosize tio_sskip(tio_Stream *sm, tiosize bytes);
@@ -793,7 +781,7 @@ struct tio_MMFunc
 /* Markers so that a custom allocator can see who requested memory. */
 enum tioAllocConstants
 {
-    tioAllocMarker = 't' | ('i' << 8) | ('o' << 16) | ('_' << 24),
+    tioAllocMarker       = 't' | ('i' << 8) | ('o' << 16) | ('_' << 24),
     tioStreamAllocMarker = 't' | ('i' << 8) | ('o' << 16) | ('S' << 24)
 };
 

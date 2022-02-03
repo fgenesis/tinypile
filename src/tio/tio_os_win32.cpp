@@ -341,6 +341,7 @@ struct tioWin32OverlappedExtra
     size_t nextToRequest;
     size_t blocksInUse;
     tiosize totalsize;
+    tio_Features features;
     DWORD win32err; // win32 error code from GetLastError()
     HANDLE events[win32MaxOverlappedIOBlocks];
     void* ptrs[win32MaxOverlappedIOBlocks];
@@ -432,19 +433,19 @@ static void _streamWin32OverlappedRequestNextChunk(tio_Stream* sm)
     BOOL ok = ::ReadFile((HANDLE)ovl->hFile, dst, willread, NULL, ov);
     tio__TRACE("[inflight: %u] Overlapped ReadFile(%p) bytes=%u chunk %u -> ok = %u",
         overlappedInflight(sm), dst, willread, unsigned(chunk), ok);
-    if (ok)
-        return;
-
-    DWORD err = ::GetLastError();
-    if (err != ERROR_IO_PENDING)
+    if (!ok)
     {
-        ex->win32err = err; // this may be EOF, or not. Handle this once we've reached processing this block.
-        ex->ptrs[chunkidx] = NULL;
-        tio__TRACE("... failed with error %u (is EOF: %u)", unsigned(err), err == ERROR_HANDLE_EOF);
-    }
-    else
-    {
-        tio__TRACE("... IO pending...");
+        DWORD err = ::GetLastError();
+        if (err != ERROR_IO_PENDING)
+        {
+            ex->win32err = err; // this may be EOF, or not. Handle this once we've reached processing this block.
+            ex->ptrs[chunkidx] = NULL;
+            tio__TRACE("... failed with error %u (is EOF: %u)", unsigned(err), err == ERROR_HANDLE_EOF);
+        }
+        else
+        {
+            tio__TRACE("... IO pending...");
+        }
     }
 }
 
@@ -453,8 +454,8 @@ static size_t streamWin32OverlappedRefill(tio_Stream* sm)
     tioWin32OverlappedStreamOverlay *ovl = _streamoverlay(sm);
     tioWin32OverlappedExtra * ex = _memoverlay(sm);
 
-    size_t chunk = ovl->chunk;
-    size_t chunkidx = ovl->chunk % ex->blocksInUse;
+    size_t chunk = ovl->chunk++;
+    size_t chunkidx = chunk % ex->blocksInUse;
 
     char* p = (char*)ex->ptrs[chunkidx];
     if (!p)
@@ -471,24 +472,24 @@ static size_t streamWin32OverlappedRefill(tio_Stream* sm)
 
     LPOVERLAPPED ov = &ex->ovs[chunkidx];
     DWORD done = 0;
-    BOOL wait = (sm->common.flags & tioS_Marker_Nonblocking) ? FALSE : TRUE; // don't wait in async mode
+    BOOL wait = (ex->features & tioF_Nonblock) ? FALSE : TRUE; // don't wait in async mode
     BOOL ok = ::GetOverlappedResult(hFile, ov, &done, wait);
     tio__TRACE("[inflight: %u] GetOverlappedResult(%p) chunk %u -> read %u, ok = %u",
         overlappedInflight(sm), (void*)p, unsigned(chunk), unsigned(done), ok);
-    DWORD err = 0;
+    DWORD winerr = 0;
     if (ok)
     {
         // For small files, blockSize == 1. This would kick off another request only to fail later,
         // so we can skip that and handle EOF now.
         if (done < ovl->blockSize)
             goto eof;
-        ovl->chunk = chunk + 1;
         _streamWin32OverlappedRequestNextChunk(sm);
     }
     else
     {
-        err = ::GetLastError();
-        switch (err)
+        winerr = ::GetLastError();
+        tio_error err = 0;
+        switch (winerr)
         {
         default:
             tio__TRACE("GetOverlappedResult(): unhandled return %u, done = %u", unsigned(err), unsigned(done));
@@ -497,7 +498,8 @@ static size_t streamWin32OverlappedRefill(tio_Stream* sm)
         case ERROR_HANDLE_EOF:
 eof:
             tio__TRACE("... hit EOF! Now using the last block.");
-            sm->Refill = streamEOF;
+            sm->Refill = streamEOF; // Use whatever we still have...
+            err = tio_Error_EOF;
             break;
         case ERROR_IO_INCOMPLETE:
             sm->cursor = sm->begin = sm->end = p;
@@ -505,7 +507,10 @@ eof:
         }
 
         if (!done)
+        {
+            sm->err = err; // ... unless this is hard EOF and we can wrap up right away
             return tio_streamfail(sm);
+        }
     }
     sm->cursor = p;
     sm->begin = p;
@@ -571,6 +576,7 @@ static tio_error streamWin32OverlappedInit(tio_Stream* sm, tio_Handle hFile, siz
     ex->allocUD = allocUD;
     ex->blocksInUse = useblocks;
     ex->totalsize = fullsize;
+    ex->features = features;
 
     char *pdata = ((char *)mem);
     tio__ASSERT((uintptr_t)pdata % aln == 0);
@@ -611,9 +617,6 @@ static tio_error streamWin32OverlappedInit(tio_Stream* sm, tio_Handle hFile, siz
     const size_t run = tio_min<size_t>(useblocks, win32MaxOverlappedIOBlocks - 1);
     for (i = 0; i < run; ++i)
         _streamWin32OverlappedRequestNextChunk(sm);
-
-    if (features & tioF_Nonblock)
-        sm->common.flags |= tioS_Marker_Nonblocking;
 
     return 0;
 }
