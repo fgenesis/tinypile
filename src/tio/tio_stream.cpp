@@ -110,12 +110,6 @@ static void streamHandleReadClose(tio_Stream* sm)
     invalidate(sm);
 }
 
-static size_t streamHandleReadEOF(tio_Stream* sm)
-{
-    sm->err = tio_Error_EOF;
-    return streamfail(sm);
-}
-
 static size_t streamHandleReadRefill(tio_Stream* sm)
 {
     size_t n = sm->priv.blockSize;
@@ -125,7 +119,7 @@ static size_t streamHandleReadRefill(tio_Stream* sm)
     tio__TRACE("streamHandleReadRefill: Read %u bytes at offset %u, err = %d",
         unsigned(done), unsigned(sm->priv.offset), err);
     if (done < n || err == tio_Error_EOF)
-        sm->Refill = streamHandleReadEOF;
+        sm->Refill = streamEOF;
     else if(err)
         sm->Refill = streamfail;
     sm->priv.offset += done;

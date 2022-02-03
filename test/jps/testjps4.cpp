@@ -122,8 +122,8 @@ inline static bool isstraight(JPS::Position from, JPS::Position to)
 struct Direction
 {
     int x, y;
-    inline bool operator==(Direction& o) const { return x == o.x && y == o.y; }
-    inline bool operator!=(Direction& o) const { return x != o.x || y != o.y; }
+    inline bool operator==(const Direction& o) const { return x == o.x && y == o.y; }
+    inline bool operator!=(const Direction& o) const { return x != o.x || y != o.y; }
 };
 
 inline static Direction direction(JPS::Position from, JPS::Position to)
