@@ -1,3 +1,3 @@
-add_executable(testluaalloc testluaalloc.cpp minilua.c)
-target_link_libraries(testluaalloc tinypile)
+add_executable(testluaalloc testluaalloc.cpp)
+target_link_libraries(testluaalloc tinypile minilua)
 

@@ -7748,8 +7748,7 @@ static const struct luaL_Reg bitlib[]={
 };
 
 int runlua(int argc, const char*const*argv, lua_Alloc alloc, void *ud){
-lua_State*L=lua_newstate(alloc, ud);
-//lua_State*L=luaL_newstate();
+lua_State*L=alloc ? lua_newstate(alloc, ud) : luaL_newstate();
 int i, ret = 0;
 luaL_openlibs(L);
 luaL_register(L,"bit",bitlib);
