@@ -8,10 +8,15 @@
 // Especially on windows, UTF-8 to wchar_t conversion requires some temporary memory,
 // and that's best allocated from the stack to keep the code free of heap allocations.
 // This value limits the length of paths that can be processed by this library.
+#ifndef TIO_MAX_STACK_ALLOC
 #define TIO_MAX_STACK_ALLOC 0x8000
+#endif
 
 // Print some things in debug mode. For debugging internals.
-#define TIO_ENABLE_DEBUG_TRACE
+// Define this to 1 to enable, 0/undefined/empty to disable
+#ifndef TIO_ENABLE_DEBUG_TRACE
+#define TIO_ENABLE_DEBUG_TRACE 1
+#endif
 
 /* ---- End compile config ---- */
 
@@ -44,7 +49,9 @@
 #define tio__freea(p) /* not necessary */
 #endif
 
+#ifndef TIO_PRIVATE
 #define TIO_PRIVATE /*static*/
+#endif
 
 // For making sure that functions that do heavy stack allocation are not inlined
 #if defined(_MSC_VER) && _MSC_VER >= 1300
@@ -69,7 +76,7 @@
 #endif
 
 #ifndef tio__TRACE
-#  if TIO_DEBUG && defined(TIO_ENABLE_DEBUG_TRACE)
+#  if TIO_DEBUG && (TIO_ENABLE_DEBUG_TRACE +0)
 #    include <stdio.h>
 #    define tio__TRACE(fmt, ...) printf("tio: " fmt "\n", __VA_ARGS__)
 #  else

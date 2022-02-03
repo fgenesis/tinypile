@@ -1,0 +1,24 @@
+= tio.h
+< tio.h
+
+= tio.cpp
+- #include "tio_priv.h"
+- #include "tio_cfg.h"
+- #include "tio.h"
+- #pragma once
+: // !! This is an amalgamated file, don't modify directly!
+: #include "tio.h"
+:
+: // -- Begin amalg config -- added by amalg.lua --
+: #define TIO_PRIVATE static
+: #define TIO_ENABLE_DEBUG_TRACE 0
+: // -- End amalg config --
+:
+< tio_priv.h
+< tio_priv.cpp
+< tio_os_win32.cpp
+< tio_os_posix.cpp
+< tio_os_libc.cpp
+< tio_mm.cpp
+< tio_stream.cpp
+< tio_api.cpp

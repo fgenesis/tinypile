@@ -24,7 +24,7 @@
 #define checkapi_0(expr, msg) checkapi_ret(expr, msg, 0)
 #define checknotnull_0(ptr) checknotnull(ptr)
 
-extern "C" {
+
 
 // Path/file names passed to the public API must be cleaned using this macro.
 #define SANITIZE_PATH(dst, src, flags, extraspace) \
@@ -502,6 +502,5 @@ TIO_EXPORT size_t tio_joinpath(char *dst, size_t dstsize, const char * const *pa
     return req;
 }
 
-} // extern "C"
 
 /* ---- End public API ---- */

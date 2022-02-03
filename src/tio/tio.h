@@ -123,9 +123,15 @@ typedef uint64_t tiosize;
 typedef size_t tiosize; /* Not guaranteed to be 64 bits */
 #endif
 
+#ifdef __cplusplus
+#define TIO_EXTERN_C extern "C"
+#else
+#define TIO_EXTERN_C
+#endif
+
 /* All public functions are marked with this */
 #ifndef TIO_EXPORT
-#define TIO_EXPORT
+#define TIO_EXPORT TIO_EXTERN_C
 #endif
 
 /* Bitmask; Specify max. one from each group.
