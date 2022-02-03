@@ -1,5 +1,9 @@
 #include "tio_vfs.h" /* No dependency on internals! Uses only the public API. */
 
+#ifdef _MSC_VER
+#pragma warning(disable: 4100) // unreferenced formal parameter
+#endif
+
 struct Fdat
 {
     tio_Handle h;
@@ -111,10 +115,10 @@ static tio_FileType sysfs_FileInfo(const tiov_FS *, const char *path, tiosize *p
 {
     return tio_fileinfo(path, psz);
 }
-static tio_error sysfs_CreateDir(const tiov_FS *, const char *path)
+/*static tio_error sysfs_CreateDir(const tiov_FS *, const char *path)
 {
     return tio_createdir(path);
-}
+}*/
 
 static const tiov_Backend backend =
 {

@@ -11,4 +11,4 @@ both if the caller or the underlying stream code violate any assumptions.
 >> Don't use this in production <<. It artificially slows things down, eg. if you set maxsize=1
 you'll get a stream that delivers 1 byte at a time (and sometimes none).
 If you use this, consider wrapping this into a macro that is only enabled for debug builds. */
-tio_error tio_smakeslow(tio_Stream* sm, size_t maxsize, tio_Alloc alloc, void* allocUD);
+tio_error tio_debugstream(tio_Stream* sm, size_t maxsize, tio_Alloc alloc, void* allocUD);

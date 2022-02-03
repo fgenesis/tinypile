@@ -98,6 +98,11 @@ typedef u32 ubitmap;
 #include <stdlib.h> /* for realloc, free */
 #endif
 
+/* ---- Stupid warnings ---- */
+#ifdef _MSC_VER
+#pragma warning(disable: 4706) /* assignment within conditional expression */
+#endif
+
 /* ---- Intrinsics ---- */
 
 #define LA_RESTRICT __restrict
@@ -221,6 +226,7 @@ inline static u16 roundToFullBitmap(u16 n)
 
 inline static void checkblock(Block *b)
 {
+    (void)b;
     LA_ASSERT(b->elemSize && (b->elemSize % LA_ALLOC_STEP) == 0);
     LA_ASSERT(b->bitmapInts * BITMAP_ELEM_SIZE == b->elemstotal);
     LA_ASSERT(b->elemsfree <= b->elemstotal);
@@ -649,6 +655,7 @@ LUAALLOC_EXPORT void luaalloc_delete(LuaAlloc *LA)
 
 LUAALLOC_EXPORT unsigned luaalloc_getstats(const LuaAlloc *LA, const size_t ** alive, const size_t ** total, const size_t ** blocks, unsigned *pbinstep)
 {
+    (void)LA;
     if(pbinstep)
         *pbinstep = LA_ALLOC_STEP;
 

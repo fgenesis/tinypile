@@ -41,6 +41,7 @@
 #include <Windows.h> // the remaining crap
 #pragma warning(disable: 4127)
 #pragma warning(disable: 4702) // unreachable code
+#pragma warning(disable: 4505) // unreferenced function with internal linkage has been removed
 typedef DWORD IOSizeT;
 #define OS_PATHSEP '\\'
 
@@ -788,7 +789,7 @@ TIO_PRIVATE tio_error os_createpath(char* path)
     if(os_pathIsAbs(path))
     {
         const size_t len = tio__strlen(path);
-        size_t skip = 0;
+        skip = 0;
         if(isUNCPath(path))
             skip = win32PathExtraSpace;
         if(hasdriveletter(path + win32PathExtraSpace))

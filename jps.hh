@@ -266,6 +266,12 @@ typedef unsigned SizeT;
 // ================================
 // ====== COMPILE CONFIG END ======
 // ================================
+
+#ifdef _MSC_VER
+#pragma warning(push)
+// C++98 does not support enums in namespaces nor 'enum class' -> squelch warning for compatibility
+#pragma warning(disable: 26812) // The enum type ... is unscoped. Prefer 'enum class' over 'enum' (Enum.3).
+#endif
 // ----------------------------------------------------------------------------------------
 
 typedef unsigned JPS_Flags;
@@ -828,7 +834,7 @@ protected:
 
     Position endPos;
     SizeT endNodeIdx;
-    JPS_Flags flags;
+    JPS_Flags _flags;
     int stepsRemain;
     SizeT stepsDone;
 
@@ -838,7 +844,7 @@ protected:
         , open(storage)
         , nodemap(storage)
         , endPos(npos), endNodeIdx(noidx)
-        , flags(0)
+        , _flags(0)
         , stepsRemain(0), stepsDone(0)
     {}
 
@@ -949,13 +955,13 @@ struct NoManipulator
                   If your manipulator assumes that expanded nodes are adjacent,
                   pass (JPS_Flag_AStarOnly | JPS_Flag_NoGreedy) to the search!
     */
-    inline static int getNodeBits(Position pos, const Node& parent) { return 0; }
+    inline static int getNodeBits(Position /*pos*/, const Node& /*parent*/) { return 0; }
 
     /* Version of the above call when the node has no parent,
       ie. when start and end nodes of a path are checked or during the initial greedy check.
       You can eg. forbid a position from being used even if the map grid
       says that the position is fine. */
-    inline static int getNodeBitsNoParent(Position pos) { return 0; }
+    inline static int getNodeBitsNoParent(Position /*pos*/) { return 0; }
 };
 
 template <typename GRID, typename Manipulator = NoManipulator>
@@ -1324,7 +1330,7 @@ bool Searcher<GRID, Manipulator>::identifySuccessors(const Node& n_)
     const Position np = n_.pos;
     Position buf[8];
 
-    const unsigned num = (flags & JPS_Flag_AStarOnly)
+    const unsigned num = (_flags & JPS_Flag_AStarOnly)
         ? findNeighborsAStar(n_, &buf[0])
         : findNeighborsJPS(n_, &buf[0]);
 
@@ -1332,7 +1338,7 @@ bool Searcher<GRID, Manipulator>::identifySuccessors(const Node& n_)
     {
         // Invariant: A node is only a valid neighbor if the corresponding grid position is walkable (asserted in jumpP)
         Position jp;
-        if(flags & JPS_Flag_AStarOnly)
+        if(_flags & JPS_Flag_AStarOnly)
             jp = buf[i];
         else
         {
@@ -1395,7 +1401,7 @@ JPS_Result Searcher<GRID, Manipulator>::findPathInit(Position start, Position en
     // This just resets a few counters; container memory isn't touched
     this->clear();
 
-    this->flags = flags;
+    _flags = flags;
     endPos = end;
 
     // FIXME: check this
@@ -1613,6 +1619,10 @@ SizeT findPath(PV& path, const GRID& grid, PosType startx, PosType starty, PosTy
 }
 
 } // end namespace JPS
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 
 /*

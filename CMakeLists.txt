@@ -2,13 +2,10 @@ cmake_minimum_required(VERSION 2.6...3.20)
 project(tinypiletest)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/")
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Requires pretty new cmake, check version first
-#if (MSVC)
-#    add_compile_options(/W4 /WX)
-#else()
-#    add_compile_options(-Wall -Wextra -pedantic -Werror)
-#endif()
+# Build dependencies first, with relaxed warning settings
+add_subdirectory(dep)
 
 include_directories(.)
 include_directories(src/tio)
@@ -16,8 +13,25 @@ include_directories(src/tio_addons)
 include_directories(src/tio_vfs)
 include_directories(src/tio_zstd)
 
-# Build dependencies
-add_subdirectory(dep)
+# Tests can also use relaxed warnings
+add_subdirectory(test)
+
+# Tighten warnings for the lib code
+# Requires pretty new cmake, check version first
+if (MSVC)
+    add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+    add_definitions(-D_HAS_EXCEPTIONS=0)
+    add_compile_options(/W4 /WX)
+    if(CMAKE_CXX_FLAGS MATCHES "/EHsc")
+      string(REPLACE "/EHsc" "/EHs-c-" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    endif()
+else()
+    add_compile_options(-Wall -Wextra -pedantic -Werror -fno-exceptions -fno-rtti)
+endif()
+
+message(STATUS "CMAKE_CXX_FLAGS after possible REPLACE operation:")
+message(STATUS "CMAKE_CXX_FLAGS='${CMAKE_CXX_FLAGS}'")
+message(STATUS "")
 
 # Bigger libs have their own subdirs; to be amalgamated
 add_subdirectory(src)
@@ -33,8 +47,6 @@ if(TIO_ADDON_ZSTD)
     target_link_libraries(tinypile tio_zstd)
 endif()
 
-# Tests
-add_subdirectory(test)
 
 # Amalgamation
 option(AMALGAMATE TRUE)

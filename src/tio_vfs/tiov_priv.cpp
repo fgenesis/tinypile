@@ -210,8 +210,8 @@ StringPool::Ins StringPool::put(const char* begin, const char* end)
     if(e) // Bucket has some entries already
     {
         const char * const smem = this->_strmem;
-        const Entry *end = e + bsz;
-        for( ; e < end; ++e)
+        const Entry *last = e + bsz;
+        for( ; e < last; ++e)
         {
             size_t L = e->len;
             if(sz == L && hash == e->hash && !tio__memcmp(&smem[e->idx], begin, sz))
@@ -262,8 +262,8 @@ StringPool::Ref StringPool::find(const char* begin, const char* end) const
     if(Entry *e = b->_e)
     {
         const char * const smem = this->_strmem;
-        const Entry *end = e + b->_size;
-        for( ; e < end; ++e)
+        const Entry *last = e + b->_size;
+        for( ; e < last; ++e)
         {
             size_t L = e->len;
             if(sz == L && hash == e->hash && !tio__memcmp(&smem[e->idx], begin, sz))
@@ -349,9 +349,9 @@ tiov_FH* tiov_FH::New(const tiov_FS* fs, const tiov_FileOps* fops, tio_Mode mode
 
 void tiov_FH::destroy()
 {
-    const tiov_FS *fs = this->fs;
+    const tiov_FS *pfs = this->fs;
     this->fs = NULL; // Make sure that a potential use-after-free does proper fireworks
-    fs->Free(this, this->totalsize);
+    pfs->Free(this, this->totalsize);
 }
 
 tiov_FH::tiov_FH(const tiov_FS* fs, const tiov_FileOps* fops, size_t totalsize)

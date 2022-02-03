@@ -492,7 +492,7 @@ TIO_EXPORT size_t tio_joinpath(char *dst, size_t dstsize, const char * const *pa
         for(size_t i = 0; i < numparts; ++i)
         {
             const char *s = parts[i];
-            for(char c; (c = *s++); )
+            for(char c; ((c = *s++)); )
                 *dst++ = c;
             *dst++ = sep;
         }

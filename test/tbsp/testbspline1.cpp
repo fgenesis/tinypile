@@ -75,7 +75,7 @@ void solveCG()
 
 
 
-int main(int argc, char *argv[])
+int main()
 {
     solveCG();
     solveChol();

@@ -161,7 +161,7 @@ struct PathIterator
     static const char *findend(const char *s)
     {
         char c;
-        while( (c = *s) && c != '/' )
+        while( ((c = *s)) && c != '/' )
             ++s;
         return s;
     }

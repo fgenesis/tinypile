@@ -1,6 +1,11 @@
 #include "tio_vfs.h"
 #include "tiov_cfg.h"
 
+#ifdef _MSC_VER
+#pragma warning(disable: 4100) // unreferenced formal parameter
+#pragma warning(disable: 4706) // assignment within conditional expression
+#endif
+
 enum
 {
     // can keep this small-ish; will fall back to heap alloc for larger things
@@ -281,7 +286,7 @@ struct StackBuf : public Allocator
    /* void takeover(void *stackptr, size_t elems)
     {
         clear();
-        _p = stackptr ? (T*)stackptr : FallbackAlloc(elems, *this); 
+        _p = stackptr ? (T*)stackptr : FallbackAlloc(elems, *this);
         _sz = stackptr ? 0 : elems
     }
     */

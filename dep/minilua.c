@@ -24,6 +24,7 @@
 ******************************************************************************/
 #ifdef _MSC_VER
 typedef unsigned __int64 U64;
+#pragma warning(disable: 4324)
 #else
 typedef unsigned long long U64;
 #endif
@@ -367,7 +368,7 @@ int sizearray;
 #define lmod(s,size)(check_exp((size&(size-1))==0,(cast(int,(s)&((size)-1)))))
 #define twoto(x)((size_t)1<<(x))
 #define sizenode(t)(twoto((t)->lsizenode))
-static const TValue luaO_nilobject_;
+//static const TValue luaO_nilobject_;
 #define ceillog2(x)(luaO_log2((x)-1)+1)
 static int luaO_log2(unsigned int x);
 #define gfasttm(g,et,e)((et)==NULL?NULL:((et)->flags&(1u<<(e)))?NULL:luaT_gettm(et,e,(g)->tmname[e]))
@@ -943,7 +944,7 @@ luaM_freemem(L,c,size);
 #define ISK(x)((x)&(1<<(9-1)))
 #define INDEXK(r)((int)(r)&~(1<<(9-1)))
 #define RKASK(x)((x)|(1<<(9-1)))
-static const lu_byte luaP_opmodes[(cast(int,OP_VARARG)+1)];
+//static const lu_byte luaP_opmodes[(cast(int,OP_VARARG)+1)];
 #define getBMode(m)(cast(enum OpArgMask,(luaP_opmodes[m]>>4)&3))
 #define getCMode(m)(cast(enum OpArgMask,(luaP_opmodes[m]>>2)&3))
 #define testTMode(m)(luaP_opmodes[m]&(1<<7))

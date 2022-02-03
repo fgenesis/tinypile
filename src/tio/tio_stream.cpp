@@ -175,11 +175,11 @@ static void streamMMIOClose(tio_Stream* sm)
     invalidate(sm);
 }
 
-static void streamMMIOPrefetchBlocks(tio_Stream* sm, unsigned blocks)
+/*static void streamMMIOPrefetchBlocks(tio_Stream* sm, unsigned blocks)
 {
     tioMMIOStreamData* m = streamdata<tioMMIOStreamData>(sm);
     os_preloadvmem(m->map.begin, sm->priv.blockSize * blocks);
-}
+}*/
 
 static size_t streamMMIOReadRefill(tio_Stream* sm)
 {
@@ -197,7 +197,7 @@ static size_t streamMMIOReadRefill(tio_Stream* sm)
     {
         tio__TRACE("streamMMIOReadRefill: Mapped block %u, prefetching block %u",
             unsigned(sm->priv.offset / sm->priv.blockSize), unsigned(m->readahead));
-        os_preloadvmem(m->map.begin + sm->priv.blockSize - sm->priv.blockSize, sm->priv.blockSize);
+        os_preloadvmem(m->map.end - sm->priv.blockSize, sm->priv.blockSize);
         ++m->readahead;
     }
     else

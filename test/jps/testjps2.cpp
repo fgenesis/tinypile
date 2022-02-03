@@ -83,7 +83,7 @@ static double pathcost(unsigned startx, unsigned starty, const JPS::PathVector& 
             die("incoherent path!");
 
         accu += sqrt(double(dx*dx + dy*dy));
-        
+
         lastx = x;
         lasty = y;
     }

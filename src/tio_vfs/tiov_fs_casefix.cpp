@@ -195,8 +195,9 @@ check:
 
                     // This may insert a different number of chars into path
                     // than beg - in case the comparator returns a hit for a
-                    // string of a different size.
-                    if(tio_error err = _fixPart(&path[0], beg))
+                    // string of a different size.;
+                    err = _fixPart(&path[0], beg);
+                    if(err)
                         return err;
                 }
                 // If we're here, some bytes between beg and p were changed but the path was found

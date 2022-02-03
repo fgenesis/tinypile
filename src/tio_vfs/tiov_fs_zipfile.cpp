@@ -2,6 +2,12 @@
 
 #include <string.h> // memset // TODO remove
 
+#ifdef _MSC_VER
+#pragma warning(disable: 4100) // unreferenced formal parameter
+#pragma warning(disable: 4189) // local variable is initialized but not referenced
+#pragma warning(disable: 4505) // unreferenced function with internal linkage has been removed
+#endif
+
 //-----------------------------------------------------------------------------
 // Zip file
 //-----------------------------------------------------------------------------
@@ -64,8 +70,8 @@ static bool checkEndRecord(ZipFooter *dst, const char *p, const char *end)
     if(numEntriesThisDisk != numEntries)
         return false; // This is different only for split archives
 
-    size_t centralDirOffset = read32LE(p + 12);
-    size_t centralDirSize = read32LE(p + 16);
+    unsigned centralDirOffset = read32LE(p + 12);
+    unsigned centralDirSize = read32LE(p + 16);
     if(!centralDirSize) // FIXME: lowest limit?
         return false;
 
@@ -247,12 +253,12 @@ static tio_error zipfs_DirList(const tiov_FS *, const char *path, tio_FileCallba
 }
 static tio_FileType zipfs_FileInfo(const tiov_FS *, const char *path, tiosize *psz)
 {
-    return -1;
+    return tioT_Nothing;
 }
-static tio_error zipfs_CreateDir(const tiov_FS *, const char *path)
+/*static tio_error zipfs_CreateDir(const tiov_FS *, const char *path)
 {
     return tio_createdir(path);
-}
+}*/
 
 static void zipfs_Destroy(tiov_FS *fs)
 {

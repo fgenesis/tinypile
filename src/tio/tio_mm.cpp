@@ -156,7 +156,7 @@ TIO_PRIVATE tio_error mmio_init(tio_MMIO* mmio, const char* fn, tio_Mode mode, t
     {
         tio_Handle h;
         OpenMode om;
-        tio_error err = openfile(&h, &om, fn, mode, features);
+        err = openfile(&h, &om, fn, mode, features);
         if (err)
             return err;
 

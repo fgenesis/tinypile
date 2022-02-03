@@ -20,6 +20,12 @@
 
 /* ---- End compile config ---- */
 
+// Warnings
+#ifdef _MSC_VER
+#pragma warning(disable: 4100) // unreferenced formal parameter
+#pragma warning(disable: 4706) // assignment within conditional expression
+#endif
+
 // Support for alloca()
 
 #ifdef _MSC_VER
@@ -78,7 +84,7 @@
 #ifndef tio__TRACE
 #  if TIO_DEBUG && (TIO_ENABLE_DEBUG_TRACE +0)
 #    include <stdio.h>
-#    define tio__TRACE(fmt, ...) printf("tio: " fmt "\n", __VA_ARGS__)
+#    define tio__TRACE(fmt, ...) printf("tio: " fmt "\n", ##__VA_ARGS__)
 #  else
 #    define tio__TRACE(fmt, ...)
 #  endif
