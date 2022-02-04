@@ -8,7 +8,7 @@ Dependencies:
   Compiles as C99 or C++ code.
 
 Thread safety:
-  No global state. LuaAlloc instances are not thread-safe (same as Lua).
+  There is no global state. LuaAlloc instances are not thread-safe (same as Lua).
 
 Background:
   Lua tends to make tiny allocations (4, 8, 16, generally less than 100 bytes) most of the time.

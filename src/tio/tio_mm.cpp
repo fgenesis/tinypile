@@ -106,9 +106,14 @@ void mm_destroy(tio_Mapping *map)
     os_mmdestroy(map);
 }
 
+static size_t g_mmioAlignment;
 TIO_PRIVATE size_t mmio_alignment()
 {
-    static const size_t aln = os_mmioAlignment();
+    size_t aln = g_mmioAlignment;
+    if(!aln)
+        g_mmioAlignment = aln = os_mmioAlignment(); // query this only once
+    tio__TRACE("os_mmioAlignment() == %u", unsigned(aln));
+    tio__ASSERT(aln);
     return aln;
 }
 

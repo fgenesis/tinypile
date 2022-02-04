@@ -58,9 +58,14 @@ TIO_EXPORT tio_error tio_init_version(unsigned version)
     return 0;
 }
 
+static size_t g_osPagesize;
 TIO_EXPORT size_t tio_pagesize()
 {
-    const static size_t sz = os_pagesize(); // query this only once
+    size_t sz = g_osPagesize;
+    if(sz)
+        g_osPagesize = sz = os_pagesize(); // query this only once
+    tio__TRACE("os_pagesize() == %u", unsigned(sz));
+    tio__ASSERT(sz);
     return sz;
 }
 

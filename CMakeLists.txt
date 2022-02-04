@@ -117,12 +117,16 @@ if(AMALGAMATE_NOLIBC_TEST)
     # For this build, get rid of the last few things that may cause calls into libc/CRT
     if(MSVC)
         # If this links properly the resulting DLL should depend only on kernel32.dll and nothing else
-        target_compile_options(all_amalg_build_test PRIVATE /GS- /Zc:threadSafeInit-)
+        target_compile_options(all_amalg_build_test PRIVATE /GS-)
         target_link_options(all_amalg_build_test PRIVATE /NODEFAULTLIB )
+        # Not necessary:
+        # compile: /Zc:threadSafeInit-
     else()
         # tio uses some statics to cache some OS values, that is no harm when called multiple times and can be ignored
         # also don't want clang/gcc to be smart about recognizing nolibc functions and replacing them with their libc equivalents
-        target_compile_options(all_amalg_build_test -fno-threadsafe-statics -fno-builtin -nostdlib)
+        target_compile_options(all_amalg_build_test -fno-builtin -nostdlib)
+        # Not necessary:
+        # compile: -fno-threadsafe-statics
     endif()
 endif(AMALGAMATE_NOLIBC_TEST)
 
