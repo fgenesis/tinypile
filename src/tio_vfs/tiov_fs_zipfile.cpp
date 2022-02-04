@@ -210,7 +210,7 @@ tio_error zf_setsize(tiov_FH *f, tiosize bytes)
     return -1; // TODO
 }
 
-static const tiov_FileOps fops =
+static const tiov_FileOps zipfs_fops =
 {
     zf_close,
     zf_read,
@@ -232,7 +232,7 @@ static tio_error zipfs_Fopen(tiov_FH **hDst, const tiov_FS *fs, const char *fn, 
     // and THEN the memory allocation fails,
     // we've done a destructive operation without reporting it.
     // That would be bad. Allocating first is less efficient if the file isn't found, but safer.
-    tiov_FH *fh = tiov_setupFH(fs, &fops, mode, features, sizeof(Zdat));
+    tiov_FH *fh = tiov_setupFH(fs, &zipfs_fops, mode, features, sizeof(Zdat));
     *hDst = fh; // Always assign!
 
     // TODO!
@@ -264,7 +264,7 @@ static void zipfs_Destroy(tiov_FS *fs)
 {
 }
 
-static const tiov_Backend backend =
+static const tiov_Backend zipfs_backend =
 {
     zipfs_Destroy,
     zipfs_Fopen,
@@ -277,5 +277,5 @@ static const tiov_Backend backend =
 
 TIO_EXPORT tiov_FS *tiov_zipfs(tiov_FS *fs, const char *fn, tio_Alloc alloc, void *allocUD)
 {
-    return tiov_setupFS(&backend, alloc, allocUD, 0);
+    return tiov_setupFS(&zipfs_backend, alloc, allocUD, 0);
 }

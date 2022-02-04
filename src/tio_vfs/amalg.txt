@@ -1,0 +1,25 @@
+= tio_vfs.cpp
+- #include "tiov_priv.h"
+- #include "tiov_libc.h"
+- #include "tio_vfs.h"
+- #include "casefold.gen.h"
+- #pragma once
+: // !! This is an amalgamated file, don't modify directly!
+: #include "tio_vfs.h"
+:
+: // -- Begin amalg config -- added by amalg.lua --
+: #define TIO_PRIVATE static
+: #define TIO_ENABLE_DEBUG_TRACE 0
+: // -- End amalg config --
+:
+< tiov_libc.h
+< tiov_priv.h
+< casefold.gen.h
+< tiov_libc.cpp
+< tiov_priv.cpp
+< tiov_utf8.cpp
+< tiov_fs_casefix.cpp
+< tiov_fs_phys.cpp
+< tiov_fs_vfs.cpp
+#< tiov_fs_zipfile.cpp
+< tiov_api.cpp

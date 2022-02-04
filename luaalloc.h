@@ -12,16 +12,27 @@ Usage:
 
 #pragma once
 
-/* Every public API function is annotated with this */
+#ifdef __cplusplus
+#define LUAALLOC_EXTERN_C extern "C"
+#else
+#define LUAALLOC_EXTERN_C
+#endif
+
+#ifndef LUAALLOC_LINKAGE
+#  if defined(LUAALLOC_BUILD_DLL) && defined(_WIN32)
+#    define LUAALLOC_LINKAGE __declspec(dllexport)
+#  else
+#    define LUAALLOC_LINKAGE
+#  endif
+#endif
+
+/* All public functions are marked with this */
 #ifndef LUAALLOC_EXPORT
-#define LUAALLOC_EXPORT
+#define LUAALLOC_EXPORT LUAALLOC_EXTERN_C LUAALLOC_LINKAGE
 #endif
 
 #include <stdlib.h> /* for size_t */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /* Opaque allocator type */
 typedef struct LuaAlloc LuaAlloc;
@@ -76,9 +87,6 @@ typedef enum
     LUAALLOC_TYPE_INTERNAL = 3
 } AllocType;
 
-#ifdef __cplusplus
-}
-#endif
 
 
 /*

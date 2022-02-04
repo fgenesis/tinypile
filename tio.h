@@ -129,9 +129,17 @@ typedef size_t tiosize; /* Not guaranteed to be 64 bits */
 #define TIO_EXTERN_C
 #endif
 
+#ifndef TIO_LINKAGE
+#  if defined(TIO_BUILD_DLL) && defined(_WIN32)
+#    define TIO_LINKAGE __declspec(dllexport)
+#  else
+#    define TIO_LINKAGE
+#  endif
+#endif
+
 /* All public functions are marked with this */
 #ifndef TIO_EXPORT
-#define TIO_EXPORT TIO_EXTERN_C
+#define TIO_EXPORT TIO_EXTERN_C TIO_LINKAGE
 #endif
 
 /* Bitmask; Specify max. one from each group.
@@ -298,9 +306,6 @@ enum tio_CleanFlags_
 };
 typedef unsigned tio_CleanFlags;
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /* ------------------------------ */
 /* ---- Init + Version check ---- */
@@ -794,7 +799,7 @@ enum tioAllocConstants
 /* Needs to be in a function; doesn't work on file scope */
 #define tio__static_assert(cond) switch((int)!!(cond)){case 0:;case(!!(cond)):;}
 
-
-#ifdef __cplusplus
-} // end extern "C"
-#endif
+/* For libc-free builds -- addon libs can use these */
+TIO_EXPORT void tio_memzero(void *dst, size_t n);
+TIO_EXPORT void tio_memcpy(void *dst, const void *src, size_t n);
+TIO_EXPORT size_t tio_strlen(const char *s);

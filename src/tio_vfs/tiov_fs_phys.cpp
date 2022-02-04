@@ -61,7 +61,7 @@ static tio_error f_setsize(tiov_FH *f, tiosize bytes)
 }
 #undef $H
 
-static const tiov_FileOps fops =
+static const tiov_FileOps sysfs_fops =
 {
     f_close,
     f_read,
@@ -83,7 +83,7 @@ static tio_error sysfs_Fopen(tiov_FH **hDst, const tiov_FS *fs, const char *fn, 
     // and THEN the memory allocation fails,
     // we've done a destructive operation without reporting it.
     // That would be bad. Allocating first is less efficient if the file isn't found, but safer.
-    tiov_FH *fh = tiov_setupFH(fs, &fops, mode, features, sizeof(Fdat));
+    tiov_FH *fh = tiov_setupFH(fs, &sysfs_fops, mode, features, sizeof(Fdat));
     *hDst = fh; // Always assign!
 
     tio_Handle h;
@@ -120,7 +120,7 @@ static tio_FileType sysfs_FileInfo(const tiov_FS *, const char *path, tiosize *p
     return tio_createdir(path);
 }*/
 
-static const tiov_Backend backend =
+static const tiov_Backend sysfs_backend =
 {
     NULL, // Destroy -- nothing to do
     sysfs_Fopen,
@@ -133,5 +133,5 @@ static const tiov_Backend backend =
 
 TIO_EXPORT tiov_FS *tiov_sysfs(tio_Alloc alloc, void *allocUD)
 {
-    return tiov_setupFS(&backend, alloc, allocUD, 0);
+    return tiov_setupFS(&sysfs_backend, alloc, allocUD, 0);
 }

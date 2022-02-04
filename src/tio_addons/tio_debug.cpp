@@ -42,7 +42,7 @@ size_t tioDebugRefill(tio_Stream* sm)
     // FIXME: process blocks and only refill when necessary
 
     size_t n = tio_srefill(q);
-    assert(n == q->end - q->begin && "producer error: reported refill size differs");
+    assert(n == size_t(q->end - q->begin) && "producer error: reported refill size differs");
     assert(q->begin == q->cursor && "producer error: Refill() must set cursor = begin");
     return n;
 }

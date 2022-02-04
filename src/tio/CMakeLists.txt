@@ -1,5 +1,6 @@
 set(src
-    tio.h
+    "${REPO_ROOT}/tio.h"
+    tio_libc.cpp
     tio_api.cpp
     tio_priv.cpp
     tio_mm.cpp
@@ -12,3 +13,4 @@ set(src
 )
 
 add_library(tio ${src})
+hide_symbols(tio)

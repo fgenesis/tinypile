@@ -390,7 +390,7 @@ public:
 
     void add(const char *name, tio_FileType type)
     {
-        const char * const end = name + strlen(name);
+        const char * const end = name + tio__strlen(name);
         StringPool::Ins r = StringPool::put(name, end);
         if(r.existed)
             return; // Keep existing entry!
@@ -565,7 +565,7 @@ static tio_FileType vfs_FileInfo(const tiov_FS *fs, const char *path, tiosize *p
 }
 
 
-static const tiov_Backend backend =
+static const tiov_Backend vfs_backend =
 {
     vfs_Destroy,
     vfs_Fopen,
@@ -578,7 +578,7 @@ static const tiov_Backend backend =
 
 TIO_EXPORT tiov_FS *tiov_vfs(tio_Alloc alloc, void *allocUD)
 {
-    tiov_FS *vfs = tiov_setupFS(&backend, alloc, allocUD, sizeof(Vfsdata));
+    tiov_FS *vfs = tiov_setupFS(&vfs_backend, alloc, allocUD, sizeof(Vfsdata));
     vfs->Mount = vfs_Mount;
     vfs->Resolve = vfs_Resolve;
     TIOV_PLACEMENT_NEW(&data(vfs)) Vfsdata(*vfs);

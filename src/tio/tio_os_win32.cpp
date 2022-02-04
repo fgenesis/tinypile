@@ -741,6 +741,7 @@ TIO_PRIVATE tio_error os_createSingleDir(const char* path)
     if(::CreateDirectoryW(wpath, NULL)) // nonzero return -> success
         return 0;
 
+    // FIXME: get proper OS error
     return ::GetLastError() != ERROR_ALREADY_EXISTS;
 }
 

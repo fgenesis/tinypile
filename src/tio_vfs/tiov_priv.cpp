@@ -278,14 +278,14 @@ const char* StringPool::get(unsigned id) const
     return &_strmem[id];
 }
 
-#ifndef TIOV_NO_DEFAULT_ALLOC
+#ifndef TIO_NO_DEFAULT_ALLOC
 #include <stdlib.h>
 static void *defaultalloc(void *user, void *ptr, size_t osize, size_t nsize)
 {
     (void)user;
     (void)osize;
     if(nsize)
-        return realloc(ptr, nsize);
+        return realloc(ptr, nsize); // FIXME: expose tio_
     free(ptr);
     return NULL;
 }
@@ -295,7 +295,7 @@ tiov_FS* tiov_FS::New(const tiov_Backend* bk, tio_Alloc alloc, void* allocUD, si
 {
     if(!alloc)
     {
-#ifdef TIOV_NO_DEFAULT_ALLOC
+#ifdef TIO_NO_DEFAULT_ALLOC
         return NULL;
 #else
         alloc = defaultalloc;

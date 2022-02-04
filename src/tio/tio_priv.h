@@ -1,6 +1,6 @@
 #pragma once
 
-#include "tio.h"
+#include "tio_libc.h"
 
 /* ---- Begin compile config ---- */
 
@@ -35,16 +35,15 @@
 // TODO: Some use memory.h? Not sure
 #endif
 
-// Used libc functions. Optionally replace with your own.
-#include <string.h> // memcpy, memset, strlen
+// Used libc functions. Look in tio_libc.cpp. Optionally override with your own.
 #ifndef tio__memzero
-#define tio__memzero(dst, n) memset(dst, 0, n)
+#define tio__memzero(dst, n) tio_memzero(dst, n)
 #endif
 #ifndef tio__memcpy
-#define tio__memcpy(dst, src, n) memcpy(dst, src, n)
+#define tio__memcpy(dst, src, n) tio_memcpy(dst, src, n)
 #endif
 #ifndef tio__strlen
-#define tio__strlen(s) strlen(s)
+#define tio__strlen(s) tio_strlen(s)
 #endif
 
 // short, temporary on-stack allocation. Used only via tio__checked_alloca(), see below
@@ -56,7 +55,7 @@
 #endif
 
 #ifndef TIO_PRIVATE
-#define TIO_PRIVATE /*static*/
+#define TIO_PRIVATE /* static */
 #endif
 
 // For making sure that functions that do heavy stack allocation are not inlined

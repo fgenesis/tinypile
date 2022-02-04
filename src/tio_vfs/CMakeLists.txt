@@ -1,6 +1,7 @@
 set(src
-    tio_vfs.h
-    tiov_cfg.h
+    "${REPO_ROOT}/tio_vfs.h"
+    tiov_libc.cpp
+    tiov_libc.h
     tiov_priv.h
     tiov_priv.cpp
     tiov_utf8.cpp
@@ -12,3 +13,4 @@ set(src
 )
 
 add_library(tio_vfs ${src})
+hide_symbols(tio_vfs)

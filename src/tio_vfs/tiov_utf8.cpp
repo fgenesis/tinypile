@@ -1,14 +1,4 @@
 #include "tiov_priv.h"
-
-struct CasefoldData
-{
-    const unsigned short * const keys; // lower 16 bits of key
-    const unsigned short * const values; // lower 16 bits of value
-    const unsigned short * const index;
-    unsigned expansion; // how many chars this casefold expands into
-    unsigned high; // for anything that doesn't fit into 16 bits
-};
-
 #include "casefold.gen.h"
 
 static unsigned casefold_1(unsigned x, const CasefoldData *dat)

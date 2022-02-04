@@ -35,28 +35,46 @@ Inspired by:
 
 /* ---- Configuration begin ---- */
 
+#ifdef LA_EXTRA_INCLUDE
+#define LA_STR(x) LA_STR_(x)
+#define LA_STR_(x) #x
+#include LA_STR(LA_EXTRA_INCLUDE)
+#undef LA_STR
+#undef LA_STR_
+#endif
+
 /* Track allocation stats to get an overview of your memory usage. By default disabled in release mode. */
-#ifndef NDEBUG
+#if !defined(NDEBUG) && !defined(LA_TRACK_STATS)
 #  define LA_TRACK_STATS
 #endif
 
 /* Internal consistency checks. By default disabled in release mode. */
-#ifdef NDEBUG
-#  define LA_ASSERT(x)
-#else
-#  include <assert.h>
-#  define LA_ASSERT(x) assert(x)
+#ifndef LA_ASSERT
+#  ifdef NDEBUG
+#    define LA_ASSERT(x)
+#  else
+#    include <assert.h>
+#    define LA_ASSERT(x) assert(x)
+#  endif
 #endif
 
 /* Required libc functions. Use your own if needed */
 #include <string.h> /* for memcpy, memmove, memset */
+#ifndef LA_MEMCPY
 #define LA_MEMCPY(dst, src, n) memcpy((dst), (src), (n))
-#define LA_MEMMOVE(dst, src, n) memmove((dst), (src), (n))
-#define LA_MEMSET(dst, val, n) memset((dst), (val), (n))
+#endif
 
-/* If you want to turn off the internal default system allocator, comment out the next line.
+#ifndef LA_MEMMOVE
+#define LA_MEMMOVE(dst, src, n) memmove((dst), (src), (n))
+#endif
+
+#ifndef LA_MEMSET
+#define LA_MEMSET(dst, val, n) memset((dst), (val), (n))
+#endif
+
+/* If you want to turn off the internal default system allocator, uncomment the next line.
    If the default sysalloc is disabled, symbols for realloc()/free() won't be pulled in. */
-#define LA_ENABLE_DEFAULT_ALLOC
+/*#define LA_NO_DEFAULT_ALLOC*/
 
 /* Provide pools in increments of this size, up to LA_MAX_ALLOC. 4 or 8 are good values. */
 /* E.g. A value of 4 will create pools for size 4, 8, 12, ... up to LA_MAX_ALLOC. */
@@ -94,7 +112,7 @@ typedef u32 ubitmap;
 #include <stddef.h> /* for size_t, ptrdiff_t */
 #include <limits.h> /* for CHAR_BIT */
 
-#ifdef LA_ENABLE_DEFAULT_ALLOC
+#ifndef LA_NO_DEFAULT_ALLOC
 #include <stdlib.h> /* for realloc, free */
 #endif
 
@@ -585,7 +603,7 @@ static void *_Realloc(LuaAlloc * LA_RESTRICT LA, void * LA_RESTRICT p, size_t ne
 
 /* ---- Default system allocator ---- */
 
-#ifdef LA_ENABLE_DEFAULT_ALLOC
+#ifndef LA_NO_DEFAULT_ALLOC
 static void *defaultalloc(void *user, void *ptr, size_t osize, size_t nsize)
 {
     (void)user;
@@ -597,11 +615,9 @@ static void *defaultalloc(void *user, void *ptr, size_t osize, size_t nsize)
 }
 #endif
 
+
 /* ---- Public API ---- */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 LUAALLOC_EXPORT void *luaalloc(void * ud, void *ptr, size_t oldsize, size_t newsize)
 {
@@ -625,7 +641,7 @@ LUAALLOC_EXPORT LuaAlloc * luaalloc_create(LuaSysAlloc sysalloc, void *user)
 {
     if(!sysalloc)
     {
-#ifdef LA_ENABLE_DEFAULT_ALLOC
+#ifndef LA_NO_DEFAULT_ALLOC
         sysalloc = defaultalloc;
 #else
         LA_ASSERT(sysalloc);
@@ -677,7 +693,3 @@ LUAALLOC_EXPORT unsigned luaalloc_getstats(const LuaAlloc *LA, const size_t ** a
     return 0;
 #endif
 }
-
-#ifdef __cplusplus
-}
-#endif

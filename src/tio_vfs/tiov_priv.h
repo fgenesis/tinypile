@@ -1,9 +1,10 @@
 #include "tio_vfs.h"
-#include "tiov_cfg.h"
+#include "tiov_libc.h"
 
 #ifdef _MSC_VER
 #pragma warning(disable: 4100) // unreferenced formal parameter
 #pragma warning(disable: 4706) // assignment within conditional expression
+#pragma warning(disable: 4702) // unreachable code
 #endif
 
 enum
@@ -17,6 +18,34 @@ enum
     // for the memory allocator; ignore this
     TIOV_ALLOC_MARKER = 't' | ('i' << 8) | ('o' << 16) | ('v' << 24)
 };
+
+
+// Used libc functions. Optionally replace with your own.
+#ifndef tio__memzero
+#define tio__memzero(dst, n) tio_memzero(dst, n)
+#endif
+#ifndef tio__memcpy
+#define tio__memcpy(dst, src, n) tio_memcpy(dst, src, n)
+#endif
+#ifndef tio__strlen
+#define tio__strlen(s) tio_strlen(s)
+#endif
+#ifndef tio__memcmp
+#define tio__memcmp(a, b, n) tio_memcmp(a, b, n)
+#endif
+
+#if !defined(TIO_DEBUG) && (defined(_DEBUG) || defined(DEBUG) || !defined(NDEBUG))
+#  define TIO_DEBUG 1
+#endif
+
+#ifndef tio__ASSERT
+#  if TIO_DEBUG
+#    include <assert.h>
+#    define tio__ASSERT(x) assert(x)
+#  else
+#    define tio__ASSERT(x)
+#  endif
+#endif
 
 // short, temporary on-stack allocation. Used only via tio__checked_alloca(), see below
 #ifndef tio__alloca
@@ -309,3 +338,12 @@ struct StackBuf : public Allocator
 // UTF-8
 
 int tiov_utf8fold1equal(const char *a, const char *b);
+
+struct CasefoldData
+{
+    const unsigned short * const keys; // lower 16 bits of key
+    const unsigned short * const values; // lower 16 bits of value
+    const unsigned short * const index;
+    unsigned expansion; // how many chars this casefold expands into
+    unsigned high; // for anything that doesn't fit into 16 bits
+};

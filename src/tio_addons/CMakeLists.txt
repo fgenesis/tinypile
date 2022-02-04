@@ -13,3 +13,4 @@ set(src
     miniz_common.h
 )
 add_library(tio_addons ${src})
+hide_symbols(tio_addons)
