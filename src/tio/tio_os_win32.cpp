@@ -103,10 +103,13 @@ TIO_PRIVATE void os_preloadvmem(void* p, size_t sz)
     }
 }
 
+typedef StackBuf<WCHAR, TIO_MAX_STACK_ALLOC> WinPathBuf;
+
 #define WIN_ToWCHAR(wc, len, str, extrasize) \
     len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, str, -1, NULL, 0); \
-    wc = len > 0 ? (LPWSTR)tio__checked_alloca((size_t(len) + (extrasize)) * sizeof(WCHAR)) : NULL; \
-    AutoFreea _afw(wc); \
+    WinPathBuf _wpb; \
+    WinPathBuf::Ptr _wpp = len > 0 ? _wpb.Alloc(size_t(len) + (extrasize)) : _wpb.Null(); \
+    wc = _wpp; \
     if(wc) MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, str, -1, wc, len);
 
 

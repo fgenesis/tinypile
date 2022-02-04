@@ -181,3 +181,30 @@ TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, siz
     return 0;
 }
 
+void* BumpAlloc::Alloc(size_t bytes, void* end)
+{
+    if(!bytes)
+        return NULL;
+    if(cur + bytes < end)
+    {
+        void * const p = cur;
+        cur += bytes;
+        return p;
+    }
+    return _alloc ? _alloc(_ud, 0, tioStackAllocMarker, bytes) : NULL;
+}
+
+void BumpAlloc::Free(void* p, size_t bytes, void* beg, void* end)
+{
+    if(p)
+    {
+        if((char*)p + bytes == cur)
+            cur -= bytes;
+        else if(p < beg || p >= end)
+            _alloc(_ud, p, bytes, 0);
+        else
+        {
+            tio__ASSERT("BumpAlloc: Free things in the correct order!");
+        }
+    }
+}

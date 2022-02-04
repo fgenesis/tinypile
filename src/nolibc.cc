@@ -27,7 +27,7 @@ NOLIBC_EXPORT BOOL __stdcall _DllMainCRTStartup(HANDLE hDll, DWORD dwReason, LPV
 // via https://gist.github.com/Donpedro13/ef146aa9771b42d83b8acdde559abbb8
 // and https://stackoverflow.com/questions/6733821/reading-the-rsp-register-from-microsoft-c
 // FIXME: This is probably very broken and i have no idea what i'm doing hurr durr
-#if 1
+#if 0
 NOLIBC_EXPORT size_t __chkstk(size_t stackSpaceSize)
 {
     uintptr_t rsp = (uintptr_t)*(void**)_AddressOfReturnAddress();

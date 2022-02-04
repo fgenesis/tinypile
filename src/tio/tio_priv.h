@@ -1,7 +1,5 @@
 #pragma once
 
-#include "tio_libc.h"
-
 /* ---- Begin compile config ---- */
 
 // This is a safe upper limit for stack allocations.
@@ -9,7 +7,7 @@
 // and that's best allocated from the stack to keep the code free of heap allocations.
 // This value limits the length of paths that can be processed by this library.
 #ifndef TIO_MAX_STACK_ALLOC
-#define TIO_MAX_STACK_ALLOC 0x8000
+#define TIO_MAX_STACK_ALLOC 2000
 #endif
 
 // Print some things in debug mode. For debugging internals.
@@ -20,19 +18,14 @@
 
 /* ---- End compile config ---- */
 
+#include "tio_libc.h"
+
 // Warnings
 #ifdef _MSC_VER
 #pragma warning(disable: 4100) // unreferenced formal parameter
 #pragma warning(disable: 4706) // assignment within conditional expression
-#endif
-
-// Support for alloca()
-
-#ifdef _MSC_VER
-#include <malloc.h>
-#else // Most compilers define this in stdlib.h
-#include <stdlib.h>
-// TODO: Some use memory.h? Not sure
+#pragma warning(disable: 26812) // warning C26812: The enum type '<...>' is unscoped. Prefer 'enum class' over 'enum' (Enum.3).
+// --> enum class is C++11, not used on purpose for compatibility
 #endif
 
 // Used libc functions. Look in tio_libc.cpp. Optionally override with your own.
@@ -44,14 +37,6 @@
 #endif
 #ifndef tio__strlen
 #define tio__strlen(s) tio_strlen(s)
-#endif
-
-// short, temporary on-stack allocation. Used only via tio__checked_alloca(), see below
-#ifndef tio__alloca
-#define tio__alloca(n) alloca(n)
-#endif
-#ifndef tio__freea
-#define tio__freea(p) /* not necessary */
 #endif
 
 #ifndef TIO_PRIVATE
@@ -89,18 +74,6 @@
 #  endif
 #endif
 
-#ifdef _MSC_VER
-// MSVC emits some dumb warnings when /ANALYZE is used
-#  pragma warning(disable: 6255) // warning C6255: _alloca indicates failure by raising a stack overflow exception.  Consider using _malloca instead.
-   // --> all calls to alloca() are bounds-checked, and _malloca() is a MS-specific extension
-#  pragma warning(disable: 26812) // warning C26812: The enum type '<...>' is unscoped. Prefer 'enum class' over 'enum' (Enum.3).
-   // --> enum class is C++11, not used on purpose for compatibility
-#endif
-
-// bounded, non-zero stack allocation
-#define tio__checked_alloca(n) (((n) && (n) <= TIO_MAX_STACK_ALLOC) ? tio__alloca(n) : NULL)
-
-
 template<typename T> inline T tio_min(T a, T b) { return (a) < (b) ? (a) : (b); }
 template<typename T> inline T tio_max(T a, T b) { return (b) < (a) ? (a) : (b); }
 
@@ -111,13 +84,6 @@ static const tiosize tio_MaxArchMask = (size_t)(tiosize)(uintptr_t)(void*)(intpt
 enum
 {
     tioMaxStreamPrefetchBlocks = sizeof(uintptr_t) < 8 ? 4 : 16
-};
-
-struct AutoFreea
-{
-    inline AutoFreea(void* p) : _p(p) {}
-    inline ~AutoFreea() { tio__freea(_p); }
-    void* const _p;
 };
 
 struct OpenMode
@@ -276,3 +242,57 @@ public:
         return p;
     }
 };
+
+// Simple bump allocator used for allocating things off the stack
+// Falls back to heap if out of space
+// Warning: does not take care of alignment, be careful with uneven sizes!
+class BumpAlloc
+{
+public:
+    inline BumpAlloc(void *p, tio_Alloc a, void *ud) : cur((char*)p), _alloc(a), _ud(ud) {}
+    void *Alloc(size_t bytes, void *end);
+    void Free(void *p, size_t bytes, void *beg, void *end);
+private:
+    char *cur;
+    tio_Alloc const _alloc;
+    void * const _ud;
+};
+
+// Thin template to limit code expansion
+template<typename T>
+class StackBufT : protected BumpAlloc
+{
+protected:
+    inline StackBufT(T *buf, tio_Alloc a, void *ud) : BumpAlloc(buf, a, ud) {}
+};
+
+
+// Thin template to limit code expansion
+template<typename T, size_t BYTES>
+class StackBuf : private StackBufT<T>
+{
+    typedef StackBufT<T> Base;
+public:
+    enum { MaxElem = BYTES / sizeof(T) };
+
+    class Ptr
+    {
+    public:
+        inline Ptr(T* p, size_t n, StackBuf& sb) : ptr(p), elems(n), _sb(sb) {}
+        inline ~Ptr() { _sb.Free(ptr, elems); }
+        inline operator T*() const { return ptr; }
+        T * const ptr;
+        size_t const elems;
+    private:
+        StackBuf& _sb;
+    };
+
+    inline StackBuf(tio_Alloc a = 0, void *ud = 0) : Base(&buf[0], a, ud) { tio__static_assert(MaxElem > 0); }
+    inline Ptr Alloc(size_t elems) { return Ptr((T*)BumpAlloc::Alloc(elems * sizeof(T), &buf[MaxElem]), elems, *this); }
+    inline Ptr Null() { return Ptr(NULL, 0, *this); }
+    inline void Free(void *p, size_t elems) { return BumpAlloc::Free(p, elems * sizeof(T), &buf[0], &buf[MaxElem]); }
+    T buf[MaxElem];
+};
+
+
+typedef StackBuf<char, TIO_MAX_STACK_ALLOC> PathBuf;

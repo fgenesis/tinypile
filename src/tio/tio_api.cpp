@@ -30,8 +30,9 @@
 #define SANITIZE_PATH(dst, src, flags, extraspace) \
     size_t _len = tio__strlen(src); \
     size_t _space = os_pathExtraSpace()+(extraspace)+_len+1; \
-    dst = (char*)tio__alloca(_space); \
-    AutoFreea _af(dst); \
+    PathBuf _pb; \
+    PathBuf::Ptr _pbp = _pb.Alloc(_space); \
+    dst = _pbp; \
     sanitizePath(dst, src, _space, _len, (flags) | tio_Clean_SepNative);
 
 TIO_EXPORT tio_error tio_init_version(unsigned version)

@@ -104,12 +104,12 @@ if(AMALGAMATE_NOLIBC_TEST)
     add_library(all_amalg_build_test MODULE
         #src/nolibc.cc src/nolibc.h
         "${TIO_CPP}" tio.h
-        "${TIO_VFS_CPP}" tio_vfs.h
+        #"${TIO_VFS_CPP}" tio_vfs.h
         luaalloc.c luaalloc.h
     )
     target_link_libraries(all_amalg_build_test nolibc)
     target_compile_definitions(all_amalg_build_test PRIVATE
-        TIO_MAX_STACK_ALLOC=3072  # Compiler won't emit stack checks when it can prove that we don't use more than a full stack page per function
+        #TIO_MAX_STACK_ALLOC=3072  # Compiler won't emit stack checks when it can prove that we don't use more than a full stack page per function
         TIO_BUILD_DLL TIO_NOLIBC TIO_NO_DEFAULT_ALLOC
         LUAALLOC_BUILD_DLL LA_NO_DEFAULT_ALLOC LA_EXTRA_INCLUDE=nolibc.h LA_MEMCPY=nomemcpy LA_MEMMOVE=nomemmove LA_MEMSET=nomemset
     )
