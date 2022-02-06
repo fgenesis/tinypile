@@ -13,7 +13,7 @@ This library has 3 main I/O concepts, each with their pros and cons:
   The system will page the file in and out as required. Supports R/W/RW, but cannot resize files.
 
 What to pick?
-- Read xor write sequentially, without seeking: Stream.
+- Read sequentially, without seeking: Stream.
 - Read/write/both randomly, without resizing: MMIO
 - File handle otherwise
 -> If you can, use a stream. It has the best potential for internal I/O optimization.
@@ -402,9 +402,9 @@ TIO_EXPORT tio_error tio_stdhandle(tio_Handle *hDst, tio_StdHandle);
 /* ---- Memory-mapped I/O -- [tio_m*()]---- */
 /* ---------------------------------------- */
 
-struct tio_MMIO;
-struct tio_Mapping;
-struct tio_MMFunc; /* Only interesting if you plan to write a backend or extension;
+typedef struct tio_MMIO tio_MMIO;
+typedef struct tio_Mapping tio_Mapping;
+typedef struct tio_MMFunc tio_MMFunc; /* Only interesting if you plan to write a backend or extension;
                       otherwise ignore this type. Defined below. */
 
 /*
@@ -579,6 +579,7 @@ enum tio_StreamFlags_
 };
 typedef unsigned tio_StreamFlags;
 
+typedef struct tio_Stream tio_Stream;
 struct tio_Stream
 {
     /* public, read, modify */
@@ -804,3 +805,5 @@ enum tioAllocConstants
 TIO_EXPORT void tio_memzero(void *dst, size_t n);
 TIO_EXPORT void tio_memcpy(void *dst, const void *src, size_t n);
 TIO_EXPORT size_t tio_strlen(const char *s);
+TIO_EXPORT int tio_memcmp(const void *a, const void *b, size_t n);
+TIO_EXPORT void tio_memset(void *dst, int x, size_t n);

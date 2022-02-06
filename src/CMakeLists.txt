@@ -1,6 +1,12 @@
 add_subdirectory(tio)
 add_subdirectory(tio_addons)
 add_subdirectory(tio_vfs)
+#add_subdirectory(tbsp)
+
+option(TIO_ADDON_ZIP TRUE)
+if(TIO_ADDON_ZIP)
+    add_subdirectory(tio_zip)
+endif()
 
 option(TIO_ADDON_ZSTD FALSE)
 if(TIO_ADDON_ZSTD)

@@ -20,26 +20,6 @@ enum
     TINFL_FLAG_COMPUTE_ADLER32 = 8
 };
 
-/* High level decompression functions: */
-/* tinfl_decompress_mem_to_heap() decompresses a block in memory to a heap block allocated via malloc(). */
-/* On entry: */
-/*  pSrc_buf, src_buf_len: Pointer and size of the Deflate or zlib source data to decompress. */
-/* On return: */
-/*  Function returns a pointer to the decompressed data, or NULL on failure. */
-/*  *pOut_len will be set to the decompressed data's size, which could be larger than src_buf_len on uncompressible data. */
-/*  The caller must call mz_free() on the returned block when it's no longer needed. */
-MINIZ_EXPORT void *tinfl_decompress_mem_to_heap(const void *pSrc_buf, size_t src_buf_len, size_t *pOut_len, int flags);
-
-/* tinfl_decompress_mem_to_mem() decompresses a block in memory to another block in memory. */
-/* Returns TINFL_DECOMPRESS_MEM_TO_MEM_FAILED on failure, or the number of bytes written on success. */
-#define TINFL_DECOMPRESS_MEM_TO_MEM_FAILED ((size_t)(-1))
-MINIZ_EXPORT size_t tinfl_decompress_mem_to_mem(void *pOut_buf, size_t out_buf_len, const void *pSrc_buf, size_t src_buf_len, int flags);
-
-/* tinfl_decompress_mem_to_callback() decompresses a block in memory to an internal 32KB buffer, and a user provided callback function will be called to flush the buffer. */
-/* Returns 1 on success or 0 on failure. */
-typedef int (*tinfl_put_buf_func_ptr)(const void *pBuf, int len, void *pUser);
-MINIZ_EXPORT int tinfl_decompress_mem_to_callback(const void *pIn_buf, size_t *pIn_buf_size, tinfl_put_buf_func_ptr pPut_buf_func, void *pPut_buf_user, int flags);
-
 struct tinfl_decompressor_tag;
 typedef struct tinfl_decompressor_tag tinfl_decompressor;
 

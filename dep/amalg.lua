@@ -53,7 +53,7 @@ end
 local function f_include(s)
     local fn = INDIR .. s
     print(".. " .. fn)
-    for line in io.lines(fn, "r") do
+    for line in io.lines(fn) do
         if SKIP[trim(line)] then
             --line = "//-- " .. line
             line = nil

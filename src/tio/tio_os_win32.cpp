@@ -1,4 +1,4 @@
-#define TIO_USE_WIN32
+#ifdef _WIN32
 
 // Required reading material:
 // https://googleprojectzero.blogspot.com/2016/02/the-definitive-guide-on-win32-to-nt.html
@@ -9,20 +9,9 @@
 // Inspired by:
 // http://vec3.ca/using-win32-asynchronous-io/
 
-#ifdef TIO_USE_WIN32
-
 /* TODO:
 - Incorporate things from https://cbloomrants.blogspot.com/2020/07/robust-win32-io.html
-- make write stream use overlapped io
 */
-
-// Win32 defines, also putting them before any other headers just in case
-#ifndef WIN32_LEAN_AND_MEAN
-#  define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef VC_EXTRALEAN
-#  define VC_EXTRALEAN
-#endif
 
 #include "tio_priv.h"
 

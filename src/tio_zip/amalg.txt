@@ -1,0 +1,39 @@
+- #pragma once
+- #include "miniz.h"
+- #include "miniz.c"
+- #include "miniz_common.h"
+- #include "miniz_export.h"
+- #include "miniz_tdef.c"
+- #include "miniz_tdef.h"
+- #include "miniz_tinfl.c"
+- #include "miniz_tinfl.h"
+- #include "miniz_zip.h"
+- #include "tio_zip.h"
+- #include "wrap_miniz.h"
+
+= tio_zip.cpp
+: /* This file requires miniz.
+:    Get from:
+:    https://github.com/richgel999/miniz/releases/latest
+: */
+: #include "tio_zip.h"
+: #include <miniz.h>
+< wrap_miniz.h
+< tio_deflate.cpp
+< tio_inflate.cpp
+
+= tio_zip_with_miniz.cpp
+: /* This file has miniz included and is ready-to-use */
+: #include "tio_zip.h"
+: #define MINIZ_EXPORT
+< wrap_miniz.h
+< miniz/miniz.h
+< miniz/miniz_common.h
+< miniz/miniz_tdef.h
+< miniz/miniz_tinfl.h
+< tio_deflate.cpp
+< tio_inflate.cpp
+< wrap_miniz.c
+< miniz/miniz.c
+< miniz/miniz_tinfl.c
+< miniz/miniz_tdef.c

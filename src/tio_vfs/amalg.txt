@@ -12,10 +12,8 @@
 : #define TIO_ENABLE_DEBUG_TRACE 0
 : // -- End amalg config --
 :
-< tiov_libc.h
 < tiov_priv.h
 < casefold.gen.h
-< tiov_libc.cpp
 < tiov_priv.cpp
 < tiov_utf8.cpp
 < tiov_fs_casefix.cpp

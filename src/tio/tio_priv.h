@@ -18,6 +18,14 @@
 
 /* ---- End compile config ---- */
 
+// Win32 defines, also putting them before any other headers just in case
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef VC_EXTRALEAN
+#  define VC_EXTRALEAN
+#endif
+
 #include "tio_libc.h"
 
 // Warnings

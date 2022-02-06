@@ -36,6 +36,7 @@ include_directories(src/tio)
 include_directories(src/tio_addons)
 include_directories(src/tio_vfs)
 include_directories(src/tio_zstd)
+include_directories(src/tbsp)
 
 # Tests can also use relaxed warnings
 add_subdirectory(test)
@@ -93,38 +94,56 @@ add_custom_command(
     WORKING_DIRECTORY "${REPO_ROOT}"
 )
 
+set(TIO_ZIP_CPP "${REPO_ROOT}/tio_zip.cpp")
+set(TIO_ZIP_WITH_MINIZ_CPP "${REPO_ROOT}/tio_zip_with_miniz.cpp")
+add_custom_command(
+    OUTPUT "${TIO_ZIP_CPP}" "${TIO_ZIP_WITH_MINIZ_CPP}"
+    DEPENDS amalgscript tio_zip
+    COMMAND runlua ARGS dep/amalg.lua src/tio_zip
+    WORKING_DIRECTORY "${REPO_ROOT}"
+)
+
 # All amalgamations under one common name
 # So we can do 'make amalg' and it will do the right thing
 add_custom_target(amalg
-    DEPENDS "${TIO_CPP}" "${TIO_VFS_CPP}"
+    DEPENDS "${TIO_CPP}" "${TIO_VFS_CPP}" "${TIO_ZIP_WITH_MINIZ_CPP}" 
 )
+
+add_library(amalg_build_test
+	"${TIO_CPP}" tio.h
+	"${TIO_VFS_CPP}" tio_vfs.h
+	"${TIO_ZIP_WITH_MINIZ_CPP}" tio_zip.h
+	luaalloc.c luaalloc.h
+)
+hide_symbols(amalg_build_test)
 
 if(AMALGAMATE_NOLIBC_TEST)
     # Build dynamic library with all libs to check for accidental imports and deps
-    add_library(all_amalg_build_test MODULE
-        #src/nolibc.cc src/nolibc.h
-        "${TIO_CPP}" tio.h
-        #"${TIO_VFS_CPP}" tio_vfs.h
-        luaalloc.c luaalloc.h
+    add_library(amalg_build_test_nolibc MODULE
+        src/dummy.c
+		"${TIO_CPP}" tio.h
+		#"${TIO_VFS_CPP}" tio_vfs.h
+		"${TIO_ZIP_WITH_MINIZ_CPP}" tio_zip.h
+		luaalloc.c luaalloc.h
     )
-    target_link_libraries(all_amalg_build_test nolibc)
-    target_compile_definitions(all_amalg_build_test PRIVATE
+    target_link_libraries(amalg_build_test_nolibc amalg_build_test nolibc)
+    target_compile_definitions(amalg_build_test_nolibc PRIVATE
         #TIO_MAX_STACK_ALLOC=3072  # Compiler won't emit stack checks when it can prove that we don't use more than a full stack page per function
         TIO_BUILD_DLL TIO_NOLIBC TIO_NO_DEFAULT_ALLOC
         LUAALLOC_BUILD_DLL LA_NO_DEFAULT_ALLOC LA_EXTRA_INCLUDE=nolibc.h LA_MEMCPY=nomemcpy LA_MEMMOVE=nomemmove LA_MEMSET=nomemset
     )
-    hide_symbols(all_amalg_build_test)
+    hide_symbols(amalg_build_test_nolibc)
     # For this build, get rid of the last few things that may cause calls into libc/CRT
     if(MSVC)
         # If this links properly the resulting DLL should depend only on kernel32.dll and nothing else
-        target_compile_options(all_amalg_build_test PRIVATE /GS-)
-        target_link_options(all_amalg_build_test PRIVATE /NODEFAULTLIB )
+        target_compile_options(amalg_build_test_nolibc PRIVATE /GS-)
+        target_link_options(amalg_build_test_nolibc PRIVATE /NODEFAULTLIB )
         # Not necessary:
         # compile: /Zc:threadSafeInit-
     else()
         # tio uses some statics to cache some OS values, that is no harm when called multiple times and can be ignored
         # also don't want clang/gcc to be smart about recognizing nolibc functions and replacing them with their libc equivalents
-        target_compile_options(all_amalg_build_test -fno-builtin -nostdlib)
+        target_compile_options(amalg_build_test_nolibc -fno-builtin -nostdlib)
         # Not necessary:
         # compile: -fno-threadsafe-statics
     endif()

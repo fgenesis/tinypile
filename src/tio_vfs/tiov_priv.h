@@ -1,5 +1,4 @@
 #include "tio_vfs.h"
-#include "tiov_libc.h"
 
 #ifdef _MSC_VER
 #pragma warning(disable: 4100) // unreferenced formal parameter
@@ -16,7 +15,7 @@ enum
     TIOV_MAX_RECURSION = 256,
 
     // for the memory allocator; ignore this
-    TIOV_ALLOC_MARKER = 't' | ('i' << 8) | ('o' << 16) | ('v' << 24)
+    TIOV_ALLOC_MARKER = tioAllocMarker | ('v' << 24)
 };
 
 

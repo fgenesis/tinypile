@@ -4,8 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-//#include "miniz_export.h"
-#define MINIZ_EXPORT
+#include "miniz_export.h"
 
 /* ------------------- Types and macros */
 typedef unsigned char mz_uint8;
