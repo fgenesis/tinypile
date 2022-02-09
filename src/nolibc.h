@@ -40,10 +40,9 @@ NOLIBC_EXPORT void nofree(void *p);
 NOLIBC_EXPORT void *norealloc(void *p, size_t n);
 
 /* Memory */
-NOLIBC_EXPORT void nomemcpy(void *dst, const void *src, size_t n);
-NOLIBC_EXPORT void nomemmove(void *dst, void *src, size_t n);
-NOLIBC_EXPORT void nomemset(void *dst, int x, size_t n);
-NOLIBC_EXPORT void nomemzero(void *dst, size_t n);
+NOLIBC_EXPORT void *nomemcpy(void *dst, const void *src, size_t n);
+NOLIBC_EXPORT void *nomemmove(void *dst, const void *src, size_t n);
+NOLIBC_EXPORT void *nomemset(void *dst, int x, size_t n);
 NOLIBC_EXPORT int  nomemcmp(const void *a, const void *b, size_t n);
 
 /* Strings */
@@ -51,7 +50,7 @@ NOLIBC_EXPORT size_t nostrlen(const char *s);
 
 /* Misc */
 NOLIBC_EXPORT void _noassert_fail(const char *s, const char *file, size_t line);
-NOLIBC_EXPORT void noexit(unsigned code);
+NOLIBC_EXPORT void noexit(unsigned code); /* Immediate hard exit */
 
 
 #if !defined(TIO_DEBUG) && (defined(_DEBUG) || defined(DEBUG) || !defined(NDEBUG))
@@ -59,17 +58,73 @@ NOLIBC_EXPORT void noexit(unsigned code);
 #endif
 
 #if NOLIBC_DEBUG
-#define noassert(expr) do { if (!(expr)) _noassert_fail(#expr, __FILE__, __LINE__) } while(0,0)
+#define noassert(expr) do { if (!(expr)) _noassert_fail(#expr, __FILE__, __LINE__); } while(0,0)
 #else
-#define noassert(expr) /* expr */
+#define noassert(expr) do{}while(0,0)
 #endif
 
-#ifndef assert
+
+#ifdef NOLIBC_DEFINE_LIBC_SYMBOLS
+
+#ifdef memcpy
+#undef memcpy
+#endif
+#define memcpy nomemcpy
+
+#ifdef memmove
+#undef memmove
+#endif
+#define memmove nomemmove
+
+#ifdef memset
+#undef memset
+#endif
+#define memset nomemset
+
+#ifdef memcmp
+#undef memcmp
+#endif
+#define memcmp nomemcmp
+
+#ifdef strlen
+#undef strlen
+#endif
+#define strlen nostrlen
+
+/*#ifdef exit
+#undef exit
+#endif
+#define exit noexit*/
+
+#ifdef assert
+#undef assert
+#endif
 #define assert(expr) noassert(expr)
+
+#endif /* NOLIBC_DEFINE_LIBC_SYMBOLS */
+
+
+#ifdef NOLIBC_DEFINE_LIBC_MEMORY_SYMBOLS
+
+#ifdef malloc
+#undef malloc
+#endif
+#define malloc nomalloc
+
+#ifdef realloc
+#undef realloc
+#endif
+#define realloc norealloc
+
+#ifdef free
+#undef free
+#endif
+#define free nofree
+
 #endif
 
 
-#ifdef __cplusplus
+#if 0
 
 NOLIBC_EXPORT_CPP void * operator new    (size_t n);
 NOLIBC_EXPORT_CPP void * operator new[]  (size_t n);
@@ -78,4 +133,4 @@ NOLIBC_EXPORT_CPP void operator delete[] (void *ptr);
 NOLIBC_EXPORT_CPP void operator delete   (void *ptr, size_t n);
 NOLIBC_EXPORT_CPP void operator delete[] (void *ptr, size_t n);
 
-#endif /* __cplusplus */
+#endif

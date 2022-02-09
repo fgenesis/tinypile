@@ -214,15 +214,16 @@ static int pathToRefsViaCallback(StringPool& pool, StringPool::Ref *dst, size_t 
         return n;
 
     const size_t strspace = tio__strlen(rawpath) + 8;
-    TIOV_TEMP_BUFFER(char, pathbuf, strspace, pool);
-    if(!pathbuf)
+    PathBuf pathbuf(pool);
+    PathBuf::Ptr pp = pathbuf.Alloc(strspace);
+    if(!pp)
         return tio_Error_MemAllocFail;
 
-    tio_error err = tio_cleanpath(pathbuf, rawpath, strspace, tio_Clean_EndNoSep | tio_Clean_SepUnix);
+    tio_error err = tio_cleanpath(pp, rawpath, strspace, tio_Clean_EndNoSep | tio_Clean_SepUnix);
     if(err)
         return err;
 
-    PathIterator it(pathbuf);
+    PathIterator it(pp);
     do
     {
         if((size_t)n < refspace)
@@ -244,14 +245,15 @@ static int pathToRefsViaCallback(StringPool& pool, StringPool::Ref *dst, size_t 
 static tio_error cleanAndInsertLeaf(const StringPool& pool, VFSNode& root, const tiov_MountDef& m, const StringPool::Ref *refbuf, size_t numref)
 {
     const size_t space = tio__strlen(m.srcpath) + 8;
-    TIOV_TEMP_BUFFER(char, pathbuf, space, pool);
-    if(!pathbuf)
+    PathBuf pathbuf(pool);
+    PathBuf::Ptr pp = pathbuf.Alloc(space);
+    if(!pp)
         return tio_Error_MemAllocFail;
 
-    tio_error err = tio_cleanpath(pathbuf, m.srcpath, space, tio_Clean_EndWithSep | tio_Clean_SepUnix);
+    tio_error err = tio_cleanpath(pp, m.srcpath, space, tio_Clean_EndWithSep | tio_Clean_SepUnix);
     if(err)
         return err;
-    if(!root.insertLeaf(refbuf, numref, m.srcfs, pathbuf, pool))
+    if(!root.insertLeaf(refbuf, numref, m.srcfs, pp, pool))
         return tio_Error_MemAllocFail;
 
     return 0;
@@ -295,8 +297,9 @@ static int fwdcall(const tiov_FS *fs, const char *path1, size_t path1len, const 
     tio__ASSERT(path1[path1len-1] == '/');
 
     const size_t space = path1len + path2len + 1;
-    TIOV_TEMP_BUFFER(char, pathbuf, space, *fs);
-    char *p = pathbuf;
+    PathBuf pathbuf(*fs);
+    PathBuf::Ptr pp = pathbuf.Alloc(space);
+    char *p = pp;
     if(!p)
         return tio_Error_MemAllocFail;
 
@@ -306,7 +309,7 @@ static int fwdcall(const tiov_FS *fs, const char *path1, size_t path1len, const 
 
     //printf("[vfs] Resolved: [%s]\n", (char*)pathbuf);
 
-    return cb(fs, pathbuf, ud);
+    return cb(fs, pp, ud);
 }
 
 static int resolve(const VFSNode *node, const StringPool::Ref *refs, size_t numref, const char *path, tiov_ResolveCallback cb, void *ud)

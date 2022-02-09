@@ -114,14 +114,14 @@ struct CaseFixHelper
 
         // Have to copy oldname because we're going to insert \0 to chop it up
         // This allocates on stack if small enough, heap otherwise
-        TIOV_TEMP_BUFFER(char, namebuf, len+1, *this->fs) // incl. \0
-        char * const name = namebuf;
-        if(!name)
+        PathBuf namebuf(fs->_alloc, fs->_allocUD);
+        PathBuf::Ptr namep = namebuf.Alloc(len+1); // incl. \0
+        if(!namep)
             return tio_Error_MemAllocFail;
 
         // Copy to name and normalize while we're at it, since we use
         // '/' as dirsep here. Anything else would go wrong.
-        tio_error err = tio_cleanpath(name, oldname, len + 1, tio_Clean_SepUnix);
+        tio_error err = tio_cleanpath(namep, oldname, len + 1, tio_Clean_SepUnix);
 
         // Shouldn't fail here with a valid path since we don't increase the length,
         // but if the path was invalid to begin with this may very well fail
@@ -129,22 +129,22 @@ struct CaseFixHelper
             return err;
 
         // FIXME: may want to make tio_cleanpath() output the new length so we can avoid this?
-        len = tio__strlen(name);
+        len = tio__strlen(namep);
 
-        char * const end = name + len;
+        char * const end = namep + len;
         tio__ASSERT(!*end);
 
         char *p = end - 1;
 
         // Start at the end and go towards the start of the string until a dirsep is found
-        while(name < p)
+        while(namep < p)
         {
             while(*p != '/')
-                if(--p == name)
+                if(--p == namep)
                     goto check; // Hit the start; don't clear the char as it's not a '/'
             *p = 0; // Chop off and check prefix
 check:
-            tio_FileType ty = tiov_fileinfo(fs, name, NULL);
+            tio_FileType ty = tiov_fileinfo(fs, namep, NULL);
             if(ty)
             {
                 if(ty & tioT_Dir)
@@ -157,12 +157,12 @@ check:
             }
         }
 
-        if(name == p) // If we hit the front then the path was bogus
+        if(namep == p) // If we hit the front then the path was bogus
             return tio_Error_NotFound;
 
         // This is the known-good part of the path. Start from here.
         tio__ASSERT(!path.size());
-        if(!path.append(name, p - name, pathalloc))
+        if(!path.append(namep, p - namep, pathalloc))
             return tio_Error_MemAllocFail;
         tio__ASSERT(path[path.size() - 1] != '/');
         if(!path.push_back('\0', pathalloc)) // starting from here it's always \0-terminated

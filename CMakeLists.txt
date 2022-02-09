@@ -28,6 +28,7 @@ if(NO_CPP_BALLAST)
 endif()
 
 # Build dependencies first, with relaxed warning settings
+include_directories(dep)
 add_subdirectory(dep)
 
 include_directories(.)
@@ -53,6 +54,29 @@ if(VERY_STRICT)
   endif()
 endif()
 
+option(NO_LIBC "Compile without libc, if possible" FALSE)
+if(NO_LIBC)
+  if(MSVC)
+    if(CMAKE_CXX_FLAGS_DEBUG MATCHES "/RTC")
+      string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+      string(REPLACE "/RTCsu" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+      string(REPLACE "/RTCs" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+      string(REPLACE "/RTCu" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+    endif()
+    if(CMAKE_C_FLAGS_DEBUG MATCHES "/RTC")
+      string(REPLACE "/RTC1" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
+      string(REPLACE "/RTCsu" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
+      string(REPLACE "/RTCs" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
+      string(REPLACE "/RTCu" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
+    endif()
+    add_link_options(/NODEFAULTLIB)
+    add_compile_options(/GS-)
+  endif()
+  message(STATUS "CMAKE_CXX_FLAGS_DEBUG after possible REPLACE operation:")
+  message(STATUS "CMAKE_CXX_FLAGS_DEBUG='${CMAKE_CXX_FLAGS_DEBUG}'")
+  message(STATUS "")
+endif()
+
 # Bigger libs have their own subdirs; to be amalgamated
 add_subdirectory(src)
 
@@ -62,16 +86,12 @@ add_library(tinypile
     luaalloc.h
     jps.hh
 )
-target_link_libraries(tinypile tio tio_addons tio_vfs)
-if(TIO_ADDON_ZSTD)
-    target_link_libraries(tinypile tio_zstd)
-endif()
 hide_symbols(tinypile)
 
 
 # Amalgamation
 option(AMALGAMATE "Amalgamate multi-file libs into single-file libs in the repo root" TRUE)
-option(AMALGAMATE_NOLIBC_TEST FALSE)
+option(AMALGAMATE_NOLIBC_TEST "Test build to check for freestanding compatibility" FALSE)
 if(AMALGAMATE)
 
 add_custom_target(amalgscript
@@ -106,7 +126,7 @@ add_custom_command(
 # All amalgamations under one common name
 # So we can do 'make amalg' and it will do the right thing
 add_custom_target(amalg
-    DEPENDS "${TIO_CPP}" "${TIO_VFS_CPP}" "${TIO_ZIP_WITH_MINIZ_CPP}" 
+    DEPENDS "${TIO_CPP}" "${TIO_VFS_CPP}" "${TIO_ZIP_CPP}" 
 )
 
 add_library(amalg_build_test
@@ -128,9 +148,11 @@ if(AMALGAMATE_NOLIBC_TEST)
     )
     target_link_libraries(amalg_build_test_nolibc amalg_build_test nolibc)
     target_compile_definitions(amalg_build_test_nolibc PRIVATE
-        #TIO_MAX_STACK_ALLOC=3072  # Compiler won't emit stack checks when it can prove that we don't use more than a full stack page per function
+        #TIO_MAX_STACK_ALLOC=2000  # Compiler won't emit stack checks when it can prove that we don't use more than a full stack page per function
         TIO_BUILD_DLL TIO_NOLIBC TIO_NO_DEFAULT_ALLOC
-        LUAALLOC_BUILD_DLL LA_NO_DEFAULT_ALLOC LA_EXTRA_INCLUDE=nolibc.h LA_MEMCPY=nomemcpy LA_MEMMOVE=nomemmove LA_MEMSET=nomemset
+        LUAALLOC_BUILD_DLL
+        #LA_EXTRA_INCLUDE=nolibc.h LA_NO_DEFAULT_ALLOC LA_MEMCPY=nomemcpy LA_MEMMOVE=nomemmove LA_MEMSET=nomemset
+        LA_EXTRA_INCLUDE=nolibc.h LA_NO_DEFAULT_ALLOC NOLIBC_DEFINE_LIBC_SYMBOLS
     )
     hide_symbols(amalg_build_test_nolibc)
     # For this build, get rid of the last few things that may cause calls into libc/CRT

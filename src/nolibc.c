@@ -82,7 +82,7 @@ NOLIBC_EXPORT void _noassert_fail(const char* s, const char* file, size_t line)
     (void)file;
     (void)line;
     /* Static analyzer complains about NULL, but not about this, lol */
-    volatile int *zonk = (volatile int*)(intptr_t)-1;
+    volatile int *zonk = (volatile int*)(ptrdiff_t)-1;
     *zonk = 0;
     noexit((unsigned)-1);
 }
@@ -103,59 +103,55 @@ NOLIBC_EXPORT void *norealloc(void *p, size_t n)
     return noalloc(0, p, 0, n); // FIXME: same
 }
 
-NOLIBC_EXPORT void nomemcpy(void *dst, const void *src, size_t n)
+NOLIBC_EXPORT void *nomemcpy(void *dst, const void *src, size_t n)
 {
     // non-overlapping buffers, so copy from
     // lower addresses to higher addresses
-    if(!n)
-        return;
-    const char *s = (const char*)src;
-    char *d = (char*)dst;
-    do
-        *d++ = *s++;
-    while(--n);
-}
-
-NOLIBC_EXPORT void nomemmove(void *dst, void *src, size_t n)
-{
-    if(!n)
-        return;
-    const char *s = (const char*)src;
-    char *d = (char*)dst;
-
-    if (dst <= src || d >= s+n)
-        nomemcpy(dst, src, n);
-    else
+    if(n)
     {
-        // overlapping buffers, so copy from
-        // higher addresses to lower addresses
-        d += n-1;
-        s += n-1;
+        const char *s = (const char*)src;
+        char *d = (char*)dst;
         do
-            *d-- = *s--;
+            *d++ = *s++;
         while(--n);
     }
+    return dst;
 }
 
-NOLIBC_EXPORT void nomemset(void *dst, int x, size_t n)
+NOLIBC_EXPORT void *nomemmove(void *dst, const void *src, size_t n)
 {
-    if(!n)
-        return;
-    char c = (char)x;
-    char *d = (char*)dst;
-    do
-        *d++ = c;
-    while(--n);
+    if(n)
+    {
+        const char *s = (const char*)src;
+        char *d = (char*)dst;
+
+        if (dst <= src || d >= s+n)
+            nomemcpy(dst, src, n);
+        else
+        {
+            // overlapping buffers, so copy from
+            // higher addresses to lower addresses
+            d += n-1;
+            s += n-1;
+            do
+                *d-- = *s--;
+            while(--n);
+        }
+    }
+    return dst;
 }
 
-NOLIBC_EXPORT void nomemzero(void *dst, size_t n)
+NOLIBC_EXPORT void *nomemset(void *dst, int x, size_t n)
 {
-    if(!n)
-        return;
-    char *d = (char*)dst;
-    do
-        *d++ = 0;
-    while(--n);
+    if(n)
+    {
+        char c = (char)x;
+        char *d = (char*)dst;
+        do
+            *d++ = c;
+        while(--n);
+    }
+    return dst;
 }
 
 NOLIBC_EXPORT int nomemcmp(const void *a, const void *b, size_t n)
@@ -180,7 +176,7 @@ NOLIBC_EXPORT size_t nostrlen(const char *s)
     return s - b;
 }
 
-#ifdef __cplusplus
+#if 0
 
 NOLIBC_EXPORT_CPP void * operator new    (size_t n)
 {
@@ -214,7 +210,7 @@ NOLIBC_EXPORT_CPP void operator delete[] (void *ptr, size_t n)
     return nofree(ptr);
 }
 
-#endif /* __cplusplus */
+#endif
 
 
 
@@ -230,18 +226,15 @@ void *realloc(void *p, size_t n) { return norealloc(p, n); }
 
 void *memcpy(void *dst, const void *src, size_t n)
 {
-    nomemcpy(dst, src, n);
-    return dst;
+    return nomemcpy(dst, src, n);
 }
 void *memmove(void *dst, const void *src, size_t n)
 {
-    nomemmove(dst, src, n);
-    return src;
+    return nomemmove(dst, src, n);
 }
 void *memset(void *dst, int x, size_t n)
 {
-    nomemset(dst, x, n);
-    return dst;
+    return nomemset(dst, x, n);
 }
 int memcmp(const void *a, const void *b, size_t n)
 {

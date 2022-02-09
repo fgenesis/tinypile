@@ -1,23 +1,5 @@
 #pragma once
 
-/* ---- Begin compile config ---- */
-
-// This is a safe upper limit for stack allocations.
-// Especially on windows, UTF-8 to wchar_t conversion requires some temporary memory,
-// and that's best allocated from the stack to keep the code free of heap allocations.
-// This value limits the length of paths that can be processed by this library.
-#ifndef TIO_MAX_STACK_ALLOC
-#define TIO_MAX_STACK_ALLOC 2000
-#endif
-
-// Print some things in debug mode. For debugging internals.
-// Define this to 1 to enable, 0/undefined/empty to disable
-#ifndef TIO_ENABLE_DEBUG_TRACE
-#define TIO_ENABLE_DEBUG_TRACE 1
-#endif
-
-/* ---- End compile config ---- */
-
 // Win32 defines, also putting them before any other headers just in case
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
@@ -26,7 +8,7 @@
 #  define VC_EXTRALEAN
 #endif
 
-#include "tio_libc.h"
+#include "tio.h"
 
 // Warnings
 #ifdef _MSC_VER

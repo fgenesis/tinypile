@@ -1,4 +1,4 @@
-#include "tio_libc.h"
+#include "tio.h"
 
 #ifdef TIO_NOLIBC
 
@@ -6,7 +6,7 @@
 
 TIO_EXPORT void tio_memzero(void *dst, size_t n)
 {
-    nomemzero(dst, n);
+    nomemset(dst, 0, n);
 }
 TIO_EXPORT void tio_memcpy(void *dst, const void *src, size_t n)
 {
@@ -27,7 +27,7 @@ TIO_EXPORT void tio_memset(void *dst, int x, size_t n)
     nomemset(dst, x, n);
 }
 
-#else
+#else // Use libc
 
 #include <string.h>
 

@@ -53,7 +53,9 @@ Inspired by:
 #  ifdef NDEBUG
 #    define LA_ASSERT(x)
 #  else
-#    include <assert.h>
+#    if !defined(assert)
+#      include <assert.h>
+#    endif
 #    define LA_ASSERT(x) assert(x)
 #  endif
 #endif

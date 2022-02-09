@@ -1,6 +1,5 @@
 = tio.cpp
 - #include "tio_priv.h"
-- #include "tio_libc.h"
 - #include "tio.h"
 - #pragma once
 : // !! This is an amalgamated file, don't modify directly!
