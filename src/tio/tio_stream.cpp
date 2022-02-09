@@ -411,7 +411,7 @@ TIO_PRIVATE tio_error initfilestream(tio_Stream* sm, const char* fn, tio_Feature
     sm->common.flags = flags;
 
     // Check if we have an OS-specific init function
-    int err = os_initstream(sm, fn, features, flags, blocksize, alloc, allocUD);
+    int err = os_initstream(sm, fn, features, blocksize, alloc, allocUD);
     if (err)
         return err;
 

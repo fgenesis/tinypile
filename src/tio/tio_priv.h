@@ -5,6 +5,10 @@
 
 #include "tio.h"
 
+#ifndef TIO_ENABLE_DEBUG_TRACE
+#define TIO_ENABLE_DEBUG_TRACE 1
+#endif
+
 // Warnings
 #ifdef _MSC_VER
 #pragma warning(disable: 4100) // unreferenced formal parameter
@@ -169,7 +173,7 @@ TIO_PRIVATE size_t os_pathExtraSpace();
 // Return 0 to proceed with generic stream init.
 // Return 1 to use the stream as inited by this function.
 // Return a negative value to abort stream creation and report that error.
-TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD);
+TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Features features, size_t blocksize, tio_Alloc alloc, void *allocUD);
 
 // Optional OS-specific mmio init. Same purpose and return values as os_initstream().
 // If you don't use this, the default mmio implementation based on file handles

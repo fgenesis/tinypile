@@ -27,6 +27,11 @@ if(NO_CPP_BALLAST)
   message(STATUS "")
 endif()
 
+option(BUILD_WITH_ASAN "Build with ASAN support to find memory issues" FALSE)
+if(BUILD_WITH_ASAN)
+    add_compile_options(-fsanitize=address)
+endif()
+
 # Build dependencies first, with relaxed warning settings
 include_directories(dep)
 add_subdirectory(dep)

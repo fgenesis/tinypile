@@ -63,7 +63,7 @@ static size_t g_osPagesize;
 TIO_EXPORT size_t tio_pagesize()
 {
     size_t sz = g_osPagesize;
-    if(sz)
+    if(!sz)
         g_osPagesize = sz = os_pagesize(); // query this only once
     tio__TRACE("os_pagesize() == %u", unsigned(sz));
     tio__ASSERT(sz);
@@ -240,6 +240,8 @@ TIO_EXPORT tio_error tio_kflush(tio_Handle fh)
 TIO_EXPORT tio_error  tio_ksetsize(tio_Handle fh, tiosize bytes)
 {
     //os_setsize(fh, bytes); // TODO
+    (void)fh;
+    (void)bytes;
     return tio_Error_Unsupported;
 }
 

@@ -304,8 +304,9 @@ TIO_PRIVATE size_t os_mmioAlignment()
     return sys.dwAllocationGranularity;
 }
 
-TIO_PRIVATE tio_error os_mmflush(tio_Mapping *map)
+TIO_PRIVATE tio_error os_mmflush(tio_Mapping *map, tio_FlushMode flush)
 {
+    (void)flush;
     return ::FlushViewOfFile(map->priv.mm.base, 0) // flush everything; nonzero on success
         ? tio_NoError
         : tio_Error_Unspecified;
@@ -425,7 +426,7 @@ static void _streamWin32OverlappedRequestNextChunk(tio_Stream* sm)
     // fail/EOF will be recorded in OVERLAPPED so we can ignore the return value here
     BOOL ok = ::ReadFile((HANDLE)ovl->hFile, dst, willread, NULL, ov);
     tio__TRACE("[inflight: %u] Overlapped ReadFile(%p) bytes=%u chunk %u -> ok = %u",
-        overlappedInflight(sm), dst, willread, unsigned(chunk), ok);
+        overlappedInflight(sm), dst, unsigned(willread), unsigned(chunk), ok);
     if (!ok)
     {
         DWORD err = ::GetLastError();
@@ -453,8 +454,8 @@ static size_t streamWin32OverlappedRefill(tio_Stream* sm)
     char* p = (char*)ex->ptrs[chunkidx];
     if (!p)
     {
-        tio__TRACE("streamWin32OverlappedRefill hit end at chunk %u, win32err = %u",
-            unsigned(chunk), ex->win32err);
+        tio__TRACE("streamWin32OverlappedRefill hit end at chunk %u, win32err = %d",
+            unsigned(chunk), int(ex->win32err));
         return tio_streamfail(sm);
     }
 
@@ -470,6 +471,7 @@ static size_t streamWin32OverlappedRefill(tio_Stream* sm)
     tio__TRACE("[inflight: %u] GetOverlappedResult(%p) chunk %u -> read %u, ok = %u",
         overlappedInflight(sm), (void*)p, unsigned(chunk), unsigned(done), ok);
     DWORD winerr = 0;
+    tio_error err = 0;
     if (ok)
     {
         // For small files, blockSize == 1. This would kick off another request only to fail later,
@@ -481,11 +483,11 @@ static size_t streamWin32OverlappedRefill(tio_Stream* sm)
     else
     {
         winerr = ::GetLastError();
-        tio_error err = 0;
         switch (winerr)
         {
         default:
             tio__TRACE("GetOverlappedResult(): unhandled return %u, done = %u", unsigned(err), unsigned(done));
+            // FIXME: translate OS error
             sm->Refill = streamfail; // Use the current buffer, but fail next time
             break;
         case ERROR_HANDLE_EOF:
@@ -730,7 +732,7 @@ TIO_PRIVATE tio_error os_createSingleDir(const char* path)
     // FIXME: get proper OS error
     return ::GetLastError() != ERROR_ALREADY_EXISTS;
 }
-
+/*
 static inline bool isbad(const char x)
 {
     if (x <= 31) // control chars shouldn't be in file names
@@ -742,7 +744,7 @@ static inline bool isbad(const char x)
             return true;
     return false;
 }
-
+*/
 static inline bool hasdriveletter(const char* path)
 {
     // We don't actually check that the first char is a *letter* -- to quote Wikipedia:
@@ -826,7 +828,7 @@ TIO_PRIVATE size_t os_pathExtraSpace()
     return win32PathExtraSpace;
 }
 
-TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
+TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Features features, size_t blocksize, tio_Alloc alloc, void *allocUD)
 {
     if (features & tioF_Background)
     {
@@ -850,6 +852,10 @@ TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Features featu
 
 TIO_PRIVATE int os_initmmio(tio_MMIO* mmio, const char* fn, tio_Mode mode, tio_Features features)
 {
+    (void)mmio;
+    (void)fn;
+    (void)mode;
+    (void)features;
     return 0; // not used
 }
 

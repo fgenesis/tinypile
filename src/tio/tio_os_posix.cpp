@@ -405,7 +405,7 @@ TIO_PRIVATE tio_error os_preSanitizePath(char *& dst, char *dstend, const char *
 }
 
 
-TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
+TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Features features, size_t blocksize, tio_Alloc alloc, void *allocUD)
 {
     return 0;
 }
