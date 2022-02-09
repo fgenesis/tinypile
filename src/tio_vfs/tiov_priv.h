@@ -1,5 +1,11 @@
 #include "tio_vfs.h"
 
+// Print some things in debug mode. For debugging internals.
+// Define this to 1 to enable, 0/undefined/empty to disable
+#ifndef TIO_ENABLE_DEBUG_TRACE
+#define TIO_ENABLE_DEBUG_TRACE 1
+#endif
+
 #ifdef _MSC_VER
 #pragma warning(disable: 4100) // unreferenced formal parameter
 #pragma warning(disable: 4706) // assignment within conditional expression
@@ -45,21 +51,6 @@ enum
 #    define tio__ASSERT(x)
 #  endif
 #endif
-
-// short, temporary on-stack allocation. Used only via tio__checked_alloca(), see below
-#ifndef tio__alloca
-#  ifdef _MSC_VER
-#    include <malloc.h>
-#    pragma warning(disable: 6255) // stupid warning that suggests to use _malloca()
-#  else // Most compilers define this in stdlib.h
-#    include <stdlib.h>
-// TODO: Some use memory.h? Not sure
-#  endif
-#  define tio__alloca(n) alloca(n)
-#endif
-
-// bounded, non-zero-size stack allocation
-#define tio__checked_alloca(n) (((n) && (n) <= TIOV_MAX_STACK_ALLOC) ? tio__alloca(n) : NULL)
 
 
 // tiov_countof(array) to safely count elements at compile time
@@ -285,53 +276,62 @@ struct PodVecLite
     size_t used, cap;
 };
 
-// for use with the macro below.
-// gets a size and pointer that was allocated from the stack.
-// NULL if size is too large for the stack, in that case,
-// alloc from heap and free it later.
-template<typename T>
-struct StackBuf : public Allocator
+
+// Simple bump allocator used for allocating things off the stack
+// Falls back to heap if out of space
+// Warning: does not take care of alignment, be careful with uneven sizes!
+class tioBumpAlloc
 {
-    static T *FallbackAlloc(size_t elems, const Allocator& a)
-    {
-        return (T*)a.Alloc(elems * sizeof(T));
-    }
-
-    T * const _p;
-    size_t _sz;
-
-    StackBuf() : _p(NULL), _sz(0) {}
-
-    void clear()
-    {
-        if(_sz)
-        {
-            this->Free(_p, _sz * sizeof(T));
-            _sz = 0;
-        }
-    }
-
-   /* void takeover(void *stackptr, size_t elems)
-    {
-        clear();
-        _p = stackptr ? (T*)stackptr : FallbackAlloc(elems, *this);
-        _sz = stackptr ? 0 : elems
-    }
-    */
-    StackBuf(void *p, size_t elems, const Allocator& a)
-        : Allocator(a)
-        , _p(p ? (T*)p : FallbackAlloc(elems, a)), _sz(p ? 0 : elems) {}
-
-    ~StackBuf()
-    {
-        clear();
-    }
-
-    inline operator T*() const { return _p; }
+public:
+    inline tioBumpAlloc(void *p, tio_Alloc a, void *ud) : cur((char*)p), _alloc(a), _ud(ud) {}
+    void *Alloc(size_t bytes, void *end);
+    void Free(void *p, size_t bytes, void *beg, void *end);
+private:
+    char *cur;
+    tio_Alloc const _alloc;
+    void * const _ud;
 };
 
-#define TIOV_TEMP_BUFFER(ty, name, size, a) \
-    StackBuf<ty> name(tio__checked_alloca(size * sizeof(ty)), size, a);
+// Thin template to limit code expansion
+template<typename T>
+class tioStackBufT : protected tioBumpAlloc
+{
+protected:
+    inline tioStackBufT(T *buf, tio_Alloc a, void *ud) : tioBumpAlloc(buf, a, ud) {}
+};
+
+
+// Thin template to limit code expansion
+template<typename T, size_t BYTES>
+class tioStackBuf : private tioStackBufT<T>
+{
+    typedef tioStackBufT<T> Base;
+public:
+    enum { MaxElem = BYTES / sizeof(T) };
+
+    class Ptr
+    {
+    public:
+        inline Ptr(T* p, size_t n, tioStackBuf& sb) : ptr(p), elems(n), _sb(sb) {}
+        inline ~Ptr() { _sb.Free(ptr, elems); }
+        inline operator T*() const { return ptr; }
+        T * const ptr;
+        size_t const elems;
+    private:
+        tioStackBuf& _sb;
+    };
+
+    inline tioStackBuf(tio_Alloc a = 0, void *ud = 0) : Base(&buf[0], a, ud) { tio__static_assert(MaxElem > 0); }
+    inline tioStackBuf(const Allocator& a) : Base(&buf[0], a._alloc, a._allocUD) {}
+    inline Ptr Alloc(size_t elems) { return Ptr((T*)tioBumpAlloc::Alloc(elems * sizeof(T), &buf[MaxElem]), elems, *this); }
+    inline Ptr Null() { return Ptr(NULL, 0, *this); }
+    inline void Free(void *p, size_t elems) { return tioBumpAlloc::Free(p, elems * sizeof(T), &buf[0], &buf[MaxElem]); }
+    T buf[MaxElem];
+};
+
+
+typedef tioStackBuf<char, TIO_MAX_STACK_ALLOC> PathBuf;
+
 
 
 // UTF-8

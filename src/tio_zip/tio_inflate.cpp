@@ -96,7 +96,7 @@ static tio_error _tio_init_inflate(tio_Stream* sm, tio_Stream* packed, tio_Strea
     priv->alloc = alloc;
     priv->allocUD = allocUD;
 
-    memset(sm, 0, sizeof(*sm));
+    tio_memset(sm, 0, sizeof(*sm));
     sm->Refill = decomp_inflate_refill;
     sm->Close = decomp_inflate_close;
     sm->common.flags = flags;

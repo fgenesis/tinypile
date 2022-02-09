@@ -360,3 +360,31 @@ tiov_FH::tiov_FH(const tiov_FS* fs, const tiov_FileOps* fops, size_t totalsize)
     , totalsize(totalsize)
 {
 }
+
+void* tioBumpAlloc::Alloc(size_t bytes, void* end)
+{
+    if(!bytes)
+        return NULL;
+    if(cur + bytes < end)
+    {
+        void * const p = cur;
+        cur += bytes;
+        return p;
+    }
+    return _alloc ? _alloc(_ud, 0, tioStackAllocMarker, bytes) : NULL;
+}
+
+void tioBumpAlloc::Free(void* p, size_t bytes, void* beg, void* end)
+{
+    if(p)
+    {
+        if((char*)p + bytes == cur)
+            cur -= bytes;
+        else if(p < beg || p >= end)
+            _alloc(_ud, p, bytes, 0);
+        else
+        {
+            tio__ASSERT("BumpAlloc: Free things in the correct order!");
+        }
+    }
+}
