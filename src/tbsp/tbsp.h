@@ -189,7 +189,7 @@ public:
         tbsp__ASSERT(n == o.size());
         for(size_t i = 0; i < n; ++i)
             p[i] += o[i];
-        return *this
+        return *this;
     }
     template<typename V>
     VecAcc& operator-=(const V& o)
@@ -252,43 +252,45 @@ public:
 template<typename T>
 class Matrix : public MatrixAcc<T>
 {
+    typedef MatrixAcc<T> Base;
 public:
     Matrix()
-        : MatrixAcc(0, 0, 0){}
+        : Base(0, 0, 0){}
     Matrix(size_t w, size_t h)
-        : MatrixAcc(_construct_n_default(_talloc<T>(w*h), w*h), w, h) {}
+        : Base(_construct_n_default(_talloc<T>(w*h), w*h), w, h) {}
     Matrix(size_t w, size_t h, const T& def)
-        : MatrixAcc(_construct_n_init(_talloc<T>(w*h), w*h, def), w, h) {}
+        : Base(_construct_n_init(_talloc<T>(w*h), w*h, def), w, h) {}
     Matrix(const MatrixAcc<T>& o)
-        : MatrixAcc(_construct_n_copy(_talloc<T>(o.w * o.h), o.p, o.w * o.h), o.w, o.h) {}
+        : Base(_construct_n_copy(_talloc<T>(o.w * o.h), o.p, o.w * o.h), o.w, o.h) {}
     Matrix(size_t w, size_t h, NoInit)
-        : MatrixAcc(_talloc<T>(w*h), w, h) {}
+        : Base(_talloc<T>(w*h), w, h) {}
     ~Matrix()
-        { _destruct_n(p, w*h); _tfree(p); }
+        { _destruct_n(this->p, this->w * this->h); _tfree(this->p); }
 };
 
 template<typename T>
 class Vector : public VecAcc<T>
 {
+    typedef VecAcc<T> Base;
 public:
     Vector()
-        : VecAcc(0, 0){}
+        : Base(0, 0){}
     Vector(size_t n)
-        : VecAcc(_construct_n_default(_talloc<T>(n), n), n) {}
+        : Base(_construct_n_default(_talloc<T>(n), n), n) {}
     Vector(size_t n, const T& def)
-        : VecAcc(_construct_n_init(_talloc<T>(n), n, def), n) {}
-    Vector(const VecAcc<T>& o)
-        : VecAcc(_construct_n_copy(_talloc<T>(o.n), o.p, o.n), o.n) {}
+        : Base(_construct_n_init(_talloc<T>(n), n, def), n) {}
+    Vector(const Base& o)
+        : Base(_construct_n_copy(_talloc<T>(o.n), o.p, o.n), o.n) {}
     Vector(const T *p, size_t n)
-        : VecAcc(_construct_n_copy(_talloc<T>(n), p, n), n) {}
-    Vector(size_t n, NoInit)
-        : VecAcc(_talloc<T>(n), n) {}
+        : Base(_construct_n_copy(_talloc<T>(n), p, n), n) {}
+    Vector(Base n, NoInit)
+        : Base(_talloc<T>(n), n) {}
     ~Vector()
-        { _destruct_n(p, n); _tfree(p); }
+        { _destruct_n(this->p, this->n); _tfree(this->p); }
     template<typename V>
     Vector& operator=(const V& o)
     {
-        VecAcc<T>::operator =(o);
+        Base::operator =(o);
         return *this;
     }
 };

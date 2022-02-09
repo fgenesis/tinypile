@@ -967,9 +967,10 @@ struct NoManipulator
 template <typename GRID, typename Manipulator = NoManipulator>
 class Searcher : public GridSearcher<GRID>
 {
+    typedef GridSearcher<GRID> Base;
 public:
     Searcher(const GRID& g, void* user = 0, const Manipulator& manip_ = Manipulator())
-        : GridSearcher(g, user), manip(manip_)
+        : Base(g, user), manip(manip_)
     {}
 
     // single-call
@@ -1326,23 +1327,23 @@ unsigned GridSearcher<GRID>::findNeighborsAStar(const Node& n, Position *wptr)
 template <typename GRID, typename Manipulator>
 bool Searcher<GRID, Manipulator>::identifySuccessors(const Node& n_)
 {
-    const SizeT nidx = storage.getindex(&n_);
+    const SizeT nidx = this->storage.getindex(&n_);
     const Position np = n_.pos;
     Position buf[8];
 
-    const unsigned num = (_flags & JPS_Flag_AStarOnly)
-        ? findNeighborsAStar(n_, &buf[0])
-        : findNeighborsJPS(n_, &buf[0]);
+    const unsigned num = (this->_flags & JPS_Flag_AStarOnly)
+        ? this->findNeighborsAStar(n_, &buf[0])
+        : this->findNeighborsJPS(n_, &buf[0]);
 
     for(unsigned i = 0; i < num; ++i)
     {
         // Invariant: A node is only a valid neighbor if the corresponding grid position is walkable (asserted in jumpP)
         Position jp;
-        if(_flags & JPS_Flag_AStarOnly)
+        if(this->_flags & JPS_Flag_AStarOnly)
             jp = buf[i];
         else
         {
-            jp = jumpP(buf[i], np);
+            jp = this->jumpP(buf[i], np);
             if(!jp.isValid())
                 continue;
         }
@@ -1352,14 +1353,14 @@ bool Searcher<GRID, Manipulator>::identifySuccessors(const Node& n_)
         if (userbits < 0)
             continue; // User doesn't want this node to be created
 
-        Node *jn = getNode(jp); // this might realloc the storage and invalidate n_
+        Node *jn = this->getNode(jp); // this might realloc the storage and invalidate n_
         if(!jn)
             return false; // out of memory
 
-        const Node& n = storage[nidx]; // get valid ref in case we realloc'd
+        const Node& n = this->storage[nidx]; // get valid ref in case we realloc'd
         JPS_ASSERT(jn != &n);
         if(!jn->isClosed())
-            _expandNode(*jn, n, unsigned(userbits));
+            this->_expandNode(*jn, n, unsigned(userbits));
     }
     return true;
 }
@@ -1401,54 +1402,54 @@ JPS_Result Searcher<GRID, Manipulator>::findPathInit(Position start, Position en
     // This just resets a few counters; container memory isn't touched
     this->clear();
 
-    _flags = flags;
-    endPos = end;
+    this->_flags = flags;
+    this->endPos = end;
 
     // FIXME: check this
     if(start == end && !(flags & (JPS_Flag_NoStartCheck|JPS_Flag_NoEndCheck)))
     {
         // There is only a path if this single position is walkable.
         // But since the starting position is omitted in the output, there is nothing to do here.
-        return grid(end.x, end.y) ? JPS_EMPTY_PATH : JPS_NO_PATH;
+        return this->grid(end.x, end.y) ? JPS_EMPTY_PATH : JPS_NO_PATH;
     }
 
     if(!(flags & JPS_Flag_NoStartCheck))
-        if(!grid(start.x, start.y))
+        if(!this->grid(start.x, start.y))
             return JPS_NO_PATH;
 
     if(!(flags & JPS_Flag_NoEndCheck))
-        if(!grid(end.x, end.y))
+        if(!this->grid(end.x, end.y))
             return JPS_NO_PATH;
 
     const int endBits = manip.getNodeBitsNoParent(end);
     if (endBits < -1)
         return JPS_NO_PATH;
 
-    Node *endNode = getNode(end); // this might realloc the internal storage...
+    Node *endNode = this->getNode(end); // this might realloc the internal storage...
     if(!endNode)
         return JPS_OUT_OF_MEMORY;
     endNode->setUserBits(endBits);
-    endNodeIdx = storage.getindex(endNode); // .. so we keep this for later
+    this->endNodeIdx = this->storage.getindex(endNode); // .. so we keep this for later
 
     const int startBits = manip.getNodeBitsNoParent(end);
     if (endBits < -1)
         return JPS_NO_PATH;
 
-    Node *startNode = getNode(start); // this might also realloc
+    Node *startNode = this->getNode(start); // this might also realloc
     if(!startNode)
         return JPS_OUT_OF_MEMORY;
     startNode->setUserBits(startBits);
 
-    endNode = &storage[endNodeIdx]; // startNode is valid, make sure that endNode is valid too in case we reallocated
+    endNode = &this->storage[this->endNodeIdx]; // startNode is valid, make sure that endNode is valid too in case we reallocated
 
     if(!(flags & JPS_Flag_NoGreedy))
     {
         // Try the quick way out first
-        if(findPathGreedy(startNode, endNode))
+        if(this->findPathGreedy(startNode, endNode))
             return JPS_FOUND_PATH;
     }
 
-    open.pushNode(startNode);
+    this->open.pushNode(startNode);
 
     return JPS_NEED_MORE_STEPS;
 }
@@ -1456,19 +1457,19 @@ JPS_Result Searcher<GRID, Manipulator>::findPathInit(Position start, Position en
 template <typename GRID, typename Manipulator>
 JPS_Result Searcher<GRID, Manipulator>::findPathStep(int limit)
 {
-    stepsRemain = limit;
+    this->stepsRemain = limit;
     do
     {
-        if(open.empty())
+        if(this->open.empty())
             return JPS_NO_PATH;
-        Node& n = open.popNode();
+        Node& n = this->open.popNode();
         n.setClosed();
-        if(n.pos == endPos)
+        if(n.pos == this->endPos)
             return JPS_FOUND_PATH;
         if(!identifySuccessors(n))
             return JPS_OUT_OF_MEMORY;
     }
-    while(stepsRemain >= 0);
+    while(this->stepsRemain >= 0);
     return JPS_NEED_MORE_STEPS;
 }
 
@@ -1505,7 +1506,7 @@ bool Searcher<GRID, Manipulator>::findPathGreedy(Node *n, Node *endnode)
         const PosType tx = x + dx * minlen;
         while(x != tx)
         {
-            if(grid(x, y) && (grid(x+dx, y) || grid(x, y+dy)) && manip.getNodeBitsNoParent(Pos(x, y)) >= 0) // prevent tunneling as well
+            if(this->grid(x, y) && (this->grid(x+dx, y) || this->grid(x, y+dy)) && manip.getNodeBitsNoParent(Pos(x, y)) >= 0) // prevent tunneling as well
             {
                 x += dx;
                 y += dy;
@@ -1514,7 +1515,7 @@ bool Searcher<GRID, Manipulator>::findPathGreedy(Node *n, Node *endnode)
                 return false;
         }
 
-        if(!grid(x, y))
+        if(!this->grid(x, y))
             return false;
 
         midpos = Pos(x, y);
@@ -1526,11 +1527,11 @@ bool Searcher<GRID, Manipulator>::findPathGreedy(Node *n, Node *endnode)
     if(!(x == endpos.x && y == endpos.y))
     {
         while(x != endpos.x)
-            if(!grid(x += dx, y) || manip.getNodeBitsNoParent(Pos(x, y)) < 0)
+            if(!this->grid(x += dx, y) || manip.getNodeBitsNoParent(Pos(x, y)) < 0)
                 return false;
 
         while(y != endpos.y)
-            if(!grid(x, y += dy) || manip.getNodeBitsNoParent(Pos(x, y)) < 0)
+            if(!this->grid(x, y += dy) || manip.getNodeBitsNoParent(Pos(x, y)) < 0)
                 return false;
 
         JPS_ASSERT(x == endpos.x && y == endpos.y);
@@ -1542,12 +1543,12 @@ bool Searcher<GRID, Manipulator>::findPathGreedy(Node *n, Node *endnode)
         const int midbits = manip.getNodeBits(midpos, *n);
         if (midbits < 0)
             return false;
-        const unsigned nidx = storage.getindex(n);
-        Node* mid = getNode(midpos); // this might invalidate n, endnode
+        const unsigned nidx = this->storage.getindex(n);
+        Node* mid = this->getNode(midpos); // this might invalidate n, endnode
         if (!mid)
             return false;
-        n = &storage[nidx]; // reload pointers
-        endnode = &storage[endNodeIdx];
+        n = &this->storage[nidx]; // reload pointers
+        endnode = &this->storage[this->endNodeIdx];
         JPS_ASSERT(mid && mid != n);
         mid->setUserBits(midbits);
         mid->setParent(*n);

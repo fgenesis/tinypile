@@ -1,14 +1,11 @@
 #include "luaalloc.h"
-
-typedef struct lua_Alloc lua_Alloc;
-extern "C" int runlua(int argc, const char*const*argv, void *alloc, void *ud);
-
+#include "minilua.h"
 #include <stdio.h>
 
 int main()
 {
     LuaAlloc *LA = luaalloc_create(0, 0);
-    const char *fn[] = { "", "test.lua" };
+    const char * const fn[] = { "", "test.lua" };
     int ret = runlua(2, fn, luaalloc, LA);
 
     const size_t *alive, *total, *blocks;

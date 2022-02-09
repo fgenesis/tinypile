@@ -4,10 +4,15 @@
 -- Compatible with Lua 5.1 .. 5.4 and maybe more
 -- Runs as part of the build process or can be run standalone
 
--- minilua doesn't have print()
+-- minilua doesn't have print(), tostring()
 local print = print or function(...)
     io.stdout:write(table.concat({...}, '\t'), '\n')
 end
+
+setmetatable(_G, {
+    __index    = function(_, k)    error("Attempt to get undefined global: " .. (k)) end,
+    __newindex = function(_, k, v) error("Attempt to set global: " .. (k) .. " (to: " .. type(v) .. ")") end,
+})
 
 local function slash(s)
     if s:sub(-1) ~= "/" then
@@ -73,11 +78,12 @@ local CMDS =
     ["-"] = f_skip,
     ["#"] = function() end,
 }
+setmetatable(CMDS, { __index = function(_, k) error("CMDS[" .. k .. "] unknown") end })
 
 f_setdir(INDIR)
 print("Amalgamating: " .. INDIR)
 for line in io.lines(AMALGFILE) do
-    c, rest = line:match("(.)%s*(.-)%s*$")
+    local c, rest = line:match("^%s*(%S)%s*(.-)%s*$")
     if c then
         CMDS[c](rest)
     end

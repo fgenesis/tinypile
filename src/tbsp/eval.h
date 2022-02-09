@@ -80,18 +80,18 @@ static KnotVector<K> *genKnotVector(size_t points, size_t degree)
 }
 
 template<typename K, typename T>
-static T deBoor(T *pdst, const K *knots, const size_t r, const size_t k)
+static T deBoor(T *work, const K *knots, const size_t r, const size_t k)
 {
     T last = work[0]; // init so that it works correctly even with degree == 0
     for(size_t worksize = k; worksize > 1; --worksize)
     {
-        const size_t j = k - worksize + 1; // iteration number, starting with 1, going up to k 
+        const size_t j = k - worksize + 1; // iteration number, starting with 1, going up to k
         const size_t tmp = r - k + 1 + j;
-        for(size_t w = 0; w < worksize - 1; ++i)
+        for(size_t w = 0; w < worksize - 1; ++w)
         {
-            const size_t i = w + tmp
+            const size_t i = w + tmp;
             const K ki = knots[i];
-            const K a = (t - ki) / (knots[i+k-j] - ki);
+            const K a = (k - ki) / (knots[i+k-j] - ki);
             const K a1 = K(1) - a;
             last = (work[w] * a1) + (work[w+1] * a); // lerp
             work[w] = last;
@@ -119,7 +119,7 @@ static void Eval(const KnotVector<K>& kv, const T *points, K t)
 template<typename K, typename T>
 static void Sample(T *dst, const KnotVector<K>& kv, const T *points, size_t samples, K tmin, K tmax)
 {
-    const size_t r = kv.getIndex(t);
+    size_t r = kv.getIndex(tmin);
     const size_t d = kv.degree;
     const K *knots = kv.knots;
     tbsp__ASSERT(r >= d);
@@ -128,7 +128,6 @@ static void Sample(T *dst, const KnotVector<K>& kv, const T *points, size_t samp
     T *work = (T*)tbsp__alloca(k * sizeof(T));
     _construct_n_default(work, k);
 
-    size_t r = kv.getIndex(tmin);
     const K step = (tmax - tmin) / K(points - 1); // can also be negative
     const K t = tmin;
 

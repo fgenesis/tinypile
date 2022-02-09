@@ -6,6 +6,7 @@
 #include <string.h>
 #include <assert.h>
 #include <vector>
+#include <math.h>
 
 /*
 # = always impassable

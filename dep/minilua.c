@@ -22,6 +22,7 @@
 * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ******************************************************************************/
+#include "minilua.h"
 #ifdef _MSC_VER
 typedef unsigned __int64 U64;
 #pragma warning(disable: 4324)
@@ -165,7 +166,7 @@ typedef enum UnOpr{OPR_MINUS,OPR_NOT,OPR_LEN,OPR_NOUNOPR}UnOpr;
 typedef struct lua_State lua_State;
 typedef int(*lua_CFunction)(lua_State*L);
 typedef const char*(*lua_Reader)(lua_State*L,void*ud,size_t*sz);
-typedef void*(*lua_Alloc)(void*ud,void*ptr,size_t osize,size_t nsize);
+// typedef void*(*lua_Alloc)(void*ud,void*ptr,size_t osize,size_t nsize); // moved to .h
 typedef double lua_Number;
 typedef ptrdiff_t lua_Integer;
 static void lua_settop(lua_State*L,int idx);
