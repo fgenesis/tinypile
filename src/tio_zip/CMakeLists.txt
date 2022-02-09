@@ -10,4 +10,5 @@ set(src
 )
 
 add_library(tio_zip ${src})
+target_link_libraries(tio_zip tio)
 hide_symbols(tio_zip)

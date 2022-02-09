@@ -211,10 +211,12 @@ struct TeleportManip
                 if (!p) // Didn't find parent not on fence, this is bad
                     return -1;
                 if (!p->getUserBits()) // was not on fence? That's where we started teleporting
+                {
                     if (distance(pos, p->pos) <= teleportDistance) // teleporting some short distance is ok
                         break; // all good, teleport start is close enough
                     else
                         return -1; // fail if that node was too far away
+                }
             }
         }
 

@@ -10,4 +10,5 @@ set(src
 )
 
 add_library(tio_vfs ${src})
+target_link_libraries(tio_vfs tio)
 hide_symbols(tio_vfs)

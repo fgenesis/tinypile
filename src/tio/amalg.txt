@@ -1,5 +1,7 @@
 = tio.cpp
 - #include "tio_priv.h"
+- #include "tio_platform.h"
+- #include "tio_sys.h"
 - #include "tio.h"
 - #pragma once
 : // !! This is an amalgamated file, don't modify directly!
@@ -10,12 +12,21 @@
 : #define TIO_ENABLE_DEBUG_TRACE 0
 : // -- End amalg config --
 :
+< tio_platform.h
 < tio_priv.h
 < tio_libc.cpp
 < tio_priv.cpp
+# Win32 is self-contained and does not need POSIX stuff
 < tio_os_win32.cpp
+# POSIX-like syscall defs
+< tio_sys.h
+< tio_sys_linux.cpp
+< tio_sys_posix_libc.cpp
+# The actual code that uses those syscalls
 < tio_os_posix.cpp
+# Fallback
 < tio_os_libc.cpp
+# Rest of the library
 < tio_mm.cpp
 < tio_stream.cpp
 < tio_api.cpp

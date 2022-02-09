@@ -633,7 +633,7 @@ static tio_FileType win32_getFileType(const DWORD attr)
     return t;
 }
 
-TIO_PRIVATE tio_FileType os_fileinfo(char* path, tiosize* psz)
+TIO_PRIVATE tio_FileType os_fileinfo(const char* path, tiosize* psz)
 {
     LPWSTR wpath;
     int wlen; // includes terminating 0
@@ -681,19 +681,13 @@ static TIO_NOINLINE HANDLE win32_FindFirstFile(const char* path, WIN32_FIND_DATA
     if (!wpath)
         return INVALID_HANDLE_VALUE;
 
-    wpath[wlen - 1] = L'*';
+    wpath[wlen - 1] = L'*'; // FIXME: check this
     wpath[wlen] = 0;
 
     return ::FindFirstFileW(wpath, pfd);
 }
 
-// skip if "." or ".."
-static inline int dirlistSkip(const char* fn)
-{
-    return fn[0] == '.' && (!fn[1] || (fn[1] == '.' && !fn[2]));
-}
-
-TIO_PRIVATE tio_error os_dirlist(char* path, tio_FileCallback callback, void* ud)
+TIO_PRIVATE tio_error os_dirlist(const char* path, tio_FileCallback callback, void* ud)
 {
     WIN32_FIND_DATAW fd;
     HANDLE h = win32_FindFirstFile(path, &fd);

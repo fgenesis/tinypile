@@ -110,14 +110,14 @@ target was referenced.
 
 #pragma once
 
-#include <stddef.h> // for size_t, uintptr_t
+#include <stddef.h> // for size_t, uintptr_t on windows
 
 /* ABI config. Define the type used for file sizes, offsets, etc.
    You probably want this to be 64 bits. Change if you absolutely must. */
 #ifdef _MSC_VER
 typedef unsigned __int64 tiosize;
 #elif defined(__GNUC__) || defined(__clang__) /* Something sane that has stdint.h */
-#  include <stdint.h>
+#  include <stdint.h> // also has uintptr_t
 typedef uint64_t tiosize;
 #elif defined(TIO_INCLUDE_PSTDINT) /* Alternative include, pick one from https://en.wikibooks.org/wiki/C_Programming/stdint.h#External_links and enable manually */
 #  include <pstdint.h> /* get from http://www.azillionmonkeys.com/qed/pstdint.h */
@@ -133,11 +133,17 @@ typedef size_t tiosize; /* Not guaranteed to be 64 bits */
 #endif
 
 #ifndef TIO_LINKAGE
-#  if defined(TIO_BUILD_DLL) && defined(_WIN32)
-#    define TIO_LINKAGE __declspec(dllexport)
-#  else
-#    define TIO_LINKAGE
+#  ifdef _WIN32
+#    if defined(TIO_BUILD_DLL)
+#      define TIO_LINKAGE __declspec(dllexport)
+#    elif defined(TIO_IMPORT_DLL)
+#      define TIO_LINKAGE __declspec(dllimport)
+#    endif
 #  endif
+#endif
+
+#ifndef TIO_LINKAGE
+#define TIO_LINKAGE
 #endif
 
 /* All public functions are marked with this */
@@ -376,6 +382,8 @@ TIO_EXPORT tio_error  tio_kgetsize(tio_Handle fh, tiosize *pbytes); /* Get total
 TIO_EXPORT tio_error  tio_ksetsize(tio_Handle fh, tiosize bytes); /* Change file size on disk, truncate or enlarge. New areas' content is undefined. */
 TIO_EXPORT tiosize    tio_ksize   (tio_Handle fh); /* Shortcut for tio_kgetsize(), returns size of file or 0 on error */
 
+
+
 /* Extended read/write that return an error code instead of the size.
    The number of bytes processed is written to *psz.
    There are data to process if *psz > 0 even if there was an error. */
@@ -393,6 +401,10 @@ TIO_EXPORT size_t    tio_kwriteat(tio_Handle fh, const void *ptr, size_t bytes, 
 /* And the extended versions of the above, returning an error instead of a size. */
 TIO_EXPORT tio_error  tio_kreadatx (tio_Handle fh, size_t *psz, void* ptr, size_t bytes, tiosize offset);
 TIO_EXPORT tio_error  tio_kwriteatx(tio_Handle fh, size_t *psz, const void* ptr, size_t bytes, tiosize offset);
+
+/* Copy data from one handle to another. Put size to copy in pbytes,
+   which will be updated with the actual number of bytes copied. */
+//TIO_EXPORT tio_error  tio_kcopy   (tio_Handle to, tio_Handle from, tiosize *pbytes); // TODO
 
 /* Get handle to stdin, stdout, stderr if those exist.
    Do NOT close these handles unless you know what you're doing.

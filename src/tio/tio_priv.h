@@ -1,12 +1,7 @@
 #pragma once
 
-// Win32 defines, also putting them before any other headers just in case
-#ifndef WIN32_LEAN_AND_MEAN
-#  define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef VC_EXTRALEAN
-#  define VC_EXTRALEAN
-#endif
+ /* Must be the VERY FIRST include */
+#include "tio_platform.h"
 
 #include "tio.h"
 
@@ -135,14 +130,15 @@ TIO_PRIVATE tio_error os_mminit(tio_Mapping *map, const tio_MMIO *mmio);
 TIO_PRIVATE void os_mmdestroy(tio_Mapping *map);
 TIO_PRIVATE void* os_mmap(tio_Mapping *map, tiosize offset, size_t size);
 TIO_PRIVATE void os_mmunmap(tio_Mapping *map);
-TIO_PRIVATE tio_error os_mmflush(tio_Mapping *map);
+TIO_PRIVATE tio_error os_mmflush(tio_Mapping *map, tio_FlushMode flush);
 
 
-TIO_PRIVATE tio_FileType os_fileinfo(char* path, tiosize* psz);
-TIO_PRIVATE tio_error os_dirlist(char* path, tio_FileCallback callback, void* ud);
+TIO_PRIVATE tio_FileType os_fileinfo(const char* path, tiosize* psz);
+TIO_PRIVATE tio_error os_dirlist(const char* path, tio_FileCallback callback, void* ud);
 
 // For creating a full path in one go. If unsupported by the OS, return createPathHelper(path)
 // The path passed never ends with a directory separator.
+// path is writable because OS APIs typically require 0-termination, which is temporarily introduced in place of dir separators
 TIO_PRIVATE tio_error os_createpath(char* path);
 
 // Used by createPathHelper(). Will not be called when that function is not used.
@@ -199,6 +195,12 @@ inline static bool isvalidhandle(tio_Handle h)
 static inline bool ispathsep(const char c)
 {
     return c == '/' || c == os_pathsep();
+}
+
+// skip if "." or ".."
+static inline bool dirlistSkip(const char* fn)
+{
+    return fn[0] == '.' && (!fn[1] || (fn[1] == '.' && !fn[2]));
 }
 
 template<typename T>
@@ -286,3 +288,4 @@ public:
 
 
 typedef StackBuf<char, TIO_MAX_STACK_ALLOC> PathBuf;
+

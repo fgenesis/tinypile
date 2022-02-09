@@ -5,7 +5,7 @@
 
 static tio_error mm_flush(tio_Mapping *map, tio_FlushMode flush)
 {
-    tio_error err = os_mmflush(map);
+    tio_error err = os_mmflush(map, flush);
     if(err)
         return err;
     if(flush == tio_FlushToOS)

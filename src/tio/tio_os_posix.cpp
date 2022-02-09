@@ -1,49 +1,32 @@
-#ifdef TIO_USE_POSIX
+#include "tio_sys.h"
+
+#if TIO_SYS_POSIX
 
 // TODO: look into MAP_HUGETLB -- requirements should be ok since the win32 code already requires a specific alignment and such
 
-// All the largefile defines for POSIX.
-// Needs to be defined before including any other headers.
-#ifndef _LARGEFILE_SOURCE
-#  define _LARGEFILE_SOURCE
-#endif
-#ifndef _LARGEFILE64_SOURCE
-#  define _LARGEFILE64_SOURCE
-#endif
-#ifdef _FILE_OFFSET_BITS
-#  undef _FILE_OFFSET_BITS
-#endif
-#ifndef _FILE_OFFSET_BITS
-#  define _FILE_OFFSET_BITS 64
-#endif
-#ifndef _POSIX_C_SOURCE
-#  define _POSIX_C_SOURCE 200112L // Needed for posix_madvise and posix_fadvise
-#endif
-
-#include "tio_priv.h"
-
-#include <stdlib.h> // alloca
-#include <sys/mman.h> // mmap, munmap
-#include <sys/stat.h> // fstat64
-#include <fcntl.h> // O_* macros for open()
-#include <unistd.h>
-#include <sys/dir.h> // opendir, closedir
-#define _HAVE_POSIX_MADVISE
-#define _HAVE_POSIX_FADVISE
 typedef size_t IOSizeT;
 #define OS_PATHSEP '/'
 
+template<typename T> struct Has_d_type
+{
+    struct Fallback { int d_type; };
+    struct Derived : T, Fallback { };
+    template<typename C, C> struct ChT;
+    template<typename C> static char (&f(ChT<int Fallback::*, &C::d_type>*))[1];
+    template<typename C> static char (&f(...))[2];
+    static bool const value = sizeof(f<Derived>(0)) == 2;
+};
 
 static inline int h2fd(tio_Handle h) { return (int)(intptr_t)h; }
 static inline tio_Handle fd2h(int fd) { return (tio_Handle)(intptr_t)fd; }
 
-static tio_Error oserror()
+static tio_error oserror()
 {
     const int e = errno;
     switch (e)
     {
         case ENOENT:   return tio_Error_NotFound;
-        case EACCESS:  return tio_Error_Forbidden;
+        case EACCES:  return tio_Error_Forbidden;
         case EFBIG:    return tio_Error_TooBig;
         case ENOSPC:   return tio_Error_DeviceFull;
         case EBADF:
@@ -51,7 +34,6 @@ static tio_Error oserror()
         case EIO:      return tio_Error_IOError;
         case ENOMEM:   return tio_Error_MemAllocFail;
         case EROFS:
-        case EACCES:   return tio_Error_Forbidden;
         case EMFILE:   return tio_Error_ResAllocFail;
         case ENOSYS:   return tio_Error_Unsupported;
     }
@@ -65,55 +47,39 @@ TIO_PRIVATE char os_pathsep()
 
 TIO_PRIVATE tio_error os_init()
 {
+    tio__TRACE("Using POSIX backend");
     tio__TRACE("POSIX dirent has d_type member: %d", int(Has_d_type<dirent>::value));
-
-#ifdef _HAVE_POSIX_MADVISE
-    tio__TRACE("Supports posix_madvise");
-#else
-    tio__TRACE("MISSING posix_madvise: Not compiled in",);
-#endif
-
-#ifdef _HAVE_POSIX_FADVISE
-    tio__TRACE("Supports posix_fadvise");
-#else
-    tio__TRACE("MISSING posix_fadvise: Not compiled in", );
-#endif
-
-    return 0;
+    return tio_sys_init();
 }
 
 static void advise_sequential(int fd)
 {
-#ifdef _HAVE_POSIX_FADVISE
-    posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
-#endif
+    int err = tio_sys_posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+    tio__ASSERT(!err);
 }
 
 static void advise_sequential(void* p, size_t sz)
 {
-#ifdef _HAVE_POSIX_FADVISE
-    posix_madvise(p, sz, POSIX_MADV_SEQUENTIAL);
-#endif
+    int err = tio_sys_posix_madvise(p, sz, POSIX_MADV_SEQUENTIAL);
+    tio__ASSERT(!err);
 }
 
 static void advise_willneed(int fd)
 {
-#ifdef _HAVE_POSIX_FADVISE
-    posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED);
-#endif
+    int err = tio_sys_posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED);
+    tio__ASSERT(!err);
 }
 
 static void advise_willneed(void* p, size_t sz)
 {
-#ifdef _HAVE_POSIX_MADVISE
-    posix_madvise(p, sz, POSIX_MADV_WILLNEED);
-#endif
+    int err = tio_sys_posix_madvise(p, sz, POSIX_MADV_WILLNEED);
+    tio__ASSERT(!err);
 }
 
 
 TIO_PRIVATE size_t os_pagesize()
 {
-    return ::sysconf(_SC_PAGE_SIZE);
+    return tio_sys_sysconf(_SC_PAGE_SIZE);
 }
 
 TIO_PRIVATE void os_preloadvmem(void* p, size_t sz)
@@ -137,19 +103,19 @@ TIO_PRIVATE tio_Handle os_stdhandle(tio_StdHandle id)
 
 TIO_PRIVATE tio_error os_closehandle(tio_Handle h)
 {
-    return ::close(h2fd(h));
+    return tio_sys_close(h2fd(h));
 }
 
 // just opens a file and does nothing else
 // minimal support for tio_Features that are always safe to set
 // returns fd
-TIO_PRIVATE int simpleopen(const char* fn, const OpenMode om, tio_Features feature, unsigned osflags)
+TIO_PRIVATE int simpleopen(const char* fn, const OpenMode om, tio_Features features, unsigned osflags)
 {
     static const int _openflag[] = { O_RDONLY, O_WRONLY, O_RDWR };
-    const int flag = osflags | _openflag[mode] | O_LARGEFILE;
+    unsigned flag = osflags | _openflag[om.accessidx] | O_LARGEFILE;
     if (features & tioF_NoBuffer)
         flag |= O_DSYNC; // could also be O_SYNC if O_DSYNC doesn't exist. Also check O_DIRECT
-    const int fd = open(fn, flag);
+    const int fd = tio_sys_open(fn, flag, 0644);
     if (fd != -1)
     {
         if (features & tioF_Sequential)
@@ -174,10 +140,11 @@ TIO_PRIVATE tio_error os_openfile(tio_Handle* out, const char* fn, const OpenMod
 
 TIO_PRIVATE tio_error os_getsize(tio_Handle h, tiosize* psz)
 {
+    const int fd = h2fd(h);
     struct stat st;
     tio_error err = 0;
     tiosize sz = 0;
-    if (::fstat(fd, &st))
+    if (tio_sys_fstat(fd, &st))
         err = oserror();
     else
         sz = st.st_size;
@@ -188,62 +155,118 @@ TIO_PRIVATE tio_error os_getsize(tio_Handle h, tiosize* psz)
 
 TIO_PRIVATE tio_error os_read(tio_Handle hFile, size_t *psz, void* dst, size_t n)
 {
-    return 0;
+    const int fd = h2fd(hFile);
+    ssize_t rd = tio_sys_read(fd, dst, n);
+    if(rd == -1)
+    {
+        *psz = 0;
+        return oserror();
+    }
+    *psz = rd;
+    return rd ? rd : tio_Error_EOF;
+}
+
+TIO_PRIVATE tio_error os_readat(tio_Handle hFile, size_t *psz, void* dst, size_t n, tiosize offset)
+{
+    const int fd = h2fd(hFile);
+    ssize_t rd = tio_sys_pread(fd, dst, n, offset);
+    if(rd == -1)
+    {
+        *psz = 0;
+        return oserror();
+    }
+    *psz = rd;
+    return rd ? rd : tio_Error_EOF;
 }
 
 TIO_PRIVATE tio_error os_write(tio_Handle hFile, size_t *psz, const void* src, size_t n)
 {
+    const int fd = h2fd(hFile);
+    ssize_t wr = tio_sys_write(fd, src, n);
+    if(wr == -1)
+    {
+        *psz = 0;
+        return oserror();
+    }
+    *psz = wr;
+    return 0;
+}
+
+TIO_PRIVATE tio_error os_writeat(tio_Handle hFile, size_t *psz, const void* src, size_t n, tiosize offset)
+{
+    const int fd = h2fd(hFile);
+    ssize_t wr = tio_sys_pwrite(fd, src, n, offset);
+    if(wr == -1)
+    {
+        *psz = 0;
+        return oserror();
+    }
+    *psz = wr;
     return 0;
 }
 
 TIO_PRIVATE tio_error os_seek(tio_Handle hFile, tiosize offset, tio_Seek origin)
 {
-    return -1;
+    static const int _whence[] = { SEEK_SET, SEEK_CUR, SEEK_END };
+    const int fd = h2fd(hFile);
+    off_t off = tio_sys_lseek(fd, offset, _whence[origin]);
+    if(off == -1)
+        return oserror();
+    return 0;
 }
 
 TIO_PRIVATE tio_error os_tell(tio_Handle hFile, tiosize* poffset)
 {
-    return -1;
+    const int fd = h2fd(hFile);
+    off_t off = tio_sys_lseek(fd, 0, SEEK_CUR);
+    if(off == -1)
+        return oserror();
+    *poffset = off;
+    return 0;
 }
 
 TIO_PRIVATE tio_error os_flush(tio_Handle hFile)
 {
-    return ::fsync(h2fd(hFile));
+    return tio_sys_fsync(h2fd(hFile));
 }
 
 /* ---- End Handle ---- */
 
 /* ---- Begin MMIO ---- */
 
-TIO_PRIVATE tio_error os_mminit(tio_MMIO* mmio, tio_Handle hFile, OpenMode om)
+TIO_PRIVATE tio_error os_mminit(tio_Mapping* map, const tio_MMIO *mmio)
 {
-    return 0;
+    return 0; // Nothing to do, the file is already open
 }
 
-TIO_PRIVATE void os_mclose(tio_MMIO* mmio)
+TIO_PRIVATE void os_mmdestroy(tio_Mapping *map)
 {
+    // Nothing to do
 }
 
-
-TIO_PRIVATE void *os_mmap(tio_MMIO* mmio, tiosize offset, size_t size, unsigned access)
+TIO_PRIVATE void* os_mmap(tio_Mapping *map, tiosize offset, size_t size)
 {
     static const int _prot[] = { PROT_READ, PROT_WRITE, PROT_READ | PROT_WRITE };
-    static const int _mapflags[] = { MAP_NORESERVE, 0, 0 };
-    const int prot = _prot[access];
-    int flags = MAP_SHARED | _mapflags[access];
-    //if((features & tio_Preload) && prot != PROT_WRITE)
-    //    flags |= MAP_POPULATE;
-    //features &= ~tio_Preload; // We're using MAP_POPULATE already, no need for another madvise call further down
-    const int fd = h2fd(mmio->priv.hFile);
-    p = (char*)::mmap(NULL, alnSize, prot, flags, fd, alnOffs);
+    static const int _mapflags[] =
+    {
+        0
+#ifdef MAP_NORESERVE
+        | MAP_NORESERVE
+#endif
+        , 0, 0
+    };
+    const int prot = _prot[map->priv.mm.access];
+    int flags = MAP_SHARED | _mapflags[map->priv.mm.access];
+    const int fd = h2fd(map->priv.mm.hFile);
+    void *p = tio_sys_mmap(NULL, size, prot, flags, fd, offset);
     // It's possible to mmap into NULL, but we never do this so this is fine.
     return p != MAP_FAILED ? p : NULL;
 }
 
-TIO_PRIVATE void os_mmunmap(tio_MMIO* mmio, void *p)
+TIO_PRIVATE void os_mmunmap(tio_Mapping *map)
 {
-    size_t sz = mmio->end - (char*)mmio->priv.base;
-    ::munmap(mmio->priv.base, sz); // base must be page-aligned, size not
+    size_t sz = map->end - map->begin;
+    tio_sys_munmap(map->priv.mm.base, sz); // base must be page-aligned, size not
 }
 
 TIO_PRIVATE size_t os_mmioAlignment()
@@ -251,15 +274,15 @@ TIO_PRIVATE size_t os_mmioAlignment()
     return os_pagesize();
 }
 
-TIO_PRIVATE tio_error os_mmflush(tio_MMIO* mmio, void *p)
+TIO_PRIVATE tio_error os_mmflush(tio_Mapping* map, tio_FlushMode flush)
 {
-    return msync(mmio->priv.base, 0, (flush & tio_FlushToDisk) ? MS_SYNC : MS_ASYNC);
+    int err = tio_sys_msync(map->priv.mm.base, 0, (flush & tio_FlushToDisk) ? MS_SYNC : MS_ASYNC);
+    return !err ? 0 : oserror();
 }
 
-static tio_FileType posix_getStatFileType(struct stat64 *st)
+static tio_FileType posix_getStatFileType(mode_t m)
 {
     tio_FileType t = tioT_Nothing;
-    mode_t m = st->st_mode;
     if(S_ISDIR(m))
         t = tioT_Dir;
     else if(S_ISREG(m))
@@ -271,30 +294,29 @@ static tio_FileType posix_getStatFileType(struct stat64 *st)
     return t;
 }
 
-
-template<typename T> struct Has_d_type
+static tio_FileType posix_getPathFileType(int pathfd, const char *name)
 {
-    struct Fallback { int d_type; };
-    struct Derived : T, Fallback { };
-    template<typename C, C> struct ChT;
-    template<typename C> static char (&f(ChT<int Fallback::*, &C::d_type>*))[1];
-    template<typename C> static char (&f(...))[2];
-    static bool const value = sizeof(f<Derived>(0)) == 2;
-};
+    struct stat st;
+    int err = tio_sys_fstatat(pathfd, name, &st, 0);
+    if(err == -1)
+        return tioT_Nothing;
+    return posix_getStatFileType(st.st_mode);
+}
+
 
 template<bool has_d_type>
 struct Posix_DirentFileType
 {
-    inline static tio_FileType Get(const char *path, struct dirent *dp)
+    inline static tio_FileType Get(int pathfd, struct dirent *dp)
     {
-        return getPathFileType(path, dp->d_name, NULL);
+        return posix_getPathFileType(pathfd, dp->d_name);
     }
 };
 
 template<>
 struct Posix_DirentFileType<true>
 {
-    inline static tio_FileType Get(const char *path, struct dirent *dp)
+    inline static tio_FileType Get(int pathfd, struct dirent *dp)
     {
         unsigned t = tioT_Nothing;
         switch(dp->d_type)
@@ -305,43 +327,47 @@ struct Posix_DirentFileType<true>
                 t = tioT_Link;
                 /* fall through */
             case DT_UNKNOWN: // file system isn't sure or doesn't support d_type, try this the hard way
-                return t | getPathFileType(path, dp->d_name, NULL);
+                return t | posix_getPathFileType(pathfd, dp->d_name);
             default: ; // avoid warnings
         }
         return tioT_Special;
     }
 };
 
-static inline tio_FileType posix_getDirentFileType(const char *path, struct dirent *dp)
+static inline tio_FileType posix_getDirentFileType(int pathfd, struct dirent *dp)
 {
-    return Posix_DirentFileType<Has_d_type<dirent>::value>::Get(path, dp);
+    return Posix_DirentFileType<Has_d_type<dirent>::value>::Get(pathfd, dp);
 }
 
 
 TIO_PRIVATE tio_FileType os_fileinfo(const char* path, tiosize* psz)
 {
     struct stat64 st;
-    if(!::stat64(path, &st))
+    if(!tio_sys_stat64(path, &st))
     {
         if(psz)
             *psz = st.st_size;
-        return posix_getStatFileType(&st);
+        return posix_getStatFileType(st.st_mode);
     }
     return tioT_Nothing;
 }
 
-TIO_PRIVATE tio_error os_dirlist(char* path, tio_FileCallback callback, void* ud)
+TIO_PRIVATE tio_error os_dirlist(const char* path, tio_FileCallback callback, void* ud)
 {
     struct dirent * dp;
-    DIR *dirp = ::opendir(path);
+    int pathfd = tio_sys_open(path, O_DIRECTORY, 0);
+    if(pathfd == -1)
+        return oserror();
+    DIR *dirp = tio_sys_fdopendir(pathfd);
     if(!dirp)
-        return -1;
+        return oserror();
     int ret = 0;
-    while((dp=::readdir(dirp)) != NULL)
+    while((dp=tio_sys_readdir(dirp)) != NULL)
         if(!dirlistSkip(dp->d_name))
-            if((ret = callback(path, dp->d_name, posix_getDirentFileType(path, dp), ud)))
+            if((ret = callback(path, dp->d_name, posix_getDirentFileType(pathfd, dp), ud)))
                 break;
-    ::closedir(dirp);
+    tio_sys_closedir(dirp);
+    tio_sys_close(pathfd);
     return ret;
 }
 
@@ -349,9 +375,9 @@ TIO_PRIVATE tio_error os_dirlist(char* path, tio_FileCallback callback, void* ud
 // this must be caught by the caller!
 TIO_PRIVATE tio_error os_createSingleDir(const char* path)
 {
-    if(!::mkdir(path, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH))
+    if(!tio_sys_mkdir(path, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH))
         return 0;
-    return ::errno != EEXIST; // No error when it already exists
+    return  oserror(); // TODO: No error when it already exists?
 }
 
 TIO_PRIVATE tio_error os_createpath(char* path)
@@ -390,4 +416,4 @@ TIO_PRIVATE int os_initmmio(tio_MMIO* mmio, const char* fn, tio_Mode mode, tio_F
 }
 
 
-#endif // #ifdef TIO_USE_POSIX
+#endif // #ifdef TIO_SYS_POSIX
