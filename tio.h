@@ -57,7 +57,10 @@ Dependencies:
 - Optionally libc for memcpy, memset, strlen, <<TODO list>> unless you use your own
 - On POSIX platforms: libc for some POSIX wrappers around syscalls (open, close, posix_fadvise, ...)
 - C++(98) for some convenience features, destructors, SFINAE, and type safety
-  (But no exceptions, STL, class hierarchies, aka the typical C++ bullshit)
+- But no exceptions, STL, virtual methods, "modern C++"
+
+-  (On windows it's possible to *only* link against kernel32.dll even without static CRT)
+
 
 Why not libc stdio?
 - libc has no concept of directories and can't enumerate directory contents
@@ -807,3 +810,16 @@ TIO_EXPORT void tio_memcpy(void *dst, const void *src, size_t n);
 TIO_EXPORT size_t tio_strlen(const char *s);
 TIO_EXPORT int tio_memcmp(const void *a, const void *b, size_t n);
 TIO_EXPORT void tio_memset(void *dst, int x, size_t n);
+
+
+/* ---- Begin compile config ---- */
+
+// This is a safe upper limit for stack allocations.
+// Especially on windows, UTF-8 to wchar_t conversion requires some temporary memory,
+// and that's best allocated from the stack to keep the code free of heap allocations.
+// This value limits the length of paths that can be processed by this library.
+#ifndef TIO_MAX_STACK_ALLOC
+#define TIO_MAX_STACK_ALLOC 2000
+#endif
+
+/* ---- End compile config ---- */

@@ -158,7 +158,7 @@ TIO_EXPORT tio_FileType tiov_fileinfo(const tiov_FS *fs, const char *path, tiosi
 
 
 
-/* ---- VFS and Mounting ----
+/* ---- VFS and Mounting ---- */
 
 /* Allocate a new virtual file system for mounting stuff into. */
 TIO_EXPORT tiov_FS* tiov_vfs(tio_Alloc alloc, void* allocUD);
@@ -174,7 +174,7 @@ const tiov_MountDef mtab[] =
     // (if you don't do this, only the things you actually mount end up in the VFS)
     { ".", sysfs, "." },
 
-    // Make it so that when we ask for "cfg/*", we actually end up
+    // Make it so that when we ask for "cfg/", we actually end up
     // asking sysfs for "C:\\Users\\user\\Documents\\*"
     { "doc", sysfs, "C:\\Users\\user\\Documents" },
 
