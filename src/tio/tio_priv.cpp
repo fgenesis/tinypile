@@ -110,6 +110,7 @@ TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, siz
     unsigned part = 0; // length of current part
     for (size_t i = 0; ; ++i)
     {
+        tio__ASSERT(i <= srcsize);
         char c = src[i];
         ++part;
         if (c == '.')
@@ -127,7 +128,7 @@ TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, siz
                 {
                 case 0: if (frag || !c) break; // all ok, wrote part, now write dirsep
                       else if (i) continue; // "//" -> already added prev '/' -> don't add more '/'
-                case 1: dots = 0; --w; continue; // "./" -> erase the '.', don't add the '/'
+                case 1: dots = 0; if(!c) break; --w; continue; // "./" -> erase the '.', don't add the '/'
                 case 2: dots = 0; // go back one dir, until we hit a dirsep or start of string
                     w -= 4; // go back 1 to hit the last '.', 2 more to skip the "..", and 1 more to go past the '/'
                     if (w < dst) // too far? then there was no more '/' in the path
