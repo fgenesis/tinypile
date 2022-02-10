@@ -24,8 +24,10 @@ int main()
     CHECK(err);
 
     testclean("/mnt/e/", tio_Clean_EndNoSep);
-    testclean("C:\\w\\\\..//x/./", tio_Clean_EndNoSep);
-    testclean("C:\\w\\\\..//x/./", tio_Clean_EndNoSep | tio_Clean_WindowsPath | tio_Clean_SepUnix); // clean windows-style
+    testclean("C:\\w\\\\..//x/./", tio_Clean_EndNoSep | tio_Clean_SepUnix);
+    testclean("C:\\w\\\\..//x/./", tio_Clean_EndNoSep | tio_Clean_SepUnix | tio_Clean_WindowsPath);
+    testclean("C:\\w\\\\..//x/./", tio_Clean_WindowsPath | tio_Clean_ToNative);
+    testclean("C:\\w\\.\\..//x/./", tio_Clean_WindowsPath | tio_Clean_EndNoSep | tio_Clean_SepNative);
 
     unsigned n = 0;
     CHECK(tio_dirlist("", showdir, &n));

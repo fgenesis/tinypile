@@ -117,20 +117,6 @@ int main(int argc, char **argv)
 {
     tio_init();
 
-    /*
-    const char *pa = "C:/w/..//x/./";
-    char dst[1024];
-    tio_error err = tio_cleanpath(dst, pa, sizeof(dst), tio_Clean_SepNative);
-    printf("%d: %s\n", err, dst);
-    */
-
-    /*
-    tio_MMIO mmio;
-    void *p = tio_mopenmap(&mmio, "CMakeLists.txt", tio_R, 0, 0, tioF_Background | tioF_Sequential);
-    printf("%s\n", (const char*)p);
-    tio_munmap(&mmio);
-    */
-
     showhhash(argv[argc > 1]);
 
     return 0;
