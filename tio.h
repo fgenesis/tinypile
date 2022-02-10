@@ -305,16 +305,20 @@ typedef int tio_error; /* Typedef'd to make places for error handling easier to 
 
 enum tio_CleanFlags_
 {
-    tio_Clean_SepUnix     = 0x01, // Turn all recognized path separators to '/'
-    tio_Clean_SepNative   = 0x02, // Turn all recognized path separators to the OS pathsep
-    // Not set: Leave as-is. Don't set both.
+    tio_Clean_SepUnix     = 0x01, /* Turn all recognized path separators to '/' */
+    tio_Clean_SepNative   = 0x02, /* Turn all recognized path separators to the OS pathsep */
+    /* Not set: Leave as-is. Don't set both. */
 
-    tio_Clean_EndWithSep  = 0x04, // Ensure that path ends with a path sep (expands "" to "./")
-    tio_Clean_EndNoSep    = 0x08, // Remove path sep at end if there is one
-    // Not set: Leave as-is.
-    // BOTH set: "" stays "", otherwise append path sep
+    tio_Clean_EndWithSep  = 0x04, /* Ensure that path ends with a path sep (expands "" to "./") */
+    tio_Clean_EndNoSep    = 0x08, /* Remove path sep at end if there is one */
+    /* Not set: Leave as-is.
+       BOTH set: "" stays "", otherwise append path sep */
 
-    tio_Clean_WindowsPath = 0x10, // Accept '\' as path separator even if we're not on windows
+    tio_Clean_ToNative    = 0x10, /* Transform the path to a native path.
+                                     Forces the native path separator.
+                                     On windows, this adds the UNC prefix to absolute paths. */
+
+    tio_Clean_WindowsPath = 0x20, /* Accept '\' as path separator even if we're not on windows */
 };
 typedef unsigned tio_CleanFlags;
 

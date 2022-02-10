@@ -35,7 +35,7 @@
     PathBuf _pb; \
     PathBuf::Ptr _pbp = _pb.Alloc(_space); \
     dst = _pbp; \
-    sanitizePath(dst, src, _space, _len, (flags) | tio_Clean_SepNative);
+    sanitizePath(dst, src, _space, _len, (flags) | tio_Clean_ToNative);
 
 TIO_EXPORT tio_error tio_init_version(unsigned version)
 {

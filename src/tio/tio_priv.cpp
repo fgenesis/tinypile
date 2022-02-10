@@ -95,15 +95,16 @@ TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, siz
     if(flags & tio_Clean_WindowsPath)
         extraSep = '\\';
 
-    const char sep = (flags & tio_Clean_SepNative) ? os_pathsep() : '/';
+    const char sep = (flags & (tio_Clean_SepNative | tio_Clean_ToNative)) ? os_pathsep() : '/';
 
     char* const originaldst = dst;
     char* const dstend = dst + space;
     const bool abs = os_pathIsAbs(src);
     const bool hadtrail = srcsize && ispathsep(src[srcsize - 1], extraSep);
 
-    if(int err = os_preSanitizePath(dst, dstend, src))
-        return err;
+    if(flags & tio_Clean_ToNative)
+        if(tio_error err = os_preSanitizePath(dst, dstend, src))
+            return err;
 
     char* w = dst;
     unsigned dots = 0; // number of magic dots (those directly sandwiched between path separators: "/./" and "/../", or at the start: "./" and "../")
