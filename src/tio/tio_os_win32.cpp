@@ -769,7 +769,15 @@ static inline bool isUNCPath(const char *path)
 // win32 drive: C:\...
 TIO_PRIVATE bool os_pathIsAbs(const char *path)
 {
-    return *path && ispathsep(*path) && hasdriveletter(path);
+    if(!*path)
+        return false; // empty path is always relative
+    if(isUNCPath(path))
+        return true; // UNC paths are always absolute
+    if(hasdriveletter(path))
+        return true; // with drive letter it's always absolute
+    if(ispathsep(*path))
+        return true; // relative to drive, so this is kinda absolute // FIXME: check this
+    return false;
 }
 // Windows needs to create subdirs successively
 TIO_PRIVATE tio_error os_createpath(char* path)
@@ -794,11 +802,13 @@ TIO_PRIVATE tio_error os_createpath(char* path)
 TIO_PRIVATE tio_error os_preSanitizePath(char *& dst, char *dstend, const char *& src)
 {
     // Convert absolute path to a proper UNC path
-    // FIXME: pass-through if we're already given an UNC path
 
     // FIXME: Respect note from MSDN:
     // Prepending the string "\\?\" does not allow access to the root directory.
     // https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-findfirstfilew
+
+    if(isUNCPath(src))
+        return 0; // already UNC path, keep it as it is
 
     // For details, see: https://docs.microsoft.com/en-us/windows/win32/fileio/naming-a-file#maximum-path-length-limitation
     if(os_pathIsAbs(src))
@@ -813,7 +823,7 @@ TIO_PRIVATE tio_error os_preSanitizePath(char *& dst, char *dstend, const char *
         if (hasdriveletter(src)) // same thing goes for the drive letter
         {
             if (dst + 2 >= dstend)
-                return -101;
+                return tio_Error_TooBig;
             *dst++ = *src++; // C
             *dst++ = *src++; // :
             *dst++ = OS_PATHSEP; // '\'
