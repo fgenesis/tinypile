@@ -313,6 +313,8 @@ enum tio_CleanFlags_
     tio_Clean_EndNoSep    = 0x08, // Remove path sep at end if there is one
     // Not set: Leave as-is.
     // BOTH set: "" stays "", otherwise append path sep
+
+    tio_Clean_WindowsPath = 0x10, // Accept '\' as path separator even if we're not on windows
 };
 typedef unsigned tio_CleanFlags;
 

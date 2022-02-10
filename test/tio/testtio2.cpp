@@ -58,7 +58,7 @@ static void unpack(tio_Stream *ppacked)
         exit(2);
 
     tio_Handle out = 0;
-    if (tio_kopen(&out, "outfile", tio_W, 0))
+    if (tio_kopen(&out, "outfile.bmp", tio_W, 0))
         exit(3);
 
     dump(&sm, out);
@@ -73,10 +73,13 @@ int main()
     //const char* fn = "win98.bmp.zst";
     //const char* fn = "screen-0001.zga";
     //const char* fn = "cgproj.ncb.zst";
-    const char* fn = "cgproj.ncb.lz4";
+    //const char* fn = "cgproj.ncb.lz4";
     //const char* fn = "win98.bmp.lz4";
+    //const char* fn = "archmage.bmp.lz4";
+    //const char* fn = "frymire.bmp.lz4";
+    const char* fn = "chrismono.bmp.lz4";
     tio_Stream packed;
-    if (tiov_sopen(&packed, sys, fn, tioF_Background, 0, 0))
+    if (tiov_sopen(&packed, sys, fn, tioF_Background, 0, 1))
         exit(1);
 
     unpack(&packed);

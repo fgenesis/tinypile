@@ -195,10 +195,10 @@ inline static bool isvalidhandle(tio_Handle h)
     return h != os_getInvalidHandle();
 }
 
-// We use '/' as universal separator but also accept the OS one.
-static inline bool ispathsep(const char c)
+// We use '/' as universal separator but also accept the OS one, and an extra one
+static inline bool ispathsep(const char c, const char x = 0)
 {
-    return c == '/' || c == os_pathsep();
+    return c == '/' || c == os_pathsep() || (x && c == x);
 }
 
 // skip if "." or ".."

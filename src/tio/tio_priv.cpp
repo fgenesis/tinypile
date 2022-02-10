@@ -91,12 +91,16 @@ TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, siz
     if((flags & BothSep) == BothSep)
         flags &= ~BothSep;
 
+    char extraSep = 0;
+    if(flags & tio_Clean_WindowsPath)
+        extraSep = '\\';
+
     const char sep = (flags & tio_Clean_SepNative) ? os_pathsep() : '/';
 
     char* const originaldst = dst;
     char* const dstend = dst + space;
     const bool abs = os_pathIsAbs(src);
-    const bool hadtrail = srcsize && ispathsep(src[srcsize - 1]);
+    const bool hadtrail = srcsize && ispathsep(src[srcsize - 1], extraSep);
 
     if(int err = os_preSanitizePath(dst, dstend, src))
         return err;
@@ -112,7 +116,7 @@ TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, siz
         ++part;
         if (c == '.')
             dots += wassep;
-        else if (c && !ispathsep(c))
+        else if (c && !ispathsep(c, extraSep))
             dots = wassep = 0; // dots are no longer magic and just part of a file name
         else // dirsep or \0
         {
@@ -141,7 +145,7 @@ TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, siz
                     }
                     else
                     {
-                        while (dst < w && !ispathsep(*w)) { --w; } // go backwards until we hit start or a '/'
+                        while (dst < w && !ispathsep(*w, extraSep)) { --w; } // go backwards until we hit start or a '/'
                         if (dst == w) // don't write '/' when we're at the start
                             continue;
                     }
@@ -158,7 +162,7 @@ TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, siz
     if (!*originaldst)
         w = dst = originaldst;
 
-    const bool hastrail = dst < w && ispathsep(w[-1]);
+    const bool hastrail = dst < w && ispathsep(w[-1], extraSep);
     if (((flags & tio_Clean_EndWithSep) || hadtrail) && !hastrail)
     {
         if((flags & tio_Clean_EndNoSep) && !*originaldst) // BOTH specified?

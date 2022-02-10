@@ -131,15 +131,7 @@ int main(int argc, char **argv)
     tio_munmap(&mmio);
     */
 
-    showhhash(argv[0]);
-
-    //const char *f = "../hugefile";
-    //const char *f = "D:/fg-wii-sd.7z"; // slow hdd
-    const char *f = "E:/games/Oblivion/Data/Oblivion - Textures - Compressed.bsa"; // fast
-    //const char* f = "eats.txt.lz4";
-    // 5d840f
-
-
+    showhhash(argv[argc > 1]);
 
     return 0;
 }
