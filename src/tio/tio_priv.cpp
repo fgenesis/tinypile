@@ -84,15 +84,12 @@ TIO_PRIVATE tio_error createPathHelper(char* path, size_t offset)
 enum tioBothFlags
 {
     BothSep = tio_Clean_SepNative | tio_Clean_SepUnix,
-    BothEnd = tio_Clean_EndWithSep | tio_Clean_EndNoSep,
 };
 TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, size_t srcsize, tio_CleanFlags flags)
 {
     // Trat both flags set as if none was set
     if((flags & BothSep) == BothSep)
         flags &= ~BothSep;
-    if((flags & BothEnd) == BothEnd)
-        flags &= ~BothEnd;
 
     const char sep = (flags & tio_Clean_SepNative) ? os_pathsep() : '/';
 
@@ -134,7 +131,7 @@ TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, siz
                     if (w < dst) // too far? then there was no more '/' in the path
                     {
                         if (abs) // Can't go beyond an absolute path
-                            return -2; // FIXME: see https://golang.org/pkg/path/#Clean rule 4
+                            return tio_Error_BadPath; // FIXME: see https://golang.org/pkg/path/#Clean rule 4
                         w = dst; // we went beyond, fix that
                         *w++ = '.';
                         *w++ = '.';
@@ -163,12 +160,19 @@ TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, siz
     const bool hastrail = dst < w && ispathsep(w[-1]);
     if (((flags & tio_Clean_EndWithSep) || hadtrail) && !hastrail)
     {
-        // Expand to "." if empty string, to make sure it stays a relative path
-        if (!*originaldst)
-            *w++ = '.';
-        if (w >= dstend)
-            return -3;
-        *w++ = sep;
+        if((flags & tio_Clean_EndNoSep) && !*originaldst) // BOTH specified?
+        {
+            // Keep it an empty path if it was empty to begin with
+            // (path + filename) still forms a valid relative path
+        }
+        else // Expand "" to "./", otherwise just add a '/'
+        {
+            if (!*originaldst)
+                *w++ = '.';
+            if (w >= dstend)
+                return tio_Error_TooBig;
+            *w++ = sep;
+        }
     }
     else if (((flags & tio_Clean_EndNoSep) || !hadtrail) && hastrail)
     {
@@ -176,7 +180,7 @@ TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, siz
         --w;
     }
     if (w >= dstend)
-        return -4;
+        return tio_Error_TooBig;
     *w = 0;
 
     return 0;

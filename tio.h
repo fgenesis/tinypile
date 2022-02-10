@@ -309,9 +309,10 @@ enum tio_CleanFlags_
     tio_Clean_SepNative   = 0x02, // Turn all recognized path separators to the OS pathsep
     // Not set: Leave as-is. Don't set both.
 
-    tio_Clean_EndWithSep  = 0x04, // Ensure that path ends with a path sep
+    tio_Clean_EndWithSep  = 0x04, // Ensure that path ends with a path sep (expands "" to "./")
     tio_Clean_EndNoSep    = 0x08, // Remove path sep at end if there is one
-    // Not set: Leave as-is. Don't set both.
+    // Not set: Leave as-is.
+    // BOTH set: "" stays "", otherwise append path sep
 };
 typedef unsigned tio_CleanFlags;
 
@@ -757,7 +758,7 @@ TIO_EXPORT tio_error tio_createdir(const char *path);
 - Win32: Converts absolute paths to UNC-compatible paths (prefix with "\\?\")
 - Strip unnecessary ".", remove paths followed by ".."
 - Condense multiple directory separators into one
-- Check if path makes sense ("C:\foo\..\.." does not -- goes above the root)
+- Check if path makes sense ("C:\foo\..\..\bar\baz" does not -- goes above the root)
 - Adjust dir separators to current platform
 Will return error if the path is non-sensical or there's not enough space to write the result and terminating '\0'.
 dstsize should be a few more bytes than strlen(path) to ensure the UNC prefix fits if we're on windows;

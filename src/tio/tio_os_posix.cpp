@@ -355,7 +355,7 @@ TIO_PRIVATE tio_FileType os_fileinfo(const char* path, tiosize* psz)
 TIO_PRIVATE tio_error os_dirlist(const char* path, tio_FileCallback callback, void* ud)
 {
     struct dirent * dp;
-    int pathfd = tio_sys_open(path, O_DIRECTORY, 0);
+    int pathfd = tio_sys_open(*path ? path : ".", O_DIRECTORY, 0); // Refuses to open("")
     if(pathfd == -1)
         return oserror();
     DIR *dirp = tio_sys_fdopendir(pathfd);

@@ -4,6 +4,7 @@
 static int showdir(const char *path, const char *name, tio_FileType type, void *ud)
 {
     printf("%u: [%s] %s\n", type, path, name);
+    (*(unsigned*)ud)++;
     return 0;
 }
 
@@ -14,7 +15,10 @@ int main()
     tio_error err = tio_init();
     CHECK(err);
 
-    CHECK(tio_dirlist("", showdir, NULL));
+    unsigned n = 0;
+    CHECK(tio_dirlist("", showdir, &n));
+
+    printf("%u files in total\n", n);
 
     return 0;
 }

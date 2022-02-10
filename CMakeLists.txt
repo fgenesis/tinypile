@@ -10,22 +10,7 @@ function(hide_symbols target)
     set_property(TARGET ${target} PROPERTY VISIBILITY_INLINES_HIDDEN ON)
 endfunction()
 
-# Turn off exceptions, runtime checks, anything that emits libc/CRT calls
-option(NO_CPP_BALLAST "Enable to compile without RTTI, exceptions, etc" TRUE)
-if(NO_CPP_BALLAST)
-  if (MSVC)
-    add_definitions(-D_HAS_EXCEPTIONS=0)
-    add_compile_options(/GR-)
-    if(CMAKE_CXX_FLAGS MATCHES "/EHsc")
-      string(REPLACE "/EHsc" "/EHs-c-" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-    endif()
-  else()
-    add_compile_options(-fno-exceptions -fno-rtti)
-  endif()
-  message(STATUS "CMAKE_CXX_FLAGS after possible REPLACE operation:")
-  message(STATUS "CMAKE_CXX_FLAGS='${CMAKE_CXX_FLAGS}'")
-  message(STATUS "")
-endif()
+SET(VS_DEBUGGER_WORKING_DIRECTORY "${REPO_ROOT}/test/data" CACHE STRING "VS debug dir")
 
 option(BUILD_WITH_ASAN "Build with ASAN support to find memory issues" FALSE)
 if(BUILD_WITH_ASAN)
@@ -46,6 +31,25 @@ include_directories(src/tbsp)
 
 # Tests can also use relaxed warnings
 add_subdirectory(test)
+
+# Turn off exceptions, runtime checks, anything that emits libc/CRT calls
+option(NO_CPP_BALLAST "Enable to compile without RTTI, exceptions, etc" TRUE)
+if(NO_CPP_BALLAST)
+  if (MSVC)
+    add_definitions(-D_HAS_EXCEPTIONS=0)
+    add_compile_options(/GR-)
+    if(CMAKE_CXX_FLAGS MATCHES "/EHsc")
+      string(REPLACE "/EHsc" "/EHs-c-" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    endif()
+  else()
+    add_compile_options(-fno-exceptions -fno-rtti -fno-stack-protector)
+  endif()
+  message(STATUS "CMAKE_CXX_FLAGS after possible REPLACE operation:")
+  message(STATUS "CMAKE_CXX_FLAGS='${CMAKE_CXX_FLAGS}'")
+  message(STATUS "")
+endif()
+
+
 
 # Tighten warnings for the lib code
 # Requires pretty new cmake, should check version first

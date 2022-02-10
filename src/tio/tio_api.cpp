@@ -27,9 +27,11 @@
 
 
 // Path/file names passed to the public API must be cleaned using this macro.
+// +1 is for the \0
+// +2 covers an empty path that is turned into "./" and also any added dirsep at the end (that would be +1)
 #define SANITIZE_PATH(dst, src, flags, extraspace) \
     size_t _len = tio__strlen(src); \
-    size_t _space = os_pathExtraSpace()+(extraspace)+_len+1; \
+    size_t _space = os_pathExtraSpace()+(extraspace)+_len+1+2; \
     PathBuf _pb; \
     PathBuf::Ptr _pbp = _pb.Alloc(_space); \
     dst = _pbp; \
@@ -451,7 +453,7 @@ TIO_EXPORT tio_error tio_dirlist(const char* path, tio_FileCallback callback, vo
     checknotnull_err(path);
     checknotnull_err(callback);
     char* s;
-    SANITIZE_PATH(s, path, tio_Clean_EndWithSep, 0);
+    SANITIZE_PATH(s, path, tio_Clean_EndWithSep | tio_Clean_EndNoSep, 0);
     return os_dirlist(s, callback, ud);
 }
 
