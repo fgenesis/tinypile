@@ -111,9 +111,11 @@ TIO_PRIVATE size_t mmio_alignment()
 {
     size_t aln = g_mmioAlignment;
     if(!aln)
+    {
         g_mmioAlignment = aln = os_mmioAlignment(); // query this only once
-    tio__TRACE("os_mmioAlignment() == %u", unsigned(aln));
-    tio__ASSERT(aln);
+        tio__TRACE("os_mmioAlignment() == %u", unsigned(aln));
+        tio__ASSERT(aln);
+    }
     return aln;
 }
 

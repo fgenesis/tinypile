@@ -66,9 +66,11 @@ TIO_EXPORT size_t tio_pagesize()
 {
     size_t sz = g_osPagesize;
     if(!sz)
+    {
         g_osPagesize = sz = os_pagesize(); // query this only once
-    tio__TRACE("os_pagesize() == %u", unsigned(sz));
-    tio__ASSERT(sz);
+        tio__TRACE("os_pagesize() == %u", unsigned(sz));
+        tio__ASSERT(sz);
+    }
     return sz;
 }
 
