@@ -125,6 +125,7 @@ TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, siz
                 {
                 case 0: if (frag || !c) break; // all ok, wrote part, now write dirsep
                       else if (i) continue; // "//" -> already added prev '/' -> don't add more '/'
+                      else break; // initial '/' from absolute path
                 case 1: dots = 0; if(!c) break; --w; continue; // "./" -> erase the '.', don't add the '/'
                 case 2: dots = 0; // go back one dir, until we hit a dirsep or start of string
                     w -= 4; // go back 1 to hit the last '.', 2 more to skip the "..", and 1 more to go past the '/'
@@ -176,7 +177,6 @@ TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, siz
     }
     else if (((flags & tio_Clean_EndNoSep) || !hadtrail) && hastrail)
     {
-        tio__ASSERT(*w == sep);
         --w;
     }
     if (w >= dstend)

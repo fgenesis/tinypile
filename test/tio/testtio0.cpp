@@ -15,6 +15,11 @@ int main()
     tio_error err = tio_init();
     CHECK(err);
 
+    const char *path = "/mnt/e/";
+    char clean[32];
+    CHECK(tio_cleanpath(clean, path, sizeof(clean), tio_Clean_EndNoSep));
+    puts(clean);
+
     unsigned n = 0;
     CHECK(tio_dirlist("", showdir, &n));
 
