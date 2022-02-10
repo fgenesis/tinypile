@@ -1,5 +1,5 @@
 #include <stdio.h>
-#include <iostream>
+#include <stdlib.h>
 #include "tio.h"
 #include "sha3.h"
 
@@ -8,7 +8,7 @@ static void showdir(const char *path, const char *name, unsigned type, void *ud)
     printf("%u: %s%s\n", type, path, name);
 }
 
-void* myalloc(void* ud, void* ptr, size_t osize, size_t nsize)
+static void* myalloc(void* ud, void* ptr, size_t osize, size_t nsize)
 {
     (void)ud;
     (void)osize;
@@ -19,7 +19,101 @@ void* myalloc(void* ud, void* ptr, size_t osize, size_t nsize)
     return NULL;
 }
 
-int main()
+static void hashfin(sha3_ctx& sha)
+{
+    unsigned char hash[512/8];
+    rhash_sha3_final(&sha, hash);
+
+    printf("sha3-512: ");
+    for(size_t i = 0; i < sizeof(hash); ++i)
+        printf("%02X", hash[i]);
+    puts("");
+}
+
+static void showhhash(const char *fn)
+{
+    printf("--- %s ----\n", fn);
+
+    tiosize filesz = 0;
+    tio_FileType ft = tio_fileinfo(fn, &filesz);
+    printf("File size: %u, type = %u\n", unsigned(filesz), ft);
+
+    sha3_ctx sha;
+
+    // stream
+    {
+        puts("## Stream ##");
+        tio_Stream sm;
+
+        // For testing, use the smallest possible block size the OS can handle
+        // Production code shouldn't do this, of course
+        if(tio_error err = tio_sopen(&sm, fn, tioF_NoBuffer | tioF_Background | tioF_PreferMMIO, 0, 1, myalloc, NULL))
+        {
+            printf("Failed to open: %s, error = %d\n", fn, err);
+            return;
+        }
+
+        rhash_sha3_512_init(&sha);
+        tiosize total = 0;
+        for(;;)
+        {
+            size_t n = tio_srefill(&sm);
+            if (sm.err)
+                break;
+            total += n;
+            rhash_sha3_update(&sha, (const unsigned char*)sm.begin, n);
+        }
+        tio_sclose(&sm);
+        printf("Total read: %u\n", unsigned(total));
+        hashfin(sha);
+    }
+
+    // MMIO
+    {
+        puts("## MMIO ##");
+        tio_MMIO mmio;
+        tio_Mapping map;
+        void *m = tio_mopenmap(&map, &mmio, fn, tio_R, 0, 0, tioF_Sequential); // mmap everything
+        if(!m)
+        {
+            puts("MMIO failed");
+            return;
+        }
+        printf("Mapped region: %u\n", unsigned(map.filesize));
+        rhash_sha3_512_init(&sha);
+        rhash_sha3_update(&sha, (const unsigned char*)m, map.filesize);
+        tio_mmdestroy(&map);
+        tio_mclose(&mmio);
+        hashfin(sha);
+    }
+
+    {
+        puts("## Handle ##");
+        tio_Handle h;
+        tio_error err = tio_kopen(&h, fn, tio_R, tioF_Sequential);
+        if(err)
+        {
+            printf("Handle failed, err = %d", err);
+            return;
+        }
+        rhash_sha3_512_init(&sha);
+        size_t total = 0;
+        for(;;)
+        {
+            char buf[1024];
+            size_t rd = tio_kread(h, &buf, sizeof(buf));
+            rhash_sha3_update(&sha, (const unsigned char*)&buf[0], rd);
+            total += rd;
+            if(rd != sizeof(buf))
+                break;
+        }
+        printf("Total read: %u\n", unsigned(total));
+        hashfin(sha);
+    }
+
+}
+
+int main(int argc, char **argv)
 {
     tio_init();
 
@@ -37,7 +131,7 @@ int main()
     tio_munmap(&mmio);
     */
 
-    //tio_dirlist(".", showdir, NULL);
+    showhhash(argv[0]);
 
     //const char *f = "../hugefile";
     //const char *f = "D:/fg-wii-sd.7z"; // slow hdd
@@ -45,43 +139,7 @@ int main()
     //const char* f = "eats.txt.lz4";
     // 5d840f
 
-    tiosize filesz = 0;
-    tio_fileinfo(f, &filesz);
 
-    tio_Stream sm;
-    tiosize total = 0;
-    if(tio_sopen(&sm, f, tioF_NoBuffer | tioF_Background | tioF_PreferMMIO, 0, 0, myalloc, NULL))
-        return 1;
-
-    sha3_ctx sha;
-    rhash_sha3_512_init(&sha);
-
-    unsigned ck = 0;
-    for(;;)
-    {
-        size_t n = tio_srefill(&sm);
-        if (sm.err)
-            break;
-        total += n;
-        for (char* p = sm.begin; p < sm.end; ++p)
-            ck += (unsigned char)*p;
-        //rhash_sha3_update(&sha, (const unsigned char*)sm.begin, n);
-        //fwrite(sm.begin, 1, n, stdout);
-    }
-    tio_sclose(&sm);
-
-    std::cout << total << " bytes read, reported size is " << filesz << ", diff " << (total < filesz ? filesz - total : total - filesz) << "\n";
-    if(total != filesz)
-        std::cout << ">>> SIZE MISMATCH!\n";
-
-    unsigned char hash[512/8];
-    rhash_sha3_final(&sha, hash);
-
-    std::cout << "checksum: " << ck << "\n";
-    std::cout << "sha3-512: ";
-    for(size_t i = 0; i < sizeof(hash); ++i)
-        printf("%02X", hash[i]);
-    std::cout << "\n";
 
     return 0;
 }
