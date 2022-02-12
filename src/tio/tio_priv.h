@@ -86,19 +86,19 @@ struct OpenMode
 
 
 // Internal utility functions
-TIO_PRIVATE OpenMode checkmode(unsigned& mode, tio_Features& features);
+TIO_PRIVATE OpenMode checkmode(unsigned& mode, tio_Features& features); // adjust mode and features and checks validity
 TIO_PRIVATE size_t streamfail(tio_Stream* sm);
 TIO_PRIVATE size_t streamEOF(tio_Stream* sm); // sets err = EOF, then calls streamfail()
 TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, size_t srcsize, tio_CleanFlags flags);
-TIO_PRIVATE tio_error openfile(tio_Handle *hOut, OpenMode *om, const char *fn, tio_Mode mode, tio_Features& features, unsigned wflags = 0);
-TIO_PRIVATE tio_error initfilestream(tio_Stream* sm, const char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
+TIO_PRIVATE tio_error openfile(tio_Handle *hOut, OpenMode *om, char *fn, tio_Mode mode, tio_Features& features, unsigned wflags = 0);
+TIO_PRIVATE tio_error initfilestream(tio_Stream* sm, char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
 TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, void *mem, size_t memsize, tio_StreamFlags flags, size_t blocksize);
 TIO_PRIVATE tio_error initmmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
 
 
 // Higher-level mmio API
 TIO_PRIVATE size_t mmio_alignment();
-TIO_PRIVATE tio_error mmio_init(tio_MMIO* mmio, const char* fn, tio_Mode mode, tio_Features features);
+TIO_PRIVATE tio_error mmio_init(tio_MMIO* mmio, char* fn, tio_Mode mode, tio_Features features);
 
 // helper to create nested subdirs. Call this from os_createpath() if the OS
 // can't create more than one directory in a single call (eg. windows).
@@ -174,13 +174,13 @@ TIO_PRIVATE size_t os_pathExtraSpace();
 // Return 0 to proceed with generic stream init.
 // Return 1 to use the stream as inited by this function.
 // Return a negative value to abort stream creation and report that error.
-TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Features features, size_t blocksize, tio_Alloc alloc, void *allocUD);
+TIO_PRIVATE int os_initstream(tio_Stream* sm, char* fn, tio_Features features, size_t blocksize, tio_Alloc alloc, void *allocUD);
 
 // Optional OS-specific mmio init. Same purpose and return values as os_initstream().
 // If you don't use this, the default mmio implementation based on file handles
 // and the os_mm*() functions above is used.
 // If you do use this, the tio_MMIO struct is yours and you may interpret mmio->priv freely.
-TIO_PRIVATE int os_initmmio(tio_MMIO* mmio, const char* fn, tio_Mode mode, tio_Features features);
+TIO_PRIVATE int os_initmmio(tio_MMIO* mmio, char* fn, tio_Mode mode, tio_Features features);
 
 
 // ================================================================

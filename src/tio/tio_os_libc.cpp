@@ -304,12 +304,12 @@ TIO_PRIVATE tio_error os_preSanitizePath(char *& dst, char *dstend, const char *
 }
 
 
-TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
+TIO_PRIVATE int os_initstream(tio_Stream* sm, char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
 {
     return 0; // We're using the default impl.
 }
 
-TIO_PRIVATE int os_initmmio(tio_MMIO* mmio, const char* fn, tio_Mode mode, tio_Features features)
+TIO_PRIVATE int os_initmmio(tio_MMIO* mmio, char* fn, tio_Mode mode, tio_Features features)
 {
     return 0; // We're using the default impl.
 }

@@ -28,9 +28,15 @@ TIO_PRIVATE OpenMode checkmode(unsigned& mode, tio_Features& features)
         static const tio_byte _defcontent[] = { tioM_Keep,      tioM_Truncate, tioM_Keep /*,      tioM_Keep,   tioM_Keep*/ };
         static const tio_byte _deffile[] = { tioM_MustExist, tioM_Create,   tioM_MustExist /*, tioM_Create, tioM_Create*/ };
         if (!om.contentidx)
+        {
             om.contentidx = om.append ? tioM_Keep : _defcontent[om.accessidx] >> 2;
+            mode |= _defcontent[om.accessidx];
+        }
         if (!om.fileidx)
+        {
             om.fileidx = om.append ? tioM_Create : _deffile[om.accessidx] >> 4;
+            mode |= _deffile[om.accessidx];
+        }
         --om.contentidx;
         --om.fileidx;
         om.good = 1;
@@ -39,12 +45,48 @@ TIO_PRIVATE OpenMode checkmode(unsigned& mode, tio_Features& features)
     return om;
 }
 
-TIO_PRIVATE tio_error openfile(tio_Handle *hOut, OpenMode *om, const char *fn, tio_Mode mode, tio_Features& features, unsigned wflags /* = 0 */)
+TIO_PRIVATE tio_error openfile(tio_Handle *hOut, OpenMode *om, char *fn, tio_Mode mode, tio_Features& features, unsigned wflags /* = 0 */)
 {
     *om = checkmode(mode, features);
     if(!om->good)
         return tio_Error_RTFM;
-    return os_openfile(hOut, fn, *om, features, wflags);
+
+    tio_error err;
+    for(;;)
+    {
+        err = os_openfile(hOut, fn, *om, features, wflags);
+        if(!err)
+            break;
+
+        if(/*err == tio_Error_NotFound &&*/ (mode & tioM_Mkdir) && (mode & (tioM_Create|tioM_MustNotExist)))
+        {
+            mode &= ~tioM_Mkdir; // try this only once
+            char *lastsep = NULL;
+            for(char *s = fn; *s; ++s)
+                if(ispathsep(*s))
+                    lastsep = s;
+            if(!lastsep)
+                break;
+            if(!lastsep[1]) // need file name, not path ending with dirsep
+            {
+                err = tio_Error_BadPath;
+                break;
+            }
+
+            char sep = *lastsep;
+            *lastsep = 0;
+            tio__TRACE("Attempting to mkdir '%s' ...", fn);
+            err = tio_mkdir(fn);
+            *lastsep = sep;
+            tio__TRACE("mkdir result = %d", err);
+            if(err)
+                break;
+        }
+        else
+            break;
+    }
+
+    return err;
 }
 
 TIO_PRIVATE tio_error createPathHelper(char* path, size_t offset, void *ud)

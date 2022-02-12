@@ -7,7 +7,7 @@ License:
 
 This library has 3 main I/O concepts, each with their pros and cons:
 - File handle: Like libc FILE*, a (OS-buffered) file handle. Supports read/write from/to memory, seek, etc.
-- Lightweight stream abstraction: Only works in one direction (read or write, never both). Not seekable.
+- Lightweight stream abstraction: Only for reading. Not seekable.
   Less memory-intensive than a file handle. Great for zero-copy and background I/O.
 - Memory-mapped I/O: Returns a raw pointer into an existing file's memory.
   The system will page the file in and out as required. Supports R/W/RW, but cannot resize files.
@@ -54,7 +54,7 @@ Thread safety:
 - tio_Stream, tio_Mapping need to be externally locked if used across multiple threads.
 
 Dependencies:
-- Optionally libc for memcpy, memset, strlen, <<TODO list>> unless you use your own
+- Optionally libc for memcpy, memset, strlen, etc unless you use your own
 - On POSIX platforms: libc for some POSIX wrappers around syscalls (open, close, posix_fadvise, ...)
 - C++(98) for some convenience features, destructors, SFINAE, and type safety
 - But no exceptions, STL, virtual methods, "modern C++"
@@ -193,7 +193,6 @@ enum tio_Mode_
                                 - tioM_Create becomes the default if nothing is specified.
                                 Attempting to open a file that is not seekable will fail. */
 
-    /* TODO: */
     tioM_Mkdir = 0x80, /* When attempting to create the file, also create the directory
                           hierarchy required if not already present */
 };
@@ -647,9 +646,9 @@ struct tio_Stream
 };
 
 /* Init a tio_Stream struct from a file name. A stream is always read-only.
-   Blocksize is only relevant for reading; it's a suggestion for the number bytes to read between refills:
-   * 0 to use a suitable size based on the system's capabilities (the most portable option).
-   * any other number to try and read blocks of roughly this size (in bytes).
+   Blocksize is a suggestion for the number bytes to read between refills:
+   - 0 to use a suitable size based on the system's capabilities (the most portable option).
+   - any other number to try and read blocks of roughly this size (in bytes).
    The actually used value will be rounded to a multiple of an OS-defined I/O block size
    and may be different from what was specified.
    Streams opened for reading have no initial data -- you must refill the stream first to get an initial batch of data. */
@@ -714,10 +713,9 @@ TIO_EXPORT size_t tio_streamfail(tio_Stream *sm);
 /* -- Stream utility -- */
 
 /* Wrap a block of memory of a given size into a stream.
-   It is safe to cast a const away if a const pointer is to be used for reading.
-   'mode' may be tio_R, tio_W, or 0.
-   Pass mode=0 to make this stream behave as a simple sliding window
-   over a memory range; what you do with the pointers is up to you.
+   It is safe to cast a const away if a const pointer is to be used for reading only.
+   This stream behaves as a simple sliding window over a memory range;
+   what you do with the pointers is up to you.
    The block size is exact, except the tail end may be smaller.
    Pass blocksize == 0 to use the entire memory as a single block. */
 TIO_EXPORT tio_error tio_memstream(tio_Stream *sm, void *mem, size_t memsize,
@@ -729,8 +727,6 @@ TIO_EXPORT tio_error tio_memstream(tio_Stream *sm, void *mem, size_t memsize,
    The stream owns a private tio_Mapping that stays alive until the stream
    is closed, ie. the mmio must also stay alive while the stream is open.
    Pass maxsize == 0 to map the entire remainder of the mmio.
-   Make sure mode matches the mode of the mmio, ie. if your mmio is read-only,
-   your stream should use tio_R. As mode, only tio_R and tio_W are allowed.
    Note that the actual block size is not exact and may change between refills
    based on alignment requirements of the host OS.
    The created stream owns a private copy of mmio.
@@ -760,8 +756,9 @@ TIO_EXPORT tio_error tio_dirlist(const char *path, tio_FileCallback callback, vo
 /* Query type and (optionally) size of path/file. Returns tioT_Nothing (0) on failure. */
 TIO_EXPORT tio_FileType tio_fileinfo(const char *path, tiosize *psz);
 
-/* Create path if possible. Returns 0 if the path was created or already exists,
-   any other value when the path does not exist when the function returns */
+/* Create subdirs. Supports multiple subdirs at once, ie. "a/b/c" creates a and b if necessary.
+   Returns 0 if the path was created or already exists,
+   any other value when the path does not exist when the function returns. */
 TIO_EXPORT tio_error tio_mkdir(const char *path);
 
 /* Clean a path string for the underlying OS by lexical processing. Does NOT look at the file system!

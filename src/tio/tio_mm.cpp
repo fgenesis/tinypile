@@ -149,7 +149,7 @@ static tio_error mmio_initFromHandle(tio_MMIO *mmio, tio_Handle hFile, const Ope
     return 0;
 }
 
-TIO_PRIVATE tio_error mmio_init(tio_MMIO* mmio, const char* fn, tio_Mode mode, tio_Features features)
+TIO_PRIVATE tio_error mmio_init(tio_MMIO* mmio, char* fn, tio_Mode mode, tio_Features features)
 {
     features |= tioF_NoResize; // as per spec
 

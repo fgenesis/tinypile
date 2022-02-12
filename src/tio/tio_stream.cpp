@@ -370,7 +370,7 @@ static void streamInitEmptyReadOnce(tio_Stream* sm)
     sm->Refill = streamRefillEmptyReadOnce;
 }
 
-static tio_error streamInitFromFileName(tio_Stream* sm, const char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD)
+static tio_error streamInitFromFileName(tio_Stream* sm, char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD)
 {
     // For reading, use MMIO unless explicitly told not to
     if (features & tioF_PreferMMIO)
@@ -402,7 +402,7 @@ static tio_error streamInitFromFileName(tio_Stream* sm, const char* fn, tio_Feat
     return streamHandleReadInit(sm, hFile, blocksize, alloc, allocUD);
 }
 
-TIO_PRIVATE tio_error initfilestream(tio_Stream* sm, const char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD)
+TIO_PRIVATE tio_error initfilestream(tio_Stream* sm, char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD)
 {
     features |= tioF_Sequential; // streams are sequential by nature
 

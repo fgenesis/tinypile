@@ -379,7 +379,7 @@ TIO_PRIVATE tio_error os_dirlist(const char* path, tio_FileCallback callback, vo
 // this must be caught by the caller!
 TIO_PRIVATE tio_error os_createSingleDir(const char* path, void *ud)
 {
-    if(!tio_sys_mkdir(path, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH))
+    if(!tio_sys_mkdir(path, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH))
         return 0;
     if(errno == EEXIST)
         return 0;
@@ -411,12 +411,12 @@ TIO_PRIVATE tio_error os_preSanitizePath(char *& dst, char *dstend, const char *
 }
 
 
-TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Features features, size_t blocksize, tio_Alloc alloc, void *allocUD)
+TIO_PRIVATE int os_initstream(tio_Stream* sm, char* fn, tio_Features features, size_t blocksize, tio_Alloc alloc, void *allocUD)
 {
     return 0;
 }
 
-TIO_PRIVATE int os_initmmio(tio_MMIO* mmio, const char* fn, tio_Mode mode, tio_Features features)
+TIO_PRIVATE int os_initmmio(tio_MMIO* mmio, char* fn, tio_Mode mode, tio_Features features)
 {
     return 0;
 }

@@ -1,5 +1,5 @@
 /*
-Can be compiled as C and C++ (has some extras in C++ mode)
+Can be compiled as C and C++
 Currently win32 only, sorry
 */
 
@@ -10,9 +10,9 @@ Currently win32 only, sorry
 #include <Windows.h>
 #include <intrin.h>
 
-NOLIBC_EXTERN_C int _fltused = 0;
-
 /* --- Begin weird and horrible compiler stuff --- */
+
+NOLIBC_EXTERN_C int _fltused = 0;
 
 /* Needed when linking as a DLL. Since we don't use the CRT, ignore everything */
 /* See https://docs.microsoft.com/en-us/cpp/build/run-time-library-behavior */
@@ -23,34 +23,6 @@ NOLIBC_EXPORT BOOL __stdcall _DllMainCRTStartup(HANDLE hDll, DWORD dwReason, LPV
     (void)lpReserved;
     return 0; /* 1 tells windows to keep the DLL in memory, 0 to unload it */
 }
-
-// via https://gist.github.com/Donpedro13/ef146aa9771b42d83b8acdde559abbb8
-// and https://stackoverflow.com/questions/6733821/reading-the-rsp-register-from-microsoft-c
-// FIXME: This is probably very broken and i have no idea what i'm doing hurr durr
-#if 0
-NOLIBC_EXPORT size_t __chkstk(size_t stackSpaceSize)
-{
-    uintptr_t rsp = (uintptr_t)*(void**)_AddressOfReturnAddress();
-    uintptr_t adjustedSP = rsp + 0x18 - stackSpaceSize;
-
-    if (rsp + 0x18 > stackSpaceSize)
-        adjustedSP = 0;
-
-    uintptr_t stackLimit = (uintptr_t)((PNT_TIB)(NtCurrentTeb()))->StackLimit;
-
-    if (adjustedSP >= stackLimit)
-        return stackSpaceSize;
-
-    uintptr_t firstByteOfLastPage = adjustedSP & 0xFFFFFFFFFFFFF000ULL;
-    uintptr_t currentPageToProbe = stackLimit;
-    do {
-        currentPageToProbe -= 0x1000;
-        *(char*)(currentPageToProbe) = 0;
-    } while (currentPageToProbe != firstByteOfLastPage);
-
-    return stackSpaceSize;
-}
-#endif
 
 /* --- End weird and horrible compiler stuff --- */
 
@@ -74,7 +46,7 @@ NOLIBC_EXPORT void noexit(unsigned code)
 }
 
 
-#endif // _WIN32
+#endif /* _WIN32 */
 
 NOLIBC_EXPORT void _noassert_fail(const char* s, const char* file, size_t line)
 {
@@ -87,26 +59,52 @@ NOLIBC_EXPORT void _noassert_fail(const char* s, const char* file, size_t line)
     noexit((unsigned)-1);
 }
 
+enum
+{
+    _RegSize = sizeof(void*) < sizeof(size_t) ? sizeof(size_t) : sizeof(void*),
+    _MinAlign = 8,
+    AllocExtraSize = _RegSize < _MinAlign ? _MinAlign : _RegSize
+};
+
 
 NOLIBC_EXPORT void *nomalloc(size_t n)
 {
-    return noalloc(0, 0, 0, n); // FIXME: if an OS allocator needs the size, record it
+    char *p = noalloc(0, 0, 0, n + AllocExtraSize);
+    if(p)
+    {
+        *(size_t*)p = n;
+        p += AllocExtraSize;
+    }
+    return p;
 }
 
 NOLIBC_EXPORT void nofree(void *p)
 {
-    noalloc(0, p, 0, 0); // FIXME: same
+    p = (char*)p - AllocExtraSize;
+    size_t osize = *(size_t*)p;
+    noalloc(0, p, osize + AllocExtraSize, 0);
 }
 
-NOLIBC_EXPORT void *norealloc(void *p, size_t n)
+NOLIBC_EXPORT void *norealloc(void *o, size_t n)
 {
-    return noalloc(0, p, 0, n); // FIXME: same
+    o = (char*)o - AllocExtraSize;
+    size_t osize = *(size_t*)o;
+    if(osize == n)
+        return (char*)o + AllocExtraSize; /* size not changed */
+    char *p = noalloc(0, o, osize + AllocExtraSize, n + AllocExtraSize);
+    if(p)
+        *(size_t*)p = n; /* record new size */
+    else if(n <= osize) /* shrink failed? */
+        p = (char*)o; /* re-use the same mem, don't update size */
+    else
+        return 0;
+    return p + AllocExtraSize;
 }
 
 NOLIBC_EXPORT void *nomemcpy(void *dst, const void *src, size_t n)
 {
-    // non-overlapping buffers, so copy from
-    // lower addresses to higher addresses
+    /* non-overlapping buffers, so copy from
+       lower addresses to higher addresses */
     if(n)
     {
         const char *s = (const char*)src;
@@ -129,8 +127,8 @@ NOLIBC_EXPORT void *nomemmove(void *dst, const void *src, size_t n)
             nomemcpy(dst, src, n);
         else
         {
-            // overlapping buffers, so copy from
-            // higher addresses to lower addresses
+            /* overlapping buffers, so copy from
+               higher addresses to lower addresses */
             d += n-1;
             s += n-1;
             do
@@ -167,52 +165,12 @@ NOLIBC_EXPORT int nomemcmp(const void *a, const void *b, size_t n)
     return (int)(char)d;
 }
 
-
-
 NOLIBC_EXPORT size_t nostrlen(const char *s)
 {
     const char * const b = s;
     while(*s++) {}
     return s - b;
 }
-
-#if 0
-
-NOLIBC_EXPORT_CPP void * operator new    (size_t n)
-{
-    return nomalloc(n);
-}
-
-NOLIBC_EXPORT_CPP void * operator new[]  (size_t n)
-{
-    return nomalloc(n);
-}
-
-NOLIBC_EXPORT_CPP void operator delete   (void *ptr)
-{
-    return nofree(ptr);
-}
-
-NOLIBC_EXPORT_CPP void operator delete[] (void *ptr)
-{
-    return nofree(ptr);
-}
-
-NOLIBC_EXPORT_CPP void operator delete   (void *ptr, size_t n)
-{
-    (void)n;
-    return nofree(ptr);
-}
-
-NOLIBC_EXPORT_CPP void operator delete[] (void *ptr, size_t n)
-{
-    (void)n;
-    return nofree(ptr);
-}
-
-#endif
-
-
 
 
 

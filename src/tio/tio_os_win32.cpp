@@ -839,7 +839,7 @@ TIO_PRIVATE size_t os_pathExtraSpace()
     return win32PathExtraSpace;
 }
 
-TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Features features, size_t blocksize, tio_Alloc alloc, void *allocUD)
+TIO_PRIVATE int os_initstream(tio_Stream* sm, char* fn, tio_Features features, size_t blocksize, tio_Alloc alloc, void *allocUD)
 {
     if (features & tioF_Background)
     {
@@ -861,7 +861,7 @@ TIO_PRIVATE int os_initstream(tio_Stream* sm, const char* fn, tio_Features featu
     return 0; // continue default stream init
 }
 
-TIO_PRIVATE int os_initmmio(tio_MMIO* mmio, const char* fn, tio_Mode mode, tio_Features features)
+TIO_PRIVATE int os_initmmio(tio_MMIO* mmio, char* fn, tio_Mode mode, tio_Features features)
 {
     (void)mmio;
     (void)fn;

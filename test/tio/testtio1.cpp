@@ -107,6 +107,7 @@ static void showhhash(const char *fn)
             if(rd != sizeof(buf))
                 break;
         }
+        tio_kclose(h);
         printf("Total read: %u\n", unsigned(total));
         hashfin(sha);
     }

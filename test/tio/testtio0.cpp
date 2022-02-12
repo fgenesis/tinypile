@@ -38,13 +38,21 @@ int main()
 
 
     std::stringstream os;
-    os << "createdir/";
     srand(time(NULL));
     for(size_t i = 0; i < 5; ++i)
         os << rand() << "/";
 
-    CHECK(tio_mkdir(os.str().c_str()));
+    CHECK(tio_mkdir(("createdir/" + os.str()).c_str()));
 
+    tio_Handle h;
+    err = tio_kopen(&h, ("createfile/" + os.str() + "hello.txt").c_str(), tio_W | tioM_Mkdir, 0);
+    CHECK(err);
+    if(!err)
+    {
+        const char *hello = "Hello world!\n";
+        tio_kwrite(h, hello, tio_strlen(hello));
+        tio_kclose(h);
+    }
 
     return 0;
 }
