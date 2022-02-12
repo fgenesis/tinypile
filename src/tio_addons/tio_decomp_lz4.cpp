@@ -2,7 +2,6 @@
 
 // Streaming LZ4 decompressor
 // No support for dictionary decompression for now
-// Warning: goto-hell ahead.
 
 #define _LZ4_WINDOW_SIZE 65536
 
@@ -350,21 +349,20 @@ static size_t header(tio_Stream* sm)
 
         $getbyte(1, c); // BD byte, ignored
 
-        if (!(priv->flg & (1u << 3u))) // content size present?
-            goto readHC;
-
-        $getbyte(2, c); // ignored: content size (8 bytes)
-        $getbyte(3, c);
-        $getbyte(4, c);
-        $getbyte(5, c);
-        $getbyte(6, c);
-        $getbyte(7, c);
-        $getbyte(8, c);
-        $getbyte(9, c);
+        if (priv->flg & (1u << 3u)) // content size present?
+        {
+            $getbyte(2, c); // ignored: content size (8 bytes)
+            $getbyte(3, c);
+            $getbyte(4, c);
+            $getbyte(5, c);
+            $getbyte(6, c);
+            $getbyte(7, c);
+            $getbyte(8, c);
+            $getbyte(9, c);
+        }
 
         // dictID bit is known to be 0, so we know there is no u32 dictID here
 
-        readHC:
         $getbyte(10, c); // header checksum, ignored
 
         return transition(sm, &blockbegin); // success

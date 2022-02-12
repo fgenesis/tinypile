@@ -1,8 +1,5 @@
 # tinypile
 
-![GitHub](https://img.shields.io/github/license/fgenesis/tinypile)
-
-
 Pile of various tiny (single- or two-file) libs.
 
 - [x] Cross-platform oldschool C/C++ 
