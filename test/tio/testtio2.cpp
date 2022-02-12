@@ -1,5 +1,4 @@
 #include "tio_vfs.h"
-#include "tio_decomp.h"
 #include "tio_zstd.h"
 #include <stdlib.h>
 #include <stdio.h>

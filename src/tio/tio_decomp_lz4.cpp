@@ -1,4 +1,4 @@
-#include "tio_decomp_priv.h"
+#include "tio_priv.h"
 
 // Streaming LZ4 decompressor
 // No support for dictionary decompression for now
@@ -135,7 +135,7 @@ refill:
                     _LZ4_WINDOW_SIZE - dict_ofs,        // how many bytes we can write to the window until hitting the end
                     end - p);                           // how many bytes we can read until input runs out
 
-                TIOX_MEMCPY(priv->dict + dict_ofs, p, cancopy);
+                tio__memcpy(priv->dict + dict_ofs, p, cancopy);
 
                 p += cancopy;
                 wr += cancopy;
@@ -177,9 +177,9 @@ refill:
 
                 char* d = priv->dict;
                 if(copylen <= offset) // Normal match (can use memcpy since the memory regions are non-overlapping)
-                    TIOX_MEMCPY(d + dict_ofs, d + back_ofs, cancopy);
+                    tio__memcpy(d + dict_ofs, d + back_ofs, cancopy);
                 else if (offset == 1) // Overlap match; repeat last byte (special-cased for speed)
-                    TIOX_MEMSET(d + dict_ofs, d[back_ofs], cancopy);
+                    tio__memset(d + dict_ofs, d[back_ofs], cancopy);
                 else // Overlap match, copy carefully
                     for (char* const thisend = d + cancopy; d < thisend; ++d)
                         d[dict_ofs] = d[back_ofs];
@@ -410,7 +410,7 @@ static tio_error commonInit(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags 
     if (!priv)
         return tio_Error_MemAllocFail;
 
-    TIOX_MEMSET(priv, 0, sizeof(*priv));
+    tio__memset(priv, 0, sizeof(*priv));
     priv->alloc = alloc;
     priv->allocUD = allocUD;
     priv->onBlockEnd = onBlockEnd;
@@ -428,14 +428,14 @@ static tio_error commonInit(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags 
 
 TIO_EXPORT tio_error tio_sdecomp_LZ4_block(tio_Stream* sm, tio_Stream* packed, size_t packedbytes, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD)
 {
-    TIOX_MEMSET(sm, 0, sizeof(*sm));
+    tio__memset(sm, 0, sizeof(*sm));
     sm->Refill = lz4d::decomp;
     return lz4d::commonInit(sm, packed, flags, alloc, allocUD, tio_streamfail, packedbytes);
 }
 
 TIO_EXPORT tio_error tio_sdecomp_LZ4_frame(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD)
 {
-    TIOX_MEMSET(sm, 0, sizeof(*sm));
+    tio__memset(sm, 0, sizeof(*sm));
     sm->Refill = lz4d::magic;
     return lz4d::commonInit(sm, packed, flags, alloc, allocUD, lz4d::blockend, 0);
 }

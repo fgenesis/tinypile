@@ -29,4 +29,5 @@
 # Rest of the library
 < tio_mm.cpp
 < tio_stream.cpp
+< tio_decomp_lz4.cpp
 < tio_api.cpp

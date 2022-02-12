@@ -14,6 +14,7 @@ set(src
     tio_sys.h
     tio_sys_linux.cpp
     tio_sys_posix_libc.cpp
+    tio_decomp_lz4.cpp
 )
 
 add_library(tio ${src})

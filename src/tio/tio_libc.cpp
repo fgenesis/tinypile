@@ -4,10 +4,6 @@
 
 #include "nolibc.h"
 
-TIO_EXPORT void tio_memzero(void *dst, size_t n)
-{
-    nomemset(dst, 0, n);
-}
 TIO_EXPORT void tio_memcpy(void *dst, const void *src, size_t n)
 {
     nomemcpy(dst, src, n);
@@ -32,10 +28,6 @@ TIO_EXPORT void tio_memset(void *dst, int x, size_t n)
 #include <string.h>
 
 
-TIO_EXPORT void tio_memzero(void *dst, size_t n)
-{
-    memset(dst, 0, n);
-}
 TIO_EXPORT void tio_memcpy(void *dst, const void *src, size_t n)
 {
     memcpy(dst, src, n);

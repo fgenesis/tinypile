@@ -19,7 +19,10 @@
 
 // Used libc functions. Look in tio_libc.cpp. Optionally override with your own.
 #ifndef tio__memzero
-#define tio__memzero(dst, n) tio_memzero(dst, n)
+#define tio__memzero(dst, n) tio_memset(dst, 0, n)
+#endif
+#ifndef tio__memset
+#define tio__memset(dst, x, n) tio_memset(dst, x, n)
 #endif
 #ifndef tio__memcpy
 #define tio__memcpy(dst, src, n) tio_memcpy(dst, src, n)

@@ -739,6 +739,27 @@ TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosiz
     tio_Alloc alloc, void *allocUD);
 
 
+/* ---------------------------- */
+/* ---- Stream composition ---- */
+/* ---------------------------- */
+
+/* Initialize one stream to pull its source data from another.
+   The target stream stores a *pointer* to the source, so make sure that the source stream is not moved
+   after the target was initialized.
+*/
+
+/* Decompress LZ4-framed data. The size of the compressed data is part of the framing, so you don't need to know the size.
+   After 'sm' reports EOF, you can continue using the source stream if more data follow. */
+TIO_EXPORT tio_error tio_sdecomp_LZ4_frame(tio_Stream *sm, tio_Stream *packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD);
+
+
+/* Decompress a raw LZ4 block.
+   There is no end marker, so you must know the total length of compressed data. */
+TIO_EXPORT tio_error tio_sdecomp_LZ4_block(tio_Stream *sm, tio_Stream *packed, size_t packedbytes, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD);
+
+
+
+
 /* -------------------------- */
 /* ---- File/Dir utility ---- */
 /* -------------------------- */
@@ -820,14 +841,14 @@ enum tioAllocConstants
 {
     tioAllocMarker       = 't' | ('i' << 8) | ('o' << 16), /* Generic allocation */
     tioStackAllocMarker  = tioAllocMarker | ('+' << 24),   /* Failed stack allocation, fallback to heap */
-    tioStreamAllocMarker = tioAllocMarker | ('S' << 24)    /* Allocation by stream subsystem */
+    tioStreamAllocMarker = tioAllocMarker | ('S' << 24),   /* Allocation by stream subsystem */
+    tioDecompAllocMarker = tioAllocMarker | ('Z' << 24)    /* Allocation by decompressor */
 };
 
 /* Needs to be in a function; doesn't work on file scope */
 #define tio__static_assert(cond) switch((int)!!(cond)){case 0:;case(!!(cond)):;}
 
 /* For libc-free builds -- addon libs can use these */
-TIO_EXPORT void tio_memzero(void *dst, size_t n);
 TIO_EXPORT void tio_memcpy(void *dst, const void *src, size_t n);
 TIO_EXPORT size_t tio_strlen(const char *s);
 TIO_EXPORT int tio_memcmp(const void *a, const void *b, size_t n);
