@@ -170,17 +170,19 @@ enum tio_Mode_
     tio_W          = 0x02,          /* Default: Truncate, Create */
     tio_RW         = tio_R | tio_W, /* Default: Keep, MustExist */
 
-    /* Content flags */
+    /* Content flags (pick one or none) */
     tioM_Truncate  = 0x04,  /* Reset file size to 0 */
     tioM_Keep      = 0x08,  /* Keep previous file contents. */
 
-    /* File flags */
+    /* File flags  (pick one or none) */
     tioM_Create    = 0x10,    /* Create file if it doesn't exist */
     tioM_MustExist = 0x20,    /* Fail if file doesn't exist */
     tioM_MustNotExist = 0x30, /* Fail if file already exists, create it if it doesn't. */
 
-    /* Append flag */
-    tio_A          = 0x40,   /* Seek to the end of the file after opening it.
+    /* -- Extra flags -- pick any -- */
+
+    tio_A          = 0x40,   /* Append flag:
+                                Seek to the end of the file after opening it.
                                 (This is *not* POSIX append mode, ie. it will not
                                 change how writing to the file behaves. You can seek
                                 elsewhere afterwards and the file will behave normally)
@@ -190,6 +192,10 @@ enum tio_Mode_
                                 - tioM_Keep becomes the default if nothing is specified.
                                 - tioM_Create becomes the default if nothing is specified.
                                 Attempting to open a file that is not seekable will fail. */
+
+    /* TODO: */
+    tioM_Mkdir = 0x80, /* When attempting to create the file, also create the directory
+                          hierarchy required if not already present */
 };
 typedef unsigned tio_Mode;
 
@@ -289,7 +295,7 @@ enum tio_error_
     tio_Error_Unsupported = -2,   /* Not supported by the library or the underlying OS */
     tio_Error_NotFound = -3,      /* Thing doesn't exist */
     tio_Error_BadPath = -4,       /* Path is lexically invalid (attempt to go above the root, malformed, etc) */
-    tio_Error_BadOp = -5,
+    tio_Error_PathMismatch = -5,  /* Attempt to open a directory as a file or vice versa */
     tio_Error_ResAllocFail = -6,  /* failed to allocate an OS resource */
     tio_Error_MemAllocFail = -7,  /* Allocator returned NULL. Out of memory? */
     tio_Error_Empty = -8,         /* no data; file is empty where it must not be or specified offset is beyond size of file */
@@ -756,7 +762,7 @@ TIO_EXPORT tio_FileType tio_fileinfo(const char *path, tiosize *psz);
 
 /* Create path if possible. Returns 0 if the path was created or already exists,
    any other value when the path does not exist when the function returns */
-TIO_EXPORT tio_error tio_createdir(const char *path);
+TIO_EXPORT tio_error tio_mkdir(const char *path);
 
 /* Clean a path string for the underlying OS by lexical processing. Does NOT look at the file system!
    This function is used internally and there's no need to use this, but it's exposed for testing.

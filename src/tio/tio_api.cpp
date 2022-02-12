@@ -459,7 +459,7 @@ TIO_EXPORT tio_error tio_dirlist(const char* path, tio_FileCallback callback, vo
     return os_dirlist(s, callback, ud);
 }
 
-TIO_EXPORT tio_error tio_createdir(const char* path)
+TIO_EXPORT tio_error tio_mkdir(const char* path)
 {
     checknotnull_err(path);
     char* s;
@@ -469,7 +469,7 @@ TIO_EXPORT tio_error tio_createdir(const char* path)
     if(t & tioT_Dir) // It's already there, no need to go create it
         return 0;
     if(t)
-        return tio_Error_BadPath; // It's not a directory but something else, no way this is going to work
+        return tio_Error_PathMismatch; // It's not a directory but something else, no way this is going to work
 
     // Nothing was there, try to create it.
     tio_error err = os_createpath(s);

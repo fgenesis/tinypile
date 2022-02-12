@@ -47,7 +47,7 @@ TIO_PRIVATE tio_error openfile(tio_Handle *hOut, OpenMode *om, const char *fn, t
     return os_openfile(hOut, fn, *om, features, wflags);
 }
 
-TIO_PRIVATE tio_error createPathHelper(char* path, size_t offset)
+TIO_PRIVATE tio_error createPathHelper(char* path, size_t offset, void *ud)
 {
     // We get a cleaned path, so all directory separators have been changed to match the platform
     const unsigned char sep = os_pathsep();
@@ -56,6 +56,7 @@ TIO_PRIVATE tio_error createPathHelper(char* path, size_t offset)
     char * const beg = path;
     path += offset; // skip annoying prefixes (windows UNC paths, drive letters, etc)
 
+    bool create = false;
     while(true)
     {
         // This works as long as the path separator is in the valid 7-bit ASCII range.
@@ -65,7 +66,15 @@ TIO_PRIVATE tio_error createPathHelper(char* path, size_t offset)
         if(c == sep || !c)
         {
             *path = 0;
-            int err = os_createSingleDir(beg);
+            int err = 0;
+            tio_FileType ft = create ? tioT_Nothing : os_fileinfo(beg, NULL);
+            if(!ft)
+            {
+                create = true; // from this point, don't even bother checking anymore
+                err = os_createSingleDir(beg, ud);
+            }
+            else if(!(ft & tioT_Dir))
+                err = tio_Error_PathMismatch;
             *path = c;
             if(err)
                 return err;

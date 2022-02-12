@@ -360,22 +360,28 @@ TIO_PRIVATE tio_error os_dirlist(const char* path, tio_FileCallback callback, vo
         return oserror();
     DIR *dirp = tio_sys_fdopendir(pathfd);
     if(!dirp)
-        return oserror();
+    {
+        tio_error err = oserror();
+        tio_sys_close(pathfd);
+        return err;
+    }
     int ret = 0;
     while((dp=tio_sys_readdir(dirp)) != NULL)
         if(!dirlistSkip(dp->d_name))
             if((ret = callback(path, dp->d_name, posix_getDirentFileType(pathfd, dp), ud)))
                 break;
-    tio_sys_closedir(dirp);
-    tio_sys_close(pathfd);
+    tio_sys_closedir(dirp); // also closes pathfd
+
     return ret;
 }
 
 // note that an existing (regular) file will be considered success, even though that means the directory wasn't created.
 // this must be caught by the caller!
-TIO_PRIVATE tio_error os_createSingleDir(const char* path)
+TIO_PRIVATE tio_error os_createSingleDir(const char* path, void *ud)
 {
     if(!tio_sys_mkdir(path, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH))
+        return 0;
+    if(errno == EEXIST)
         return 0;
     return  oserror(); // TODO: No error when it already exists?
 }
@@ -383,7 +389,7 @@ TIO_PRIVATE tio_error os_createSingleDir(const char* path)
 TIO_PRIVATE tio_error os_createpath(char* path)
 {
     // Need to create subdirs successively
-    return createPathHelper(path, 0);
+    return createPathHelper(path, 0, NULL);
 }
 
 TIO_PRIVATE bool os_pathIsAbs(const char *path)

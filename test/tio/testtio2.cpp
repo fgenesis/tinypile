@@ -76,8 +76,7 @@ int main()
     //const char* fn = "cgproj.ncb.lz4";
     //const char* fn = "win98.bmp.lz4";
     //const char* fn = "archmage.bmp.lz4";
-    //const char* fn = "frymire.bmp.lz4";
-    const char* fn = "chrismono.bmp.lz4";
+    const char* fn = "frymire.bmp.lz4";
     tio_Stream packed;
     if (tiov_sopen(&packed, sys, fn, tioF_Background, 0, 1))
         exit(1);

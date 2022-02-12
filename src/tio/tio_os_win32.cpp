@@ -717,8 +717,9 @@ TIO_PRIVATE tio_error os_dirlist(const char* path, tio_FileCallback callback, vo
 
 // note that an existing (regular) file will be considered success, even though that means the directory wasn't created.
 // this must be caught by the caller!
-TIO_PRIVATE tio_error os_createSingleDir(const char* path)
+TIO_PRIVATE tio_error os_createSingleDir(const char* path, void *ud)
 {
+    (void)ud;
     LPWSTR wpath;
     int wlen; // includes terminating 0
     WIN_ToWCHAR(wpath, wlen, path, 1);
@@ -788,15 +789,15 @@ TIO_PRIVATE tio_error os_createpath(char* path)
         const size_t len = tio__strlen(path);
         skip = 0;
         if(isUNCPath(path))
-            skip = win32PathExtraSpace;
+            skip += win32PathExtraSpace;
         if(hasdriveletter(path + win32PathExtraSpace))
             skip += 3; // Never attempt to create a drive letter (C:\)
 
         tio__ASSERT(len >= skip);
         if(len < skip)
-            return -1;
+            return tio_Error_BadPath;
     }
-    return createPathHelper(path, skip);
+    return createPathHelper(path, skip, NULL);
 }
 
 TIO_PRIVATE tio_error os_preSanitizePath(char *& dst, char *dstend, const char *& src)

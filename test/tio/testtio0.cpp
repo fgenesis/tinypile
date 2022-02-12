@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <sstream>
 #include "tio.h"
 
 static int showdir(const char *path, const char *name, tio_FileType type, void *ud)
@@ -33,6 +35,16 @@ int main()
     CHECK(tio_dirlist("", showdir, &n));
 
     printf("%u files in total\n", n);
+
+
+    std::stringstream os;
+    os << "createdir/";
+    srand(time(NULL));
+    for(size_t i = 0; i < 5; ++i)
+        os << rand() << "/";
+
+    CHECK(tio_mkdir(os.str().c_str()));
+
 
     return 0;
 }

@@ -103,7 +103,7 @@ TIO_PRIVATE tio_error mmio_init(tio_MMIO* mmio, const char* fn, tio_Mode mode, t
 // helper to create nested subdirs. Call this from os_createpath() if the OS
 // can't create more than one directory in a single call (eg. windows).
 // Will temporarily (and transiently) modify path to avoid copying it internally.
-TIO_PRIVATE tio_error createPathHelper(char* path, size_t offset);
+TIO_PRIVATE tio_error createPathHelper(char* path, size_t offset, void *ud);
 
 
 // ================================================================
@@ -146,7 +146,8 @@ TIO_PRIVATE tio_error os_dirlist(const char* path, tio_FileCallback callback, vo
 TIO_PRIVATE tio_error os_createpath(char* path);
 
 // Used by createPathHelper(). Will not be called when that function is not used.
-TIO_PRIVATE tio_error os_createSingleDir(const char* path);
+// ud is whatever os_createPath() passes along.
+TIO_PRIVATE tio_error os_createSingleDir(const char* path, void *ud);
 
 // Is given path an absolute path?
 TIO_PRIVATE bool os_pathIsAbs(const char* path);

@@ -117,7 +117,7 @@ static tio_FileType sysfs_FileInfo(const tiov_FS *, const char *path, tiosize *p
 }
 /*static tio_error sysfs_CreateDir(const tiov_FS *, const char *path)
 {
-    return tio_createdir(path);
+    return tio_mkdir(path);
 }*/
 
 static const tiov_Backend sysfs_backend =
