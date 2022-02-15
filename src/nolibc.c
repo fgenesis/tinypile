@@ -40,11 +40,6 @@ NOLIBC_EXPORT void *noalloc(void* ud, void* p, size_t osize, size_t n)
     return NULL;
 }
 
-NOLIBC_EXPORT void noexit(unsigned code)
-{
-    TerminateProcess(GetCurrentProcess(), code);
-}
-
 
 #endif /* _WIN32 */
 
@@ -56,7 +51,6 @@ NOLIBC_EXPORT void _noassert_fail(const char* s, const char* file, size_t line)
     /* Static analyzer complains about NULL, but not about this, lol */
     volatile int *zonk = (volatile int*)(ptrdiff_t)-1;
     *zonk = 0;
-    noexit((unsigned)-1);
 }
 
 enum
@@ -201,10 +195,6 @@ int memcmp(const void *a, const void *b, size_t n)
 size_t strlen(const char *s)
 {
     return nostrlen(s);
-}
-void exit(unsigned code)
-{
-    noexit(code);
 }
 
 #endif /* NOLIBC_ORIGINAL_SYMBOLS */

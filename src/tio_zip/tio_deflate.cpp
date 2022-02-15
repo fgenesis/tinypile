@@ -3,6 +3,10 @@
 #include "tio_zip.h"
 #include "wrap_miniz.h"
 
+#ifdef _MSC_VER
+#pragma warning(disable: 26812) // unscoped enum
+#endif
+
 
 struct tioDeflateStreamPriv
 {
@@ -13,7 +17,7 @@ struct tioDeflateStreamPriv
     size_t allocsize;
     tio_error nexterror;
     // followed by blocksize bytes compression buffer
-    
+
     char *packbuf() { return (char*)(this + 1); }
 };
 
@@ -27,16 +31,17 @@ static size_t decomp_deflate_finish(tio_Stream* sm)
 static size_t decomp_deflate_drain(tio_Stream* sm)
 {
     tioDeflateStreamPriv* priv = (tioDeflateStreamPriv*)sm->priv.extra;
-    sm->begin = sm->cursor = (char*)priv->packbuf();
+    char * const p = priv->packbuf();
+    sm->begin = sm->cursor = p;
     size_t out = priv->blocksize;
-    tdefl_status status = tdefl_compress(&priv->comp, NULL, NULL, sm->begin, &out, TDEFL_FINISH);
+    tdefl_status status = tdefl_compress(&priv->comp, NULL, NULL, p, &out, TDEFL_FINISH);
     if(status == TDEFL_STATUS_DONE)
         sm->Refill = decomp_deflate_finish;
     else if(status == TDEFL_STATUS_OKAY)
-    { /* Nothing to do */ }
+    { /* keep draining */ }
     else
         return tio_streamfail(sm);
-    sm->end = (char*)sm->begin + out;
+    sm->end = sm->begin + out;
     return out;
 }
 

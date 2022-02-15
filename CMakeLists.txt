@@ -59,7 +59,7 @@ if(VERY_STRICT)
     add_definitions(-D_CRT_SECURE_NO_WARNINGS)
     add_compile_options(/W4 /WX)
   else()
-    add_compile_options(-Wall -Wextra -pedantic -Werror)
+    add_compile_options(-Wall -Wextra -pedantic -Werror )
   endif()
 endif()
 
@@ -135,7 +135,7 @@ add_custom_command(
 # All amalgamations under one common name
 # So we can do 'make amalg' and it will do the right thing
 add_custom_target(amalg
-    DEPENDS "${TIO_CPP}" "${TIO_VFS_CPP}" "${TIO_ZIP_CPP}" 
+    DEPENDS "${TIO_CPP}" "${TIO_VFS_CPP}" "${TIO_ZIP_CPP}"
 )
 
 add_library(amalg_build_test

@@ -18,7 +18,9 @@ struct tioLZ4StreamPriv
     size_t (*onBlockEnd)(tio_Stream* sm); // transition to this Refill function once decomp() has finished a block
     // frame/header only
     size_t blocksize; // for decomp() to know the (remaining) size of the current block
+    size_t blocksdone;
     unsigned char flg; // part of the LZ4 frame header that is needed every now and then
+    char magicbuf[4];
 };
 
 enum LZ4State
@@ -220,7 +222,7 @@ dataerror:
 #undef _LZ4_ADVANCE_DICT_OR_YIELD
 #undef _LZ4_BEGIN_STATE_OR_REFILL
 
-// Probably not that fast. Only used by $getbyte() for header parsing.
+// Probably not that fast. Only used by _lz4_getbyte() for header parsing.
 static int _tryfill(tio_Stream* sm, tio_Stream* src)
 {
     int ok = src->cursor != src->end || tio_srefill(src);
@@ -230,8 +232,11 @@ static int _tryfill(tio_Stream* sm, tio_Stream* src)
 }
 
 // grab one byte, refill src as necessary. if that fails, goto out.
-#define $getbyte(stateID, c) case stateID: if(!_tryfill(sm, src)) { priv->state = stateID; goto out; } c = *src->cursor++;
+#define _lz4_getbyte(stateID, c) case stateID: if(!_tryfill(sm, src)) { priv->state = stateID; goto out; } c = *src->cursor++;
 
+// pre-decl
+static size_t magic(tio_Stream* sm);
+static size_t blockbegin(tio_Stream* sm);
 
 static size_t footer(tio_Stream* sm)
 {
@@ -240,25 +245,18 @@ static size_t footer(tio_Stream* sm)
     unsigned char c;
 
     if (!(priv->flg & (1 << 2))) // C.Checksum bit
-        goto eos;
-
-    switch (priv->state) // break means fail, everything else is fall through
-    {
-        $getbyte(0, c); // skip checksum
-        $getbyte(1, c);
-        $getbyte(2, c);
-        $getbyte(3, c);
-    eos:
-        sm->err = tio_Error_EOF; // FIXME: is this really a good idea?
-        return tio_streamfail(sm);
-    }
-    sm->err = tio_Error_DataError;
-    return tio_streamfail(sm);
+        switch (priv->state)
+        {
+            _lz4_getbyte(0, c); // skip checksum
+            _lz4_getbyte(1, c);
+            _lz4_getbyte(2, c);
+            _lz4_getbyte(3, c);
+        }
+    priv->blocksdone++;
+    sm->Refill = magic; // either it's EOF or the start of the next concatenated frame
 out:
     return 0;
 }
-
-static size_t blockbegin(tio_Stream* sm); // pre-decl
 
 static size_t blockend(tio_Stream* sm)
 {
@@ -274,10 +272,10 @@ static size_t blockend(tio_Stream* sm)
 
     switch (priv->state) // break means fail, everything else is fall through
     {
-        $getbyte(0, c); // skip checksum
-        $getbyte(1, c);
-        $getbyte(2, c);
-        $getbyte(3, c);
+        _lz4_getbyte(0, c); // skip checksum
+        _lz4_getbyte(1, c);
+        _lz4_getbyte(2, c);
+        _lz4_getbyte(3, c);
         nextblock:
         return transition(sm, &blockbegin); // success
     }
@@ -290,16 +288,23 @@ out:
 static size_t uncompressed(tio_Stream* sm)
 {
     tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
+    tio_Stream *const src = (tio_Stream *)sm->priv.aux;
 
-    size_t avail = tio_savail(sm);
+    size_t avail = tio_savail(src);
     if(!avail)
-        avail = tio_srefill(sm);
+    {
+        avail = tio_srefill(src);
+        if(src->err)
+        {
+            sm->err = src->err;
+            return tio_streamfail(sm);
+        }
+    }
     size_t actual = avail < priv->blocksize ? avail : priv->blocksize;
     priv->blocksize -= actual;
     if (!priv->blocksize)
         sm->Refill = blockend;
 
-    tio_Stream *const src = (tio_Stream *)sm->priv.aux;
     sm->begin = sm->cursor = src->cursor;
     sm->end = sm->begin + actual;
     src->cursor += actual;
@@ -315,10 +320,10 @@ static size_t blockbegin(tio_Stream* sm)
     unsigned char c;
     switch (priv->state) // break means fail, everything else is fall through
     {
-        $getbyte(0, c); priv->offset = c; // use this to store the block size
-        $getbyte(1, c); priv->offset |= (c << 8);
-        $getbyte(2, c); priv->offset |= (c << 16);
-        $getbyte(3, c); priv->offset |= (c << 24);
+        _lz4_getbyte(0, c); priv->offset = c; // use this to store the block size
+        _lz4_getbyte(1, c); priv->offset |= (c << 8);
+        _lz4_getbyte(2, c); priv->offset |= (c << 16);
+        _lz4_getbyte(3, c); priv->offset |= (c << 24);
 
         if (!priv->offset) // end marker?
             return transition(sm, footer);
@@ -339,7 +344,7 @@ static size_t header(tio_Stream* sm)
     unsigned char c;
     switch (priv->state) // break means fail, everything else is fall through
     {
-        $getbyte(0, c); // FLG byte
+        _lz4_getbyte(0, c); // FLG byte
 
         priv->flg = c;
         if (((c >> 6u) & 3) != 0x01) // version, must be 01
@@ -347,23 +352,23 @@ static size_t header(tio_Stream* sm)
         if (c & 3u) // reserved and dictID must be both 0
             break;
 
-        $getbyte(1, c); // BD byte, ignored
+        _lz4_getbyte(1, c); // BD byte, ignored
 
         if (priv->flg & (1u << 3u)) // content size present?
         {
-            $getbyte(2, c); // ignored: content size (8 bytes)
-            $getbyte(3, c);
-            $getbyte(4, c);
-            $getbyte(5, c);
-            $getbyte(6, c);
-            $getbyte(7, c);
-            $getbyte(8, c);
-            $getbyte(9, c);
+            _lz4_getbyte(2, c); // ignored: content size (8 bytes)
+            _lz4_getbyte(3, c);
+            _lz4_getbyte(4, c);
+            _lz4_getbyte(5, c);
+            _lz4_getbyte(6, c);
+            _lz4_getbyte(7, c);
+            _lz4_getbyte(8, c);
+            _lz4_getbyte(9, c);
         }
 
         // dictID bit is known to be 0, so we know there is no u32 dictID here
 
-        $getbyte(10, c); // header checksum, ignored
+        _lz4_getbyte(10, c); // header checksum, ignored
 
         return transition(sm, &blockbegin); // success
     }
@@ -372,27 +377,65 @@ static size_t header(tio_Stream* sm)
 out:
     return 0;
 }
+/*
+struct PutbackInfo
+{
+    tio_Stream next;
+    tio_Alloc alloc;
+    void *allocUD;
+    // followed by payload bytes
+};
+
+static size_t refillPutback(tio_Stream* sm)
+{
+    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
+    sm->begin = sm->cursor = priv->magicbuf;
+    sm->end = sm->begin + sizeof(priv->magicbuf);
+    sm->Refill = streamE
+    return sizeof(priv->magicbuf);
+}
+
+// TODO: move this to stream util if this works as intended
+static void putback(tio_Stream *sm, const void *ptr, size_t n, tio_Alloc alloc, void *allocUD)
+{
+    struct
+    void *mem = alloc(allocUD, 0, tioStreamAllocMarker,
+}
+*/
+
+static const char s_magic[] = { 0x04, 0x22, 0x4d, 0x18 };
 
 static size_t magic(tio_Stream* sm)
 {
     tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
     tio_Stream *const src = (tio_Stream *)sm->priv.aux;
     unsigned char c;
-    switch (priv->state) // break means fail, everything else is fall through
+    switch (priv->state)
     {
-        $getbyte(0, c); if (c != 0x04) break;
-        $getbyte(1, c); if (c != 0x22) break;
-        $getbyte(2, c); if (c != 0x4d) break;
-        $getbyte(3, c); if (c != 0x18) break;
-        return transition(sm, &header); // success
+        _lz4_getbyte(0, c); priv->magicbuf[0] = c;
+        _lz4_getbyte(1, c); priv->magicbuf[1] = c;
+        _lz4_getbyte(2, c); priv->magicbuf[2] = c;
+        _lz4_getbyte(3, c); priv->magicbuf[3] = c;
+
     }
-    sm->err = tio_Error_DataError;
-    return tio_streamfail(sm);
+    if(!tio_memcmp(priv->magicbuf, s_magic, sizeof(s_magic)))
+        return transition(sm, &header); // success
+    else if(priv->blocksdone)
+    {
+        sm->Refill = streamEOF;
+        //putback(src, priv->magicbuf, sizeof(priv->magicbuf));
+        // FIXME: refill to magicbuf as if nothing had happened (rewind stream if possible, otherwise make a thunk stream)
+    }
+    else
+    {
+        sm->err = tio_Error_DataError;
+        return tio_streamfail(sm);
+    }
 out:
     return 0;
 }
 
-#undef $getbyte
+#undef _lz4_getbyte
 
 static void close(tio_Stream* sm)
 {
@@ -415,6 +458,7 @@ static tio_error commonInit(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags 
     priv->allocUD = allocUD;
     priv->onBlockEnd = onBlockEnd;
     priv->blocksize = blocksize;
+    priv->blocksdone = 0;
 
     sm->Close = close;
     sm->common.flags = flags;

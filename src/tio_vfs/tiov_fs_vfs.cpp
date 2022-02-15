@@ -415,6 +415,7 @@ public:
 // This means we'll add a file the first time we see it and ignore further occurances.
 static int enlist(const char *path, const char *name, tio_FileType type, void *ud)
 {
+    (void)path;
     DirListData *dd = (DirListData*)ud;
     dd->add(name, type);
     return 0;

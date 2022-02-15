@@ -8,18 +8,7 @@ This uses the standard libc functions to make syscalls */
 
 TIO_PRIVATE tio_error tio_sys_init()
 {
-    tio__TRACE("Using POSIX/libc syscall wrappers");
-/*#ifdef _HAVE_POSIX_MADVISE
-    tio__TRACE("Supports posix_madvise");
-#else
-    tio__TRACE("MISSING posix_madvise: Not compiled in",);
-#endif
-
-#ifdef _HAVE_POSIX_FADVISE
-    tio__TRACE("Supports posix_fadvise");
-#else
-    tio__TRACE("MISSING posix_fadvise: Not compiled in", );
-#endif*/
+    tio__TRACE0("Using POSIX/libc syscall wrappers");
     return 0;
 }
 

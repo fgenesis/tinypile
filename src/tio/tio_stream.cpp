@@ -286,14 +286,14 @@ static size_t streamRefillMem(tio_Stream* sm)
     }
     sm->priv.offset = endoffs;
 
-    char *beg = (char*)sm->priv.aux + curoffs;
+    const char *beg = (const char*)sm->priv.aux + curoffs;
     sm->cursor = beg;
     sm->begin = beg;
     sm->end = beg + endoffs;
     return blk;
 }
 
-TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, void *mem, size_t memsize, tio_StreamFlags flags, size_t blocksize)
+TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, const void *mem, size_t memsize, tio_StreamFlags flags, size_t blocksize)
 {
     tio__memzero(sm, sizeof(*sm));
     sm->Refill = streamRefillMem;
@@ -301,7 +301,7 @@ TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, void *mem, size_t memsize, t
     sm->common.flags = flags;
     sm->priv.blockSize = blocksize ? blocksize : memsize;
     sm->priv.size = memsize;
-    sm->priv.aux = mem;
+    sm->priv.aux = const_cast<void*>(mem);
     return 0;
 }
 
@@ -342,7 +342,7 @@ TIO_PRIVATE tio_error initmmiostream(tio_Stream* sm, const tio_MMIO* mmio, tiosi
         }
         else
         {
-            tio__TRACE("initmmiostream: Inited successfully, but failed initial prefetch");
+            tio__TRACE0("initmmiostream: Inited successfully, but failed initial prefetch");
             tio_sclose(sm);
         }
     }

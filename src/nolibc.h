@@ -50,8 +50,6 @@ NOLIBC_EXPORT size_t nostrlen(const char *s);
 
 /* Misc */
 NOLIBC_EXPORT void _noassert_fail(const char *s, const char *file, size_t line);
-NOLIBC_EXPORT void noexit(unsigned code); /* Immediate hard exit */
-
 
 #if !defined(TIO_DEBUG) && (defined(_DEBUG) || defined(DEBUG) || !defined(NDEBUG))
 #define NOLIBC_DEBUG 1

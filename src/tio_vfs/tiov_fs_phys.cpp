@@ -13,53 +13,54 @@ static inline Fdat *xdata(tiov_FH *f)
 {
     return reinterpret_cast<Fdat*>(tiov_fhudata(f));
 }
-#define $H (xdata(f)->h)
+#define FH (xdata(f)->h)
 
 static tio_error f_close(tiov_FH *f)
 {
-    return tio_kclose($H);
+    return tio_kclose(FH);
 }
 static size_t f_read(tiov_FH *f, void *dst, size_t bytes)
 {
-    return tio_kread($H, dst, bytes);
+    return tio_kread(FH, dst, bytes);
 }
 static tiosize f_write(tiov_FH *f, const void *src, tiosize bytes)
 {
-    return tio_kwrite($H, src, bytes);
+    return tio_kwrite(FH, src, bytes);
 }
 static size_t f_readat(tiov_FH *f, void *dst, size_t bytes, tiosize offset)
 {
-    return tio_kreadat($H, dst, bytes, offset);
+    return tio_kreadat(FH, dst, bytes, offset);
 }
 static tiosize f_writeat(tiov_FH *f, const void *src, tiosize bytes, tiosize offset)
 {
-    return tio_kwriteat($H, src, bytes, offset);
+    return tio_kwriteat(FH, src, bytes, offset);
 }
 static tio_error f_seek(tiov_FH *f, tiosize offset, tio_Seek origin)
 {
-    return tio_kseek($H, offset, origin);
+    return tio_kseek(FH, offset, origin);
 }
 static tio_error f_tell(tiov_FH *f, tiosize *poffset)
 {
-    return tio_ktell($H, poffset);
+    return tio_ktell(FH, poffset);
 }
 static tio_error f_flush(tiov_FH *f)
 {
-    return tio_kflush($H);
+    return tio_kflush(FH);
 }
 static int f_eof(tiov_FH *f)
 {
-    return -1; // tio_keof($H); // FIXME
+    (void)f;
+    return -1; // tio_keof(FH); // FIXME
 }
 static tio_error f_getsize(tiov_FH *f, tiosize *psize)
 {
-    return tio_kgetsize($H, psize);
+    return tio_kgetsize(FH, psize);
 }
 static tio_error f_setsize(tiov_FH *f, tiosize bytes)
 {
-    return tio_ksetsize($H, bytes);
+    return tio_ksetsize(FH, bytes);
 }
-#undef $H
+#undef FH
 
 static const tiov_FileOps sysfs_fops =
 {

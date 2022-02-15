@@ -47,7 +47,7 @@ TIO_PRIVATE char os_pathsep()
 
 TIO_PRIVATE tio_error os_init()
 {
-    tio__TRACE("Using POSIX backend");
+    tio__TRACE0("Using POSIX backend");
     tio__TRACE("POSIX dirent has d_type member: %d", int(Has_d_type<dirent>::value));
     return tio_sys_init();
 }
@@ -58,11 +58,11 @@ static void advise_sequential(int fd)
     tio__ASSERT(!err);
 }
 
-static void advise_sequential(void* p, size_t sz)
+/*static void advise_sequential(void* p, size_t sz)
 {
     int err = tio_sys_posix_madvise(p, sz, POSIX_MADV_SEQUENTIAL);
     tio__ASSERT(!err);
-}
+}*/
 
 static void advise_willneed(int fd)
 {
@@ -236,11 +236,14 @@ TIO_PRIVATE tio_error os_flush(tio_Handle hFile)
 
 TIO_PRIVATE tio_error os_mminit(tio_Mapping* map, const tio_MMIO *mmio)
 {
+    (void)map;
+    (void)mmio;
     return 0; // Nothing to do, the file is already open
 }
 
 TIO_PRIVATE void os_mmdestroy(tio_Mapping *map)
 {
+    (void)map;
     // Nothing to do
 }
 
@@ -379,6 +382,7 @@ TIO_PRIVATE tio_error os_dirlist(const char* path, tio_FileCallback callback, vo
 // this must be caught by the caller!
 TIO_PRIVATE tio_error os_createSingleDir(const char* path, void *ud)
 {
+    (void)ud;
     if(!tio_sys_mkdir(path, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH))
         return 0;
     if(errno == EEXIST)
@@ -407,17 +411,30 @@ TIO_PRIVATE size_t os_pathExtraSpace()
 
 TIO_PRIVATE tio_error os_preSanitizePath(char *& dst, char *dstend, const char *& src)
 {
+    (void)dst;
+    (void)dstend;
+    (void)src;
     return 0;
 }
 
 
 TIO_PRIVATE int os_initstream(tio_Stream* sm, char* fn, tio_Features features, size_t blocksize, tio_Alloc alloc, void *allocUD)
 {
+    (void)sm;
+    (void)fn;
+    (void)features;
+    (void)blocksize;
+    (void)alloc;
+    (void)allocUD;
     return 0;
 }
 
 TIO_PRIVATE int os_initmmio(tio_MMIO* mmio, char* fn, tio_Mode mode, tio_Features features)
 {
+    (void)mmio;
+    (void)fn;
+    (void)mode;
+    (void)features;
     return 0;
 }
 

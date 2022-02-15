@@ -610,13 +610,13 @@ typedef struct tio_Stream tio_Stream;
 struct tio_Stream
 {
     /* public, read, modify */
-    char *cursor;   /* Cursor in buffer. Typically used by the stream consumer to store partial
-                       progress through the buffer. The valid range is within [begin, end).
-                       Refill() sets cursor = begin. */
+    const char *cursor;   /* Cursor in buffer. Typically used by the stream consumer to store partial
+                             progress through the buffer. The valid range is within [begin, end).
+                             Refill() sets cursor = begin. */
 
     /* public, MUST NOT be changed by user, changed by Refill() */
-    char *begin;    /* start of buffer */
-    char *end;      /* one past the end */
+    const char *begin;    /* start of buffer */
+    const char *end;      /* one past the end */
 
     /* public, callable, changed by Refill and Close. Prefer calling tio_srefill() and tio_sclose() instead. */
     size_t (*Refill)(tio_Stream *s); /* Required. Sets cursor, begin, end. Sets err on failure. Returns #bytes refilled. */
@@ -713,12 +713,11 @@ TIO_EXPORT size_t tio_streamfail(tio_Stream *sm);
 /* -- Stream utility -- */
 
 /* Wrap a block of memory of a given size into a stream.
-   It is safe to cast a const away if a const pointer is to be used for reading only.
    This stream behaves as a simple sliding window over a memory range;
    what you do with the pointers is up to you.
    The block size is exact, except the tail end may be smaller.
    Pass blocksize == 0 to use the entire memory as a single block. */
-TIO_EXPORT tio_error tio_memstream(tio_Stream *sm, void *mem, size_t memsize,
+TIO_EXPORT tio_error tio_memstream(tio_Stream *sm, const void *mem, size_t memsize,
     tio_StreamFlags flags, size_t blocksize);
 
 /* Wrap an existing tio_MMIO into a stream.

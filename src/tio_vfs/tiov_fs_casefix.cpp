@@ -93,6 +93,8 @@ struct CaseFixHelper
 
     static int CheckOnePart(const char *path, const char *name, tio_FileType type, void *ud)
     {
+        (void)path;
+        (void)type;
         CaseFixHelper *self = (CaseFixHelper*)ud;
         return self->equals(name, self->tmp)
             ? (self->addFrag(name) ? 1 : tio_Error_MemAllocFail)

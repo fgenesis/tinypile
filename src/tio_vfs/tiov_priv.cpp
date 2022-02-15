@@ -2,7 +2,7 @@
 
 static const unsigned LOAD_FACTOR = 8;
 static const unsigned INITIAL_BUCKETS = 8; // must be power of 2
-static const unsigned INITIAL_STRPOOL_SIZE = 1024;
+//static const unsigned INITIAL_STRPOOL_SIZE = 1024;
 
 // Byte-wise larson hash, used as finalizer for remaining non-word size
 // via http://www.strchr.com/hash_functions
@@ -49,9 +49,9 @@ StringPool::StringPool(const Allocator& a)
     , _strmem(NULL)
     , _strsize(0)
     , _strcap(0)
-    , _buckets(NULL)
-    , _numb(0)
     , _elems(0)
+    , _numb(0)
+    , _buckets(NULL)
 {
 }
 
