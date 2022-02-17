@@ -66,3 +66,32 @@
 #undef TIO_SYS_LINUX
 #define TIO_SYS_POSIX 1
 #endif
+
+// ----- Compiler-specific stuff -----
+
+#ifndef __has__builtin
+#define __has__builtin(x) 0
+#endif
+
+// For making sure that functions that do heavy stack allocation are not inlined
+#if defined(_MSC_VER) && _MSC_VER >= 1300
+#  define TIO_NOINLINE __declspec(noinline)
+#elif (defined(__GNUC__) && (__GNUC__ >= 4)) || defined(__clang__)
+#  define TIO_NOINLINE __attribute__((noinline))
+#else // gotta trust the compiler to do the right thing
+#  define TIO_NOINLINE
+#endif
+
+#ifndef tio__ASSUME
+#  if defined(_MSC_VER) || defined(__ICC)
+#    define tio__ASSUME(x) __assume(x) // TODO: which version introduced this?
+#  elif defined(__clang__) || defined(__GNUC__)
+#    if __has_builtin(__builtin_assume)
+#      define tio__ASSUME(x) __builtin_assume(x)
+#    else
+#      define tio__ASSUME(x) do { if(x) {} else __builtin_unreachable(); } while(0,0)
+#    endif
+#  else
+#    define tio__ASSUME(x)
+#  endif
+#endif

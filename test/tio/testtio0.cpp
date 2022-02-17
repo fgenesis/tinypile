@@ -74,7 +74,7 @@ int main()
         return 1;
 
     tio_Stream dc;
-    tio_sdecomp_LZ4_frame(&dc, &sm, 0, myalloc, NULL);
+    tio_sdecomp_LZ4_frame(&dc, &sm, 0, tioS_CloseBoth, myalloc, NULL);
 
     size_t n = 0;
     while(!dc.err)
@@ -83,6 +83,15 @@ int main()
     CHECK(dc.err);
     printf("decompressed size: %zu\n", n);
 
+
+    // Good news!
+    // We consumed the entire stream until sm->err was set.
+    // Since a stream that transitions into an error state is automatically closed cleanly,
+    // this is not even a memory leak.
+
+    //tio_sclose(&dc); // <-- at this point, dc is a dummy stream that always refills 0 bytes
+
+    // But of course you should always close streams, regardless whether sm->err was set or not.
 
     return 0;
 }

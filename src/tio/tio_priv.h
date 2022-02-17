@@ -32,16 +32,7 @@
 #endif
 
 #ifndef TIO_PRIVATE
-#define TIO_PRIVATE /* static */
-#endif
-
-// For making sure that functions that do heavy stack allocation are not inlined
-#if defined(_MSC_VER) && _MSC_VER >= 1300
-#  define TIO_NOINLINE __declspec(noinline)
-#elif (defined(__GNUC__) && (__GNUC__ >= 4)) || defined(__clang__)
-#  define TIO_NOINLINE __attribute__((noinline))
-#else // gotta trust the compiler to do the right thing
-#  define TIO_NOINLINE
+#define TIO_PRIVATE /* 'static' when amalgamated */
 #endif
 
 #if !defined(TIO_DEBUG) && (defined(_DEBUG) || defined(DEBUG) || !defined(NDEBUG))
@@ -53,7 +44,7 @@
 #    include <assert.h>
 #    define tio__ASSERT(x) assert(x)
 #  else
-#    define tio__ASSERT(x)
+#    define tio__ASSERT(x) tio__ASSUME(x) // In release mode, pass this as a hint to the optimizer
 #  endif
 #endif
 
@@ -98,7 +89,7 @@ TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, siz
 TIO_PRIVATE tio_error openfile(tio_Handle *hOut, OpenMode *om, char *fn, tio_Mode mode, tio_Features& features, unsigned wflags = 0);
 TIO_PRIVATE tio_error initfilestream(tio_Stream* sm, char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
 TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, const void *mem, size_t memsize, tio_StreamFlags flags, size_t blocksize);
-TIO_PRIVATE tio_error initmmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
+TIO_PRIVATE tio_error initmmiostream(tio_Stream *sm, tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
 
 
 // Higher-level mmio API

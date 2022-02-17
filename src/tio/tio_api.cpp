@@ -98,7 +98,7 @@ TIO_EXPORT tio_error tio_kopen(tio_Handle* hDst, const char* fn, tio_Mode mode, 
     *hDst = os_getInvalidHandle();
 
     char* s;
-    SANITIZE_PATH(s, fn, 0, 0);
+    SANITIZE_PATH(s, fn, tio_Clean_Default, 0);
 
     tio_Handle h;
     OpenMode om;
@@ -275,7 +275,7 @@ TIO_EXPORT tio_error tio_mopen(tio_MMIO* mmio, const char* fn, tio_Mode mode, ti
     checkapi_err(!(mode & tio_A), "MMIO doesn't support tio_A");
 
     char* s;
-    SANITIZE_PATH(s, fn, 0, 0);
+    SANITIZE_PATH(s, fn, tio_Clean_Default, 0);
 
     return mmio_init(mmio, s, mode, features);
 }
@@ -359,7 +359,7 @@ TIO_EXPORT tio_error tio_sopen(tio_Stream* sm, const char* fn, tio_Features feat
     checknotnull_err(alloc);
 
     char* s;
-    SANITIZE_PATH(s, fn, 0, 0);
+    SANITIZE_PATH(s, fn, tio_Clean_Default, 0);
     tio_error err = initfilestream(sm, s, features, flags, blocksize, alloc, allocUD);
     sm->err = err;
     return err;
@@ -433,7 +433,7 @@ TIO_EXPORT tio_error tio_memstream(tio_Stream *sm, const void *mem, size_t memsi
     return initmemstream(sm, mem, memsize, flags, blocksize);
 }
 
-TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
+TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
 {
     checknotnull_err(sm);
     return initmmiostream(sm, mmio, offset, maxsize, features, flags, blocksize, alloc, allocUD);
@@ -446,7 +446,7 @@ TIO_EXPORT tio_FileType tio_fileinfo(const char* fn, tiosize* psz)
 {
     checknotnull(fn);
     char* s;
-    SANITIZE_PATH(s, fn, 0, 0);
+    SANITIZE_PATH(s, fn, tio_Clean_Default, 0);
     return os_fileinfo(s, psz);
 }
 
@@ -463,7 +463,7 @@ TIO_EXPORT tio_error tio_mkdir(const char* path)
 {
     checknotnull_err(path);
     char* s;
-    SANITIZE_PATH(s, path, 0, 0);
+    SANITIZE_PATH(s, path, tio_Clean_Default, 0);
 
     tio_FileType t = os_fileinfo(s, NULL);
     if(t & tioT_Dir) // It's already there, no need to go create it

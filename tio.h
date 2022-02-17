@@ -116,7 +116,7 @@ target was referenced.
    You probably want this to be 64 bits. Change if you absolutely must. */
 #ifdef _MSC_VER
 typedef unsigned __int64 tiosize;
-#elif defined(__GNUC__) || defined(__clang__) /* Something sane that has stdint.h */
+#elif (__STDC_VERSION__+0L >= 199901L) || (__cplusplus+0L >= 201103L) /* Something sane that has stdint.h */
 #  include <stdint.h> // also has uintptr_t
 typedef uint64_t tiosize;
 #elif defined(TIO_INCLUDE_PSTDINT) /* Alternative include, pick one from https://en.wikibooks.org/wiki/C_Programming/stdint.h#External_links and enable manually */
@@ -149,6 +149,21 @@ typedef size_t tiosize; /* Not guaranteed to be 64 bits */
 /* All public functions are marked with this */
 #ifndef TIO_EXPORT
 #define TIO_EXPORT TIO_EXTERN_C TIO_LINKAGE
+#endif
+
+/* Bit-enums are safe to OR together;
+   in C++ this can be done extra-safely via a specialized operator|(),
+   that also catches accidental swapping of parameters and similar mistakes.
+   In C there is no such thing as type-safety for enums, so we'll fall back
+   to unsigned int and hope for the best. */
+#define TIO_DECL_ENUM(T, E) typedef enum E T;
+#ifdef __cplusplus
+#  define TIO_DECL_BITWISE_ENUM(T, E) \
+    TIO_DECL_ENUM(T, E) \
+    inline T operator|(T a, T b) { return static_cast<T>(unsigned(a)|unsigned(b)); } \
+    inline T operator|=(T& a, T b) { a = static_cast<T>(unsigned(a)|unsigned(b)); return a; }
+#else
+#  define TIO_DECL_BITWISE_ENUM(T, E) typedef unsigned T;
 #endif
 
 /* Bitmask; Specify max. one from each group.
@@ -196,7 +211,7 @@ enum tio_Mode_
     tioM_Mkdir = 0x80, /* When attempting to create the file, also create the directory
                           hierarchy required if not already present */
 };
-typedef unsigned tio_Mode;
+TIO_DECL_BITWISE_ENUM(tio_Mode, tio_Mode_)
 
 enum tio_Seek_
 {
@@ -204,7 +219,8 @@ enum tio_Seek_
     tio_SeekCur = 1,
     tio_SeekEnd = 2
 };
-typedef unsigned tio_Seek;
+TIO_DECL_ENUM(tio_Seek, tio_Seek_)
+
 
 /* Hints to the underlying implementation to describe your use case.
    This allows to pick the best I/O method for a task or to give the OS extra detail it may use to increase performance.
@@ -214,6 +230,8 @@ typedef unsigned tio_Seek;
 */
 enum tio_Features_
 {
+    tioF_Default    = 0x00, /* Nothing special */
+
     tioF_Sequential = 0x01, /* For file handles: Disable seeking. Attempting to seek becomes undefined behavior.
                                tio_kreadat() and tio_kwriteat() become undefined behavior.
                                Notify the OS that files/memory is expected to be read/written sequentially (low to high address).
@@ -246,7 +264,7 @@ enum tio_Features_
                                  Might be more efficient, but may cause problems on unreliable media. Test it.
                                  Recommended to combine with tioF_Background. Ignored by functions that do MMIO anyway. */
 };
-typedef unsigned tio_Features;
+TIO_DECL_BITWISE_ENUM(tio_Features, tio_Features_)
 
 
 enum tio_FileType_
@@ -261,14 +279,14 @@ enum tio_FileType_
     /* May or may not be set */
     tioT_Link    = 0x08  /* File/directory is a symlink */
 };
-typedef unsigned tio_FileType;
+TIO_DECL_BITWISE_ENUM(tio_FileType, tio_FileType_)
 
 enum tio_FlushMode_
 {
     tio_FlushToOS,    /* Flush unwritten buffers to the OS and ask it to write the data to disk ASAP. */
     tio_FlushToDisk,  /* Flush to disk immediately. Block until the write is complete. Probably a perf-killer. */
 };
-typedef unsigned tio_FlushMode;
+TIO_DECL_ENUM(tio_FlushMode, tio_FlushMode_)
 
 enum tio_StdHandle_
 {
@@ -276,7 +294,7 @@ enum tio_StdHandle_
     tio_stdout = 1,
     tio_stderr = 2
 };
-typedef unsigned tio_StdHandle;
+TIO_DECL_ENUM(tio_StdHandle, tio_StdHandle_)
 
 /* Error codes.
    These are best-effort and informational only.
@@ -310,6 +328,8 @@ typedef int tio_error; /* Typedef'd to make places for error handling easier to 
 
 enum tio_CleanFlags_
 {
+    tio_Clean_Default     = 0x00, /* Default: Only collapse "." and ".." */
+
     tio_Clean_SepUnix     = 0x01, /* Turn all recognized path separators to '/' */
     tio_Clean_SepNative   = 0x02, /* Turn all recognized path separators to the OS pathsep */
     /* Not set: Leave as-is. Don't set both. */
@@ -325,7 +345,7 @@ enum tio_CleanFlags_
 
     tio_Clean_WindowsPath = 0x20, /* Accept '\' as path separator even if we're not on windows */
 };
-typedef unsigned tio_CleanFlags;
+TIO_DECL_BITWISE_ENUM(tio_CleanFlags, tio_CleanFlags_)
 
 
 /* ------------------------------ */
@@ -432,7 +452,7 @@ TIO_EXPORT tio_error tio_stdhandle(tio_Handle *hDst, tio_StdHandle);
 typedef struct tio_MMIO tio_MMIO;
 typedef struct tio_Mapping tio_Mapping;
 typedef struct tio_MMFunc tio_MMFunc; /* Only interesting if you plan to write a backend or extension;
-                      otherwise ignore this type. Defined below. */
+                                         otherwise ignore this type. Defined below. */
 
 /*
 To successfully memory-map a file the file must 1) exist, 2) be accessible, and 3) be not empty.
@@ -728,12 +748,10 @@ TIO_EXPORT tio_error tio_memstream(tio_Stream *sm, const void *mem, size_t memsi
    Pass maxsize == 0 to map the entire remainder of the mmio.
    Note that the actual block size is not exact and may change between refills
    based on alignment requirements of the host OS.
-   The created stream owns a private copy of mmio.
-   Pass tioS_CloseBoth to pass ownership of the mmio to the stream and close it
-   together with the stream; if you do this, make sure that no other tio_Mapping
-   derived from this mmio exists when the stream is closed. */
-// FIXME: should we just keep a ptr instead? (stacked streams also just keep pointers to source streams) -- also tioS_CloseBoth will have no effect (mmio is CONST!)
-TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosize offset, tiosize maxsize,
+   The created stream stores a pointer to mmio, so make sure mmio is not moved after calling this function!
+   Pass tioS_CloseBoth to close mmio together with the stream; if you do this,
+   make sure that no other tio_Mapping derived from this mmio exists when the stream is closed. */
+TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, tio_MMIO *mmio, tiosize offset, tiosize maxsize,
      tio_Features features, tio_StreamFlags flags, size_t blocksize,
     tio_Alloc alloc, void *allocUD);
 
@@ -748,8 +766,10 @@ TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, const tio_MMIO *mmio, tiosiz
 */
 
 /* Decompress LZ4-framed data. The size of the compressed data is part of the framing, so you don't need to know the size.
-   After 'sm' reports EOF, you can continue using the source stream if more data follow. */
-TIO_EXPORT tio_error tio_sdecomp_LZ4_frame(tio_Stream *sm, tio_Stream *packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD);
+   After 'sm' reports EOF, you can continue using the source stream if more data follow.
+   Larger LZ4 compressed files usually consist of multiple concatenated, independent frames;
+   pass maxframes=0 to autodetect the last frame or any other number to stop after reading this many frames. */
+TIO_EXPORT tio_error tio_sdecomp_LZ4_frame(tio_Stream *sm, tio_Stream *packed, size_t maxframes, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD);
 
 
 /* Decompress a raw LZ4 block.

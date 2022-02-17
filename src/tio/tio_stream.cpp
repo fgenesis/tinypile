@@ -156,7 +156,7 @@ static tio_error streamHandleReadInit(tio_Stream* sm, tio_Handle h, size_t block
 
 struct tioMMIOStreamData
 {
-    tio_MMIO mmio;
+    tio_MMIO *mmio;
     tio_Mapping map;
     tiosize readahead; // for prefetching
     tiosize numblocks; // for prefetching. 0 if disabled.
@@ -170,7 +170,7 @@ static void streamMMIOClose(tio_Stream* sm)
     tioMMIOStreamData* m = streamdata<tioMMIOStreamData>(sm);
     tio_mmdestroy(&m->map);
     if(sm->common.flags & tioS_CloseBoth)
-        tio_mclose(&m->mmio);
+        tio_mclose(m->mmio);
     m->alloc(m->allocUD, m, sizeof(*m), 0);
     invalidate(sm);
 }
@@ -185,7 +185,7 @@ static size_t streamMMIOReadRefill(tio_Stream* sm)
 {
     tioMMIOStreamData* m = streamdata<tioMMIOStreamData>(sm);
 
-    tio_error err = tio_mmremap(&m->map, sm->priv.offset, m->mapBlockSize, 0);
+    tio_error err = tio_mmremap(&m->map, sm->priv.offset, m->mapBlockSize, tioF_Default);
     if (err)
     {
         sm->err = err;
@@ -227,14 +227,14 @@ static tio_error _streamInitMapping(tio_Stream* sm, size_t blocksize, tiosize of
 {
     tioMMIOStreamData* m = streamdata<tioMMIOStreamData>(sm);
 
-    if (offset >= m->mmio.filesize)
+    if (offset >= m->mmio->filesize)
         return tio_Error_Empty;
 
-    size_t maxavail = m->mmio.filesize - offset;
+    size_t maxavail = m->mmio->filesize - offset;
     if (maxsize && maxsize < maxavail)
         maxsize = maxavail;
 
-    tio_error err = tio_mminit(&m->map, &m->mmio);
+    tio_error err = tio_mminit(&m->map, m->mmio);
     if(err)
         return err;
 
@@ -254,7 +254,7 @@ static tio_error _streamInitMapping(tio_Stream* sm, size_t blocksize, tiosize of
     // Round it up to mmio alignment
     blocksize = ((blocksize + (aln - 1)) / aln) * aln;
 
-    m->numblocks = (m->mmio.filesize + (blocksize - 1)) / blocksize;
+    m->numblocks = (m->mmio->filesize + (blocksize - 1)) / blocksize;
 
     tio__TRACE("streamMMIOReadInit: Using blocksize %u, total %u blocks",
         unsigned(blocksize), unsigned(m->numblocks));
@@ -305,7 +305,7 @@ TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, const void *mem, size_t mems
     return 0;
 }
 
-TIO_PRIVATE tio_error initmmiostream(tio_Stream* sm, const tio_MMIO* mmio, tiosize offset, tiosize maxsize, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD)
+TIO_PRIVATE tio_error initmmiostream(tio_Stream* sm, tio_MMIO* mmio, tiosize offset, tiosize maxsize, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD)
 {
     tioMMIOStreamData* pm = (tioMMIOStreamData*)alloc(allocUD, NULL, tioStreamAllocMarker, sizeof(tioMMIOStreamData));
     if (!pm)
@@ -313,7 +313,7 @@ TIO_PRIVATE tio_error initmmiostream(tio_Stream* sm, const tio_MMIO* mmio, tiosi
 
     tio__memzero(sm, sizeof(*sm));
 
-    pm->mmio = *mmio; // dumb copy is as good as a move
+    pm->mmio = mmio;
     pm->readahead = 0;
     pm->numblocks = 0;
     pm->alloc = alloc;
@@ -332,7 +332,7 @@ TIO_PRIVATE tio_error initmmiostream(tio_Stream* sm, const tio_MMIO* mmio, tiosi
         pm->mapBlockSize = sm->priv.blockSize * blocks;
 
         // map and initiate prefetch of the first few blocks
-        err = tio_mmremap(&pm->map, sm->priv.offset, pm->mapBlockSize, 0);
+        err = tio_mmremap(&pm->map, sm->priv.offset, pm->mapBlockSize, tioF_Default);
         if (!err)
         {
             tio__TRACE("initmmiostream: Prefetching the first %u blocks (%u bytes)",

@@ -1,13 +1,13 @@
 #include "tio_priv.h"
 
-TIO_PRIVATE OpenMode checkmode(unsigned& mode, tio_Features& features)
+TIO_PRIVATE OpenMode checkmode(tio_Mode& mode, tio_Features& features)
 {
     if (mode & tio_A)
     {
         mode |= tio_W;
         tio__ASSERT(!(features & tioF_NoResize) && "Append mode and tioF_NoResize together makes no sense");
         tio__ASSERT(!(mode & tioM_Truncate) && "Append mode and truncate is equivalent to not setting the append flag at all. This assert is to warn you that this will probably not do what you want.");
-        features &= ~tioF_NoResize;
+        features = (tio_Features)(features & ~tioF_NoResize);
     }
     tio__ASSERT(mode & tio_RW);
 
@@ -30,12 +30,12 @@ TIO_PRIVATE OpenMode checkmode(unsigned& mode, tio_Features& features)
         if (!om.contentidx)
         {
             om.contentidx = om.append ? tioM_Keep : _defcontent[om.accessidx] >> 2;
-            mode |= _defcontent[om.accessidx];
+            mode |= (tio_Mode)_defcontent[om.accessidx];
         }
         if (!om.fileidx)
         {
             om.fileidx = om.append ? tioM_Create : _deffile[om.accessidx] >> 4;
-            mode |= _deffile[om.accessidx];
+            mode |= (tio_Mode)_deffile[om.accessidx];
         }
         --om.contentidx;
         --om.fileidx;
@@ -60,7 +60,7 @@ TIO_PRIVATE tio_error openfile(tio_Handle *hOut, OpenMode *om, char *fn, tio_Mod
 
         if(/*err == tio_Error_NotFound &&*/ (mode & tioM_Mkdir) && (mode & (tioM_Create|tioM_MustNotExist)))
         {
-            mode &= ~tioM_Mkdir; // try this only once
+            mode = (tio_Mode)(mode & ~tioM_Mkdir); // try this only once
             char *lastsep = NULL;
             for(char *s = fn; *s; ++s)
                 if(ispathsep(*s))
@@ -132,15 +132,13 @@ TIO_PRIVATE tio_error createPathHelper(char* path, size_t offset, void *ud)
 
 /* ---- Path sanitization ---- */
 
-enum tioBothFlags
-{
-    BothSep = tio_Clean_SepNative | tio_Clean_SepUnix,
-};
 TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, size_t srcsize, tio_CleanFlags flags)
 {
+    const tio_CleanFlags BothSep = tio_Clean_SepNative | tio_Clean_SepUnix;
+
     // Trat both flags set as if none was set
     if((flags & BothSep) == BothSep)
-        flags &= ~BothSep;
+        flags = (tio_CleanFlags)(flags & ~BothSep);
 
     char extraSep = 0;
     if(flags & tio_Clean_WindowsPath)

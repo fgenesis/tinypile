@@ -51,13 +51,13 @@ static void unpack(tio_Stream *ppacked)
 {
     tio_Stream sm;
 
-    if (tio_sdecomp_LZ4_frame(&sm, ppacked, 0, myalloc, NULL))
+    if (tio_sdecomp_LZ4_frame(&sm, ppacked, 0, 0, myalloc, NULL))
     //if (tio_sdecomp_zlib(&sm, ppacked, tioS_CloseBoth, myalloc, NULL))
     //if (tio_sdecomp_zstd(&sm, ppacked, tioS_CloseBoth, myalloc, NULL))
         exit(2);
 
     tio_Handle out = 0;
-    if (tio_kopen(&out, "outfile.bmp", tio_W, 0))
+    if (tio_kopen(&out, "outfile.bmp", tio_W, tioF_Default))
         exit(3);
 
     dump(&sm, out);
