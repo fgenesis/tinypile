@@ -330,7 +330,7 @@ struct Posix_DirentFileType<true>
                 t = tioT_Link;
                 /* fall through */
             case DT_UNKNOWN: // file system isn't sure or doesn't support d_type, try this the hard way
-                return t | posix_getPathFileType(pathfd, dp->d_name);
+                return tio_FileType(t | posix_getPathFileType(pathfd, dp->d_name));
             default: ; // avoid warnings
         }
         return tioT_Special;

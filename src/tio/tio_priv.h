@@ -90,7 +90,7 @@ TIO_PRIVATE tio_error openfile(tio_Handle *hOut, OpenMode *om, char *fn, tio_Mod
 TIO_PRIVATE tio_error initfilestream(tio_Stream* sm, char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
 TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, const void *mem, size_t memsize, tio_StreamFlags flags, size_t blocksize);
 TIO_PRIVATE tio_error initmmiostream(tio_Stream *sm, tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
-
+TIO_PRIVATE tio_error streamprepend(tio_Stream *sm, const void *data, size_t sz, tio_Alloc alloc, void *allocUD);
 
 // Higher-level mmio API
 TIO_PRIVATE size_t mmio_alignment();
@@ -115,8 +115,8 @@ TIO_PRIVATE tio_error os_closehandle(tio_Handle h);
 TIO_PRIVATE tio_error os_openfile   (tio_Handle* out, const char* fn, OpenMode om, tio_Features features, unsigned osflags);
 TIO_PRIVATE tio_error os_read       (tio_Handle fh, size_t *psz, void* dst, size_t n);
 TIO_PRIVATE tio_error os_readat     (tio_Handle fh, size_t *psz, void* dst, size_t n, tiosize offset);
-TIO_PRIVATE tio_error os_write      (tio_Handle fh, size_t *psz, const void* src, tiosize n);
-TIO_PRIVATE tio_error os_writeat    (tio_Handle fh, size_t *psz, const void* src, tiosize n, tiosize offset);
+TIO_PRIVATE tio_error os_write      (tio_Handle fh, size_t *psz, const void* src, size_t n);
+TIO_PRIVATE tio_error os_writeat    (tio_Handle fh, size_t *psz, const void* src, size_t n, tiosize offset);
 TIO_PRIVATE tio_error os_seek       (tio_Handle hFile, tiosize offset, tio_Seek origin);
 TIO_PRIVATE tio_error os_tell       (tio_Handle hFile, tiosize* poffset);
 TIO_PRIVATE tio_error os_flush      (tio_Handle hFile);

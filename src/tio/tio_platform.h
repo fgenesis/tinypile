@@ -13,8 +13,8 @@
 
 #if defined(_M_X64) || defined(__ia64__) || defined(__x86_64__)
 #  define TIO_PLATFORM_X86_64 1
-#elif defined(_M_IX86) ||  || defined(__i386__) || defined(__i386) || defined(__i486__) || defined(__i486) || defined(i386)
-#  define TIO_PLATOFRM_X86_32 1
+#elif defined(_M_IX86) || defined(__i386__) || defined(__i386) || defined(__i486__) || defined(__i486) || defined(i386)
+#  define TIO_PLATFORM_X86_32 1
 #else
 #  define TIO_PLATFORM_UNKNOWN 1 /* Use generic impl */
 #endif
@@ -69,10 +69,6 @@
 
 // ----- Compiler-specific stuff -----
 
-#ifndef __has__builtin
-#define __has__builtin(x) 0
-#endif
-
 // For making sure that functions that do heavy stack allocation are not inlined
 #if defined(_MSC_VER) && _MSC_VER >= 1300
 #  define TIO_NOINLINE __declspec(noinline)
@@ -86,9 +82,12 @@
 #  if defined(_MSC_VER) || defined(__ICC)
 #    define tio__ASSUME(x) __assume(x) // TODO: which version introduced this?
 #  elif defined(__clang__) || defined(__GNUC__)
-#    if __has_builtin(__builtin_assume)
-#      define tio__ASSUME(x) __builtin_assume(x)
-#    else
+#    ifdef __has_builtin
+#      if __has_builtin(__builtin_assume)
+#        define tio__ASSUME(x) __builtin_assume(x)
+#      endif
+#    endif
+#    ifndef tio__ASSUME
 #      define tio__ASSUME(x) do { if(x) {} else __builtin_unreachable(); } while(0,0)
 #    endif
 #  else

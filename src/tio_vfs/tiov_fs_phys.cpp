@@ -23,7 +23,7 @@ static size_t f_read(tiov_FH *f, void *dst, size_t bytes)
 {
     return tio_kread(FH, dst, bytes);
 }
-static tiosize f_write(tiov_FH *f, const void *src, tiosize bytes)
+static size_t f_write(tiov_FH *f, const void *src, size_t bytes)
 {
     return tio_kwrite(FH, src, bytes);
 }
@@ -31,7 +31,7 @@ static size_t f_readat(tiov_FH *f, void *dst, size_t bytes, tiosize offset)
 {
     return tio_kreadat(FH, dst, bytes, offset);
 }
-static tiosize f_writeat(tiov_FH *f, const void *src, tiosize bytes, tiosize offset)
+static size_t f_writeat(tiov_FH *f, const void *src, size_t bytes, tiosize offset)
 {
     return tio_kwriteat(FH, src, bytes, offset);
 }
