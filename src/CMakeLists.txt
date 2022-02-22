@@ -21,3 +21,5 @@ if(MSVC)
 else()
     target_compile_options(nolibc PRIVATE -fno-builtin -nostdlib)
 endif()
+
+add_subdirectory(sc)

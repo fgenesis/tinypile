@@ -28,6 +28,7 @@ include_directories(src/tio_addons)
 include_directories(src/tio_vfs)
 include_directories(src/tio_zstd)
 include_directories(src/tbsp)
+include_directories(src/sc)
 
 # Tests can also use relaxed warnings
 add_subdirectory(test)
