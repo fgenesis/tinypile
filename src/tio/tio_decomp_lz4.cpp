@@ -5,6 +5,8 @@
 
 #define _LZ4_WINDOW_SIZE 65536
 
+static const char s_lz4_magic[] = { 0x04, 0x22, 0x4d, 0x18 };
+
 struct tioLZ4StreamPriv
 {
     unsigned state; // shared between all Refill functions to store the coroutine state
@@ -18,9 +20,10 @@ struct tioLZ4StreamPriv
     size_t (*onBlockEnd)(tio_Stream* sm); // transition to this Refill function once decomp() has finished a block
     // frame/header only
     size_t blocksize; // for decomp() to know the (remaining) size of the current block
-    size_t blocksdone;
+    size_t framestodo;
+    size_t framesdone;
     unsigned char flg; // part of the LZ4 frame header that is needed every now and then
-    char magicbuf[4];
+    char magicbuf[sizeof(s_lz4_magic)];
 };
 
 enum LZ4State
@@ -71,6 +74,8 @@ static size_t transition(tio_Stream* sm, size_t(*f)(tio_Stream*))
         goto saveandexit; \
     }
 
+// This decomp loop is about 20% slower than the lz4 reference implementation,
+// but small and readable enough to serve as an example for streaming decompression
 static size_t decomp(tio_Stream* sm)
 {
     tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
@@ -88,7 +93,7 @@ static size_t decomp(tio_Stream* sm)
     size_t wr = 0; // bytes of output produced
     size_t rd = 0; // bytes of input consumed
 
-    const unsigned char* p = (const unsigned char*)src->cursor; // const to make explicit that this is the immutable source
+    const unsigned char* p = (const unsigned char*)src->cursor;
     const unsigned char* end = (const unsigned char*)src->end;
 
     if (p == end)
@@ -231,6 +236,11 @@ static int _tryfill(tio_Stream* sm, tio_Stream* src)
     return ok;
 }
 
+static size_t _failOr0(tio_Stream *sm)
+{
+    return !sm->err ? 0 : tio_streamfail(sm);
+}
+
 // grab one byte, refill src as necessary. if that fails, goto out.
 #define _lz4_getbyte(stateID, c) case stateID: if(!_tryfill(sm, src)) { priv->state = stateID; goto out; } c = *src->cursor++;
 
@@ -244,7 +254,7 @@ static size_t footer(tio_Stream* sm)
     tio_Stream *const src = (tio_Stream *)sm->priv.aux;
     unsigned char c;
 
-    if (!(priv->flg & (1 << 2))) // C.Checksum bit
+    if (priv->flg & (1 << 2)) // C.Checksum bit
         switch (priv->state)
         {
             _lz4_getbyte(0, c); // skip checksum
@@ -252,10 +262,11 @@ static size_t footer(tio_Stream* sm)
             _lz4_getbyte(2, c);
             _lz4_getbyte(3, c);
         }
-    priv->blocksdone++;
-    sm->Refill = magic; // either it's EOF or the start of the next concatenated frame
+    priv->framesdone++;
+    priv->framestodo--; // this underflows if this started as 0
+    sm->Refill = priv->framestodo ? magic : streamEOF; // either it's EOF or the start of the next concatenated frame
 out:
-    return 0;
+    return _failOr0(sm);
 }
 
 static size_t blockend(tio_Stream* sm)
@@ -280,9 +291,8 @@ static size_t blockend(tio_Stream* sm)
         return transition(sm, &blockbegin); // success
     }
     sm->err = tio_Error_DataError;
-    return tio_streamfail(sm);
 out:
-    return 0;
+    return _failOr0(sm);
 }
 
 static size_t uncompressed(tio_Stream* sm)
@@ -332,9 +342,8 @@ static size_t blockbegin(tio_Stream* sm)
         return transition(sm, priv->offset & 0x80000000 ? &uncompressed : &decomp);
     }
     sm->err = tio_Error_DataError;
-    return tio_streamfail(sm);
 out:
-    return 0;
+    return _failOr0(sm);
 }
 
 static size_t header(tio_Stream* sm)
@@ -373,38 +382,11 @@ static size_t header(tio_Stream* sm)
         return transition(sm, &blockbegin); // success
     }
     sm->err = tio_Error_DataError;
-    return tio_streamfail(sm);
 out:
-    return 0;
-}
-/*
-struct PutbackInfo
-{
-    tio_Stream next;
-    tio_Alloc alloc;
-    void *allocUD;
-    // followed by payload bytes
-};
-
-static size_t refillPutback(tio_Stream* sm)
-{
-    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
-    sm->begin = sm->cursor = priv->magicbuf;
-    sm->end = sm->begin + sizeof(priv->magicbuf);
-    sm->Refill = streamE
-    return sizeof(priv->magicbuf);
+    return _failOr0(sm);
 }
 
-// TODO: move this to stream util if this works as intended
-static void putback(tio_Stream *sm, const void *ptr, size_t n, tio_Alloc alloc, void *allocUD)
-{
-    struct
-    void *mem = alloc(allocUD, 0, tioStreamAllocMarker,
-}
-*/
-
-static const char s_magic[] = { 0x04, 0x22, 0x4d, 0x18 };
-
+// begin frame: starts with 4 magic bytes
 static size_t magic(tio_Stream* sm)
 {
     tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
@@ -418,21 +400,35 @@ static size_t magic(tio_Stream* sm)
         _lz4_getbyte(3, c); priv->magicbuf[3] = c;
 
     }
-    if(!tio_memcmp(priv->magicbuf, s_magic, sizeof(s_magic)))
+    if(!tio_memcmp(priv->magicbuf, s_lz4_magic, sizeof(s_lz4_magic)))
         return transition(sm, &header); // success
-    else if(priv->blocksdone)
+    else if(!priv->framesdone)
     {
-        sm->Refill = streamEOF;
-        //putback(src, priv->magicbuf, sizeof(priv->magicbuf));
-        // FIXME: refill to magicbuf as if nothing had happened (rewind stream if possible, otherwise make a thunk stream)
+        // first frame and already a mismatch? that's not even LZ4
+        sm->err = tio_Error_DataError;
     }
     else
     {
-        sm->err = tio_Error_DataError;
-        return tio_streamfail(sm);
+        // mismatch after some valid frames -> end of compressed data
+        sm->Refill = streamEOF;
+        if(size_t(src->cursor - src->begin) >= sizeof(s_lz4_magic))
+            src->cursor -= sizeof(s_lz4_magic); // easy; just rewind the stream by 4 bytes
+        else
+        {
+            // FIXME: this is very bad and should be gone
+            // main reason: keeps using sm's allocator possibly beyond its lifetime. threading issues etc, breaks expectations
+
+            // annoying: can't rewind the stream because at least 1 refill happened above;
+            // since we still have those bytes in magicbuf (and it wasn't what we expected)
+            // construct a tiny thunk stream that emits those bytes and then switches back
+            // to the current stream state.
+            tio_error err = streamprepend(src, priv->magicbuf, sizeof(priv->magicbuf), priv->alloc, priv->allocUD);
+            if(err) // uhhh.. no way to get back to old state, just give up and cry
+                sm->err = err;
+        }
     }
 out:
-    return 0;
+    return _failOr0(sm);
 }
 
 #undef _lz4_getbyte
@@ -447,18 +443,19 @@ static void close(tio_Stream* sm)
     sm->begin = sm->end = sm->cursor = 0;
 }
 
-static tio_error commonInit(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD, size_t(*onBlockEnd)(tio_Stream*), size_t blocksize)
+static tio_error commonInit(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD, size_t(*onBlockEnd)(tio_Stream*), size_t blocksize, size_t maxframes)
 {
     tioLZ4StreamPriv *const priv = (tioLZ4StreamPriv *)alloc(allocUD, 0, tioDecompAllocMarker, sizeof(tioLZ4StreamPriv));
     if (!priv)
         return tio_Error_MemAllocFail;
 
-    tio__memset(priv, 0, sizeof(*priv));
+    tio__memzero(priv, sizeof(*priv));
     priv->alloc = alloc;
     priv->allocUD = allocUD;
     priv->onBlockEnd = onBlockEnd;
     priv->blocksize = blocksize;
-    priv->blocksdone = 0;
+    priv->framestodo = maxframes;
+    priv->framesdone = 0;
 
     sm->Close = close;
     sm->common.flags = flags;
@@ -472,14 +469,14 @@ static tio_error commonInit(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags 
 
 TIO_EXPORT tio_error tio_sdecomp_LZ4_block(tio_Stream* sm, tio_Stream* packed, size_t packedbytes, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD)
 {
-    tio__memset(sm, 0, sizeof(*sm));
+    tio__memzero(sm, sizeof(*sm));
     sm->Refill = lz4d::decomp;
-    return lz4d::commonInit(sm, packed, flags, alloc, allocUD, tio_streamfail, packedbytes);
+    return lz4d::commonInit(sm, packed, flags, alloc, allocUD, tio_streamfail, packedbytes, 0);
 }
 
-TIO_EXPORT tio_error tio_sdecomp_LZ4_frame(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD)
+TIO_EXPORT tio_error tio_sdecomp_LZ4_frame(tio_Stream* sm, tio_Stream* packed, size_t maxframes, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD)
 {
-    tio__memset(sm, 0, sizeof(*sm));
+    tio__memzero(sm, sizeof(*sm));
     sm->Refill = lz4d::magic;
-    return lz4d::commonInit(sm, packed, flags, alloc, allocUD, lz4d::blockend, 0);
+    return lz4d::commonInit(sm, packed, flags, alloc, allocUD, lz4d::blockend, 0, maxframes);
 }

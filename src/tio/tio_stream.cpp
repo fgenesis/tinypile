@@ -421,3 +421,64 @@ TIO_PRIVATE tio_error initfilestream(tio_Stream* sm, char* fn, tio_Features feat
 
     return err;
 }
+
+// --- Prepender stream -- Used to inject extra data into a stream to be read next,
+// in a way that the original stream is preserved. Transmogrifies stream temporarily.
+
+struct PrependData
+{
+    tio_Stream orig;
+    tio_Alloc alloc;
+    void *allocUD;
+};
+
+// un-transmogrifies back into old self
+static void streamPrependRestore(tio_Stream *sm)
+{
+    const size_t sz = sm->priv.size;
+    PrependData *pd = (PrependData*)sm->priv.extra;
+    *sm = pd->orig; // put back into its original memory location in case something depends on this
+    pd->alloc(pd->allocUD, pd, sizeof(PrependData) + sz, 0);
+}
+
+static size_t streamPrependRefillRestore(tio_Stream *sm)
+{
+    streamPrependRestore(sm);
+    return tio_savail(sm); // continue as if nothing had happened with cursor/begin/end as they were
+}
+
+// for when the user closes the stream while it's still transmogrified
+static void streamPrependClose(tio_Stream *sm)
+{
+    streamPrependRestore(sm);
+    sm->Close(sm);
+}
+
+static size_t streamPrependRefill(tio_Stream *sm)
+{
+    const size_t sz = sm->priv.size;
+    sm->begin = sm->cursor = (char*)sm->priv.extra + sizeof(PrependData);
+    sm->end = sm->begin + sz;
+    sm->Refill = streamPrependRefillRestore; // next time undo self
+    return sz;
+}
+
+TIO_PRIVATE tio_error streamprepend(tio_Stream *sm, const void *data, size_t sz, tio_Alloc alloc, void *allocUD)
+{
+    if(!sz)
+        return 0;
+    void *state = alloc(allocUD, NULL, tioStreamAllocMarker, sizeof(PrependData) + sz);
+    if(!state)
+        return tio_Error_MemAllocFail;
+    PrependData *dst = (PrependData*)state;
+    dst->orig = *sm;
+    char *p = (char*)(dst + 1);
+    tio__memcpy(p, data, sz);
+    sm->begin = sm->cursor = p;
+    sm->end = p + sz;
+    sm->Refill = streamPrependRefill;
+    sm->Close = streamPrependClose;
+    sm->priv.extra = state;
+    sm->priv.size = sz;
+    return 0;
+}
