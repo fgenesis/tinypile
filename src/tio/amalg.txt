@@ -18,11 +18,7 @@
 < tio_priv.cpp
 # Win32 is self-contained and does not need POSIX stuff
 < tio_os_win32.cpp
-# POSIX-like syscall defs
-< tio_sys.h
-< tio_sys_linux.cpp
-< tio_sys_posix_libc.cpp
-# The actual code that uses those syscalls
+# POSIX-like syscalls via libc
 < tio_os_posix.cpp
 # Fallback
 < tio_os_libc.cpp
