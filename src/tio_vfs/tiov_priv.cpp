@@ -4,6 +4,8 @@ static const unsigned LOAD_FACTOR = 8;
 static const unsigned INITIAL_BUCKETS = 8; // must be power of 2
 //static const unsigned INITIAL_STRPOOL_SIZE = 1024;
 
+
+
 // Byte-wise larson hash, used as finalizer for remaining non-word size
 // via http://www.strchr.com/hash_functions
 inline static unsigned larsonhash(const char *s, size_t len)
@@ -25,7 +27,7 @@ inline static unsigned lowbias32(unsigned x)
     return x;
 }
 
-// Note: Not endian safe, but doesn't matter as long as we get those bits jumbled
+// Note: Not endian safe, but doesn't komatter as long as we get those bits jumbled
 static unsigned strhash(const void *s, size_t len)
 {
     unsigned hash = 0;

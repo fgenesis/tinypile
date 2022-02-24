@@ -5,6 +5,14 @@ Currently win32 only, sorry
 
 #include "nolibc.h"
 
+#ifdef __attribute__
+#define ATTR_NO_BUILTINS __attribute__((no_builtin))
+#else
+#define ATTR_NO_BUILTINS
+#endif
+
+
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -95,7 +103,7 @@ NOLIBC_EXPORT void *norealloc(void *o, size_t n)
     return p + AllocExtraSize;
 }
 
-NOLIBC_EXPORT void *nomemcpy(void *dst, const void *src, size_t n)
+NOLIBC_EXPORT void *nomemcpy(void *dst, const void *src, size_t n) ATTR_NO_BUILTINS
 {
     /* non-overlapping buffers, so copy from
        lower addresses to higher addresses */
@@ -110,7 +118,7 @@ NOLIBC_EXPORT void *nomemcpy(void *dst, const void *src, size_t n)
     return dst;
 }
 
-NOLIBC_EXPORT void *nomemmove(void *dst, const void *src, size_t n)
+NOLIBC_EXPORT void *nomemmove(void *dst, const void *src, size_t n) ATTR_NO_BUILTINS
 {
     if(n)
     {
@@ -133,7 +141,7 @@ NOLIBC_EXPORT void *nomemmove(void *dst, const void *src, size_t n)
     return dst;
 }
 
-NOLIBC_EXPORT void *nomemset(void *dst, int x, size_t n)
+NOLIBC_EXPORT void *nomemset(void *dst, int x, size_t n) ATTR_NO_BUILTINS
 {
     if(n)
     {
@@ -146,7 +154,7 @@ NOLIBC_EXPORT void *nomemset(void *dst, int x, size_t n)
     return dst;
 }
 
-NOLIBC_EXPORT int nomemcmp(const void *a, const void *b, size_t n)
+NOLIBC_EXPORT int nomemcmp(const void *a, const void *b, size_t n) ATTR_NO_BUILTINS
 {
     if(!n)
         return 0;
@@ -159,7 +167,7 @@ NOLIBC_EXPORT int nomemcmp(const void *a, const void *b, size_t n)
     return (int)(char)d;
 }
 
-NOLIBC_EXPORT size_t nostrlen(const char *s)
+NOLIBC_EXPORT size_t nostrlen(const char *s) ATTR_NO_BUILTINS
 {
     const char * const b = s;
     while(*s++) {}

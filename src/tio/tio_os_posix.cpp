@@ -2,6 +2,9 @@
 
 #if TIO_SYS_POSIX+0
 
+/* -- POSIX syscall interface --
+This uses the standard libc functions to make syscalls */
+
 // TODO: look into MAP_HUGETLB -- requirements should be ok since the win32 code already requires a specific alignment and such
 
 #include <unistd.h>
