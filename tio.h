@@ -610,6 +610,8 @@ TIO_EXPORT tio_error tio_mmflush(tio_Mapping *map, tio_FlushMode flush);
 /* Control stream behavior */
 enum tio_StreamFlags_
 {
+    tioS_Default = 0x00,
+
     /* On EOF or error, by default a stream stops providing data (cursor == begin == end),
     means it will will always report 0 bytes processed.
     Specify this flag to instead emit an infinite trickle of zeros when reading.
@@ -624,7 +626,7 @@ enum tio_StreamFlags_
     This flag is ignored for streams that do not depend on other data sources. */
     tioS_CloseBoth = 0x02,
 };
-typedef unsigned tio_StreamFlags;
+TIO_DECL_BITWISE_ENUM(tio_StreamFlags, tio_StreamFlags_)
 
 typedef struct tio_Stream tio_Stream;
 struct tio_Stream
@@ -737,7 +739,7 @@ TIO_EXPORT size_t tio_streamfail(tio_Stream *sm);
    what you do with the pointers is up to you.
    The block size is exact, except the tail end may be smaller.
    Pass blocksize == 0 to use the entire memory as a single block. */
-TIO_EXPORT tio_error tio_memstream(tio_Stream *sm, const void *mem, size_t memsize,
+TIO_EXPORT void tio_memstream(tio_Stream *sm, const void *mem, size_t memsize,
     tio_StreamFlags flags, size_t blocksize);
 
 /* Wrap an existing tio_MMIO into a stream.

@@ -88,7 +88,7 @@ TIO_PRIVATE size_t streamEOF(tio_Stream* sm); // sets err = EOF, then calls stre
 TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, size_t srcsize, tio_CleanFlags flags);
 TIO_PRIVATE tio_error openfile(tio_Handle *hOut, OpenMode *om, char *fn, tio_Mode mode, tio_Features& features, unsigned wflags = 0);
 TIO_PRIVATE tio_error initfilestream(tio_Stream* sm, char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
-TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, const void *mem, size_t memsize, tio_StreamFlags flags, size_t blocksize);
+TIO_PRIVATE void initmemstream(tio_Stream *sm, const void *mem, size_t memsize, tio_StreamFlags flags, size_t blocksize);
 TIO_PRIVATE tio_error initmmiostream(tio_Stream *sm, tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
 TIO_PRIVATE tio_error streamprepend(tio_Stream *sm, const void *data, size_t sz, tio_Alloc alloc, void *allocUD);
 

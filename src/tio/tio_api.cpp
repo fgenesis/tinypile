@@ -427,10 +427,10 @@ TIO_EXPORT size_t tio_streamfail(tio_Stream* sm)
     return streamfail(sm);
 }
 
-TIO_EXPORT tio_error tio_memstream(tio_Stream *sm, const void *mem, size_t memsize, tio_StreamFlags flags, size_t blocksize)
+TIO_EXPORT void tio_memstream(tio_Stream *sm, const void *mem, size_t memsize, tio_StreamFlags flags, size_t blocksize)
 {
     checknotnull_err(sm);
-    return initmemstream(sm, mem, memsize, flags, blocksize);
+    initmemstream(sm, mem, memsize, flags, blocksize);
 }
 
 TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, tio_MMIO *mmio, tiosize offset, tiosize maxsize, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void *allocUD)
