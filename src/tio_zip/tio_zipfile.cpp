@@ -15,6 +15,12 @@
 // Zip file
 //-----------------------------------------------------------------------------
 
+enum Maybe
+{
+    HARD_NOPE,
+    SOFT_NOPE,
+    YEAH
+};
 
 enum
 {
@@ -23,6 +29,145 @@ enum
     ZIP_END_MAXSIZE = ZIP_END_HDR_SIZE + 0xffff // with comment field
 
 };
+
+
+static Maybe parseEOCDNoSig(tio_ZipInfo *info, tio_Stream *sm)
+{
+    BinRead rd(sm);
+    //u32 sig;
+    u16 diskNum;
+    u16 diskCDHStart;
+    u16 myCDHNum;
+    u32 totalCDH;
+    u32 sizeofCDH;
+    u32 offsetCDH;
+    u16 commentLen;
+    // + u8[commentLen], not interested in this
+
+    /*rd >> sig;
+    if(sig != ZIP_END_MAGIC)
+        return SOFT_NOPE;*/
+
+    rd >> diskNum >> diskCDHStart >> myCDHNum >> totalCDH >> sizeofCDH >> offsetCDH >> commentLen;
+    if(!rd)
+        return SOFT_NOPE;
+
+    // check that we're really a properly terminated footer
+    if(commentLen != tio_savail(sm))
+        return SOFT_NOPE;
+
+    // looks valid.
+    // But don't support multi-archive zips. If it is one then there's no use trying other offsets
+    if(diskNum != diskCDHStart || myCDHNum != totalCDH)
+        return HARD_NOPE;
+
+    if(diskNum)
+        return HARD_NOPE;
+
+    info->centralDirOffset = offsetCDH;
+    info->sizeofCentralDir = sizeofCDH;
+    info->numCentralDirEntries = totalCDH;
+    return YEAH;
+
+}
+
+static Maybe parseEOCDNoSig(tio_ZipInfo *info, const char *ptr, size_t sz)
+{
+    tio_Stream sm;
+    tio_memstream(&sm, ptr, sz, tioS_Default, 0);
+    return parseEOCDNoSig(info, &sm);
+}
+
+TIO_EXPORT tio_error tio_zip_findEOCD(tio_ZipInfo* info, const void* tailbuf, size_t tailbufSize)
+{
+    if(tailbufSize < ZIP_END_HDR_SIZE)
+        return tio_Error_Unspecified;
+    const char * const tail = (const char*)tailbuf;
+    const char *p = tail + (tailbufSize - ZIP_END_HDR_SIZE);
+    size_t avail = ZIP_END_HDR_SIZE - 4;
+    for( ; tail < p; --p, ++avail)
+    {
+        // quick check for valid sig
+        if(p[0] == 0x50 && p[1] == 0x4b && p[2] == 0x05 && p[3] == 0x06)
+        {
+            switch(parseEOCDNoSig(info, p + 4, avail))
+            {
+                case HARD_NOPE:
+                    return tio_Error_DataError;
+
+                case SOFT_NOPE:
+                    break; // keep trying
+
+                case YEAH:
+                    return 0;
+            }
+        }
+    }
+    return tio_Error_NotFound;
+}
+
+// This is exactly the in-memory structure
+// there's probably extra padding but that doesn't matter
+struct CDH
+{
+    u16 gpBit;
+    u16 compMethod;
+    u16 modtime;
+    u16 moddate;
+    u32 crc;
+    u32 compSize;
+    u32 uncompSize;
+    u16 fileNameLen;
+    u16 extraFieldLen;
+    u16 fileCommentLen;
+    u16 diskNum;
+    u16 internalAttrib;
+    u32 externalAttrib;
+    u32 relOffset;
+    // u8[fileNameLen]
+    // u8[extraFieldLen]
+    // u8[fileCommentLen]
+};
+
+struct FileEntry
+{
+    const char *fileName;
+    size_t fileNameLen;
+    tiosize compSize;
+    tiosize uncompSize;
+    tiosize absOffset;
+    unsigned compMethod;
+};
+
+static BinRead& operator>>(BinRead& rd, CDH& h)
+{
+    rd >> h.gpBit >> h.compMethod >> h.modtime >> h.moddate >> h.crc >> h.compSize >> h.uncompSize
+       >> h.fileNameLen >> h.extraFieldLen >> h.fileCommentLen >> h.diskNum >> h.internalAttrib
+       >> h.externalAttrib >> h.relOffset;
+    // rd is now at beginning of file name
+    return rd;
+}
+
+// precond: sm reading position is at first CDH entry
+// TODO: returns list of FileEntry
+TIO_EXPORT tio_error tio_zip_readCDH(tio_ZipIndex **pIdx, size_t *pNum, tio_Stream *sm, const tio_ZipInfo *info, tio_Alloc alloc, void *allocUD)
+{
+    BinRead rd(sm);
+    PodVec<char> filenames(alloc, allocUD);
+    PodVec<FileEntry> files(alloc, allocUD);
+    const size_t N = info->numCentralDirEntries;
+    for(size_t i = 0; i < N; ++i)
+    {
+        CDH h;
+        if(!(rd >> h))
+            return tio_Error_DataError;
+
+        // do checks
+        switch(h.compMethod) {}
+
+    }
+}
+
 /*
 u32 signature; // +0
 u16 diskNumber; // +4

@@ -43,17 +43,24 @@ typedef  int64_t s64;
 #ifdef __has_builtin
 #  if __has_builtin(__builtin_memcpy_inline)
 #    define tio__comptime_memcpy(dst, src, n) __builtin_memcpy_inline(dst, src, n)
-#  if __has_builtin(__builtin_memcpy)
+#  elif __has_builtin(__builtin_memcpy)
 #    define tio__comptime_memcpy(dst, src, n) __builtin_memcpy(dst, src, n)
+#  endif
+#  if __has_builtin(__builtin_memcmp)
+#    define tio__comptime_memcmp(a, b, n) __builtin_memcmp(a, b, n)
 #  endif
 #endif
 #ifndef tio__comptime_memcpy
 #  define tio__comptime_memcpy(dst, src, n) tio_memcpy(dst, src, n)
 #endif
+#ifndef tio__comptime_memcmp
+#  define tio__comptime_memcmp(dst, src, n) tio_memcmp(dst, src, n)
+#endif
 
 // don't use this with nonblocking streams!
 class BinRead
 {
+public:
     tio_Stream * const sm;
 
     inline BinRead(tio_Stream *sm) : sm(sm) {}
@@ -96,7 +103,79 @@ class BinRead
         return _readslow(dst, tio_savail(sm), n);
     }
 
+    template<typename T>
+    inline T read()
+    {
+        T x = T(0);
+        this->template readT<T>(x);
+        return x;
+    }
+
 private:
     BinRead& _readslow(void *dst, size_t have, size_t n);
 };
 
+
+template<typename T>
+struct PodVec
+{
+    PodVec(tio_Alloc alloc, void *allocUD)
+        : data(0), used(0), cap(0), _alloc(alloc), _allocUD(allocUD)
+    {}
+    ~PodVec()
+    {
+        dealloc();
+    }
+    void dealloc()
+    {
+        if(data)
+        {
+            _alloc(_allocUD, data, cap * sizeof(T), 0);
+            data = 0;
+            used = 0;
+            cap = 0;
+        }
+    }
+    inline void clear()
+    {
+        used = 0;
+    }
+    inline T *push_back(const T& e)
+    {
+        T *dst = alloc(1);
+        if(dst)
+            *dst = e;
+        return dst;
+    }
+    T *alloc(size_t n)
+    {
+        T *e = 0;
+        if(used+n < cap || _grow(used+n))
+        {
+            e = data + used;
+            ++used;
+        }
+        return e;
+    }
+    inline size_t size() const { return used; }
+    inline T& operator[](size_t idx) const { return data[idx]; }
+
+    T *_grow(size_t mincap)
+    {
+        size_t newcap = cap ? cap : 1;
+        while(newcap < mincap)
+            newcap *= 2;
+        T *p = (T*)_alloc(_allocUD, data, cap * sizeof(T), newcap * sizeof(T));
+        if(p)
+        {
+            data = p;
+            cap = newcap;
+        }
+        return p;
+    }
+
+    T *data;
+    size_t used, cap;
+    tio_Alloc const _alloc;
+    void * const _allocUD;
+};
