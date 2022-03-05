@@ -64,4 +64,10 @@ TIO_EXPORT tio_error tio_zip_findEOCD(tio_ZipInfo *info, const void *tailbuf, si
 TIO_EXPORT tio_error tio_zip_readCDH(tio_ZipFileList *pFiles, tio_Stream *sm, const tio_ZipInfo *info, tio_Alloc alloc, void *allocUD);
 TIO_EXPORT void tio_zip_freeCDH(tio_ZipFileList *pFiles);
 
-//TIO_EXPORT tio_error tio_zip_openStream(tio_Stream *s
+struct tio_ZipReadFunc
+{
+    int dummy;
+};
+typedef struct tio_ZipReadFunc tio_ZipReadFunc;
+
+TIO_EXPORT tio_error tio_zip_openStream(tio_Stream *s, const tio_ZipReadFunc *zf, void *zfud, tio_Alloc alloc, void *allocUD);

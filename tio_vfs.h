@@ -120,17 +120,24 @@ Never mix functions from tio_k*() and tiov_f*(), they operate on entirely differ
 
 TIO_EXPORT tio_error  tiov_fopen   (tiov_FH **hDst,  const tiov_FS *fs, const char *fn, tio_Mode mode, tio_Features features);
 TIO_EXPORT tio_error  tiov_fclose  (tiov_FH *fh); /* Closing a file will not flush it immediately. */
-TIO_EXPORT tiosize    tiov_fwrite  (tiov_FH *fh, const void *ptr, size_t bytes);
 TIO_EXPORT tiosize    tiov_fread   (tiov_FH *fh, void *ptr, size_t bytes);
+TIO_EXPORT tiosize    tiov_fwrite  (tiov_FH *fh, const void *ptr, size_t bytes);
 TIO_EXPORT tio_error  tiov_fseek   (tiov_FH *fh, tiosize offset, tio_Seek origin);
 TIO_EXPORT tio_error  tiov_ftell   (tiov_FH *fh, tiosize *poffset); /* Write position offset location */
 TIO_EXPORT tio_error  tiov_fflush  (tiov_FH *fh); /* block until write to disk is complete */
-TIO_EXPORT int        tiov_feof    (tiov_FH *fh);
 TIO_EXPORT tio_error  tiov_fgetsize(tiov_FH *fh, tiosize *pbytes); /* Get total file size */
 TIO_EXPORT tio_error  tiov_fsetsize(tiov_FH *fh, tiosize bytes); /* Change file size on disk, truncate or enlarge. New areas' content is undefined. */
 TIO_EXPORT tiosize    tiov_fsize   (tiov_FH *fh); /* Shortcut for tio_fgetsize(), returns size of file or 0 on error */
 
-// TODO: readat, readx, readatx, writeat, writex, writeatx
+/* R/W with explicit offset, doesn't use the internal file position */
+TIO_EXPORT tiosize    tiov_freadat (tiov_FH *fh, void *ptr, size_t bytes, tiosize offset);
+TIO_EXPORT tiosize    tiov_fwriteat(tiov_FH *fh, const void *ptr, size_t bytes, tiosize offset);
+
+/* R/W with explicit error return, writes number of bytes done to *psz */
+TIO_EXPORT tio_error  tiov_freadx  (tiov_FH *fh, size_t *psz, void *ptr, size_t bytes);
+TIO_EXPORT tio_error  tiov_fwritex (tiov_FH *fh, size_t *psz, const void *ptr, size_t bytes);
+TIO_EXPORT tio_error  tiov_freadatx (tiov_FH *fh, size_t *psz, void *ptr, size_t bytes, tiosize offset);
+TIO_EXPORT tio_error  tiov_fwriteatx(tiov_FH *fh, size_t *psz, const void *ptr, size_t bytes, tiosize offset);
 
 /* ---- MMIO ----
 Same as tio_mopen() and tio_mopenmap(), but takes an extra fs as 2nd parameter.
@@ -280,17 +287,16 @@ struct tiov_Backend
 // If a function is not available, set to NULL.
 struct tiov_FileOps
 {
-    tio_error (*Close)  (tiov_FH*);
-    size_t    (*Read)   (tiov_FH*, void*, size_t);
-    size_t    (*Write)  (tiov_FH*, const void*, size_t);
-    size_t    (*ReadAt) (tiov_FH*, void*, size_t, tiosize);
-    size_t    (*WriteAt)(tiov_FH*, const void*, size_t, tiosize);
-    tio_error (*Seek)   (tiov_FH*, tiosize, tio_Seek);
-    tio_error (*Tell)   (tiov_FH*, tiosize*);
-    tio_error (*Flush)  (tiov_FH*);
-    int       (*Eof)    (tiov_FH*); /* Return 1 on eof, negative value on error, 0 otherwise */
-    tio_error (*GetSize)(tiov_FH*, tiosize*);
-    tio_error (*SetSize)(tiov_FH*, tiosize);
+    tio_error (*Close)   (tiov_FH*);
+    tio_error (*Readx)   (tiov_FH*, size_t *psz, void*, size_t);
+    tio_error (*Writex)  (tiov_FH*, size_t *psz, const void*, size_t);
+    tio_error (*ReadAtx) (tiov_FH*, size_t *psz, void*, size_t, tiosize);
+    tio_error (*WriteAtx)(tiov_FH*, size_t *psz, const void*, size_t, tiosize);
+    tio_error (*Seek)    (tiov_FH*, tiosize, tio_Seek);
+    tio_error (*Tell)    (tiov_FH*, tiosize*);
+    tio_error (*Flush)   (tiov_FH*);
+    tio_error (*GetSize) (tiov_FH*, tiosize*);
+    tio_error (*SetSize) (tiov_FH*, tiosize);
 };
 
 /* Create a new file system from a backend definition.

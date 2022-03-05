@@ -22,7 +22,7 @@ What to pick?
    if(!f) return;                          |  if(tio_sopen(&sm, ...)) return; // 0 == no error
    while(!feof(f))                         |  while(!sm.err)
    {                                       |  {
-        char buf[SIZE];                    |     size_t n = sm->Refill(sm);
+        char buf[SIZE];                    |     size_t n = tio_srefill(sm);
         size_t n = fread(buf, 1, SIZE, f); |     // use [sm.begin .. sm.end) // no copy!
         // use buf[0..n)                   |     // aka sm.begin[0..n)
    }                                       |  }
@@ -436,7 +436,7 @@ TIO_EXPORT tio_error  tio_kwriteatx(tio_Handle fh, size_t *psz, const void* ptr,
 
 /* Copy data from one handle to another. Put size to copy in pbytes,
    which will be updated with the actual number of bytes copied. */
-//TIO_EXPORT tio_error  tio_kcopy   (tio_Handle to, tio_Handle from, tiosize *pbytes); // TODO
+/* TIO_EXPORT tio_error  tio_kcopy   (tio_Handle to, tio_Handle from, tiosize *pbytes); **TODO?** */
 
 /* Get handle to stdin, stdout, stderr if those exist.
    Do NOT close these handles unless you know what you're doing.
@@ -857,6 +857,31 @@ struct tio_MMFunc
     tio_error (*close)(tio_MMIO* mmio);
 };
 
+/*
+**DRAFT**
+struct tio_StreamSnapshot
+{
+    void (*Free)(tio_StreamSnapshot *self);
+
+    struct
+    {
+        tiosize pos;
+        void *data;
+        size_t size;
+        tio_Alloc alloc;
+        void *allocUD;
+    } priv;
+};
+void tio_freeSnapshot(tio_Snapshot *snap);
+
+struct tio_StreamFunc
+{
+    void      (*Close)(tio_Stream *s);
+    tio_error (*Snapshot)(tio_StreamSnapshot *snap, const tio_Stream *sm);
+    tio_error (*Seek)(tio_Stream *sm, const tio_StreamSnapshot *snap);
+};
+*/
+
 /* Markers so that a custom allocator can see who requested memory. */
 enum tioAllocConstants
 {
@@ -887,3 +912,14 @@ TIO_EXPORT void tio_memset(void *dst, int x, size_t n);
 #endif
 
 /* ---- End compile config ---- */
+
+
+/* TODO/PLANS/IDEA-DUMP
+
+- replace stream Close() with a ptr to a "class" type that has close() and some other functions
+  - there doesn't seem to be a reason why we'd want to change Close() as much as Refill()
+- stream snapshot() + seek() to snapshot (for compressed streams we need to save the window + state)
+- remove unconditional tioF_Sequential for streams and instead make it disable snapshots
+  stream can still stay naturally sequential though
+- implement vfs read functions for archives entirely via streams? snapshot on seek?
+*/

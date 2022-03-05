@@ -106,31 +106,64 @@ TIO_EXPORT tio_error tiov_fclose(tiov_FH *fh)
 
 TIO_EXPORT tiosize tiov_fread(tiov_FH *fh, void *ptr, size_t bytes)
 {
-    return fh->Read
-        ? fh->Read(fh, ptr, bytes)
-        : tio_Error_Unsupported;
+    tiosize sz = 0;
+    if(fh->Readx)
+        fh->Readx(fh, &sz, ptr, bytes);
+    return sz;
 }
 
 TIO_EXPORT tiosize tiov_fwrite(tiov_FH *fh, const void *ptr, size_t bytes)
 {
-    return fh->Write
-        ? fh->Write(fh, ptr, bytes)
-        : tio_Error_Unsupported;
+    tiosize sz = 0;
+    if(fh->Writex)
+        fh->Writex(fh, &sz, ptr, bytes);
+    return sz;
 }
 
 TIO_EXPORT tiosize tiov_freadat(tiov_FH *fh, void *ptr, size_t bytes, tiosize offset)
 {
-    return fh->ReadAt
-        ? fh->ReadAt(fh, ptr, bytes, offset)
-        : tio_Error_Unsupported;
+    tiosize sz = 0;
+    if(fh->ReadAtx)
+        fh->ReadAtx(fh, &sz, ptr, bytes, offset);
+    return sz;
 }
 
 TIO_EXPORT tiosize tiov_fwriteat(tiov_FH *fh, const void *ptr, size_t bytes, tiosize offset)
 {
-    return fh->WriteAt
-        ? fh->WriteAt(fh, ptr, bytes, offset)
+    tiosize sz = 0;
+    if(fh->WriteAtx)
+        fh->WriteAtx(fh, &sz, ptr, bytes, offset);
+    return sz;
+}
+
+TIO_EXPORT tio_error tiov_freadx(tiov_FH *fh, size_t *psz, void *ptr, size_t bytes)
+{
+    return fh->Readx
+        ? fh->Readx(fh, psz, ptr, bytes)
         : tio_Error_Unsupported;
 }
+
+TIO_EXPORT tio_error tiov_fwritex(tiov_FH *fh, size_t *psz, const void *ptr, size_t bytes)
+{
+    return fh->Writex
+        ? fh->Writex(fh, psz, ptr, bytes)
+        : tio_Error_Unsupported;
+}
+
+TIO_EXPORT tio_error tiov_freadatx(tiov_FH *fh, size_t *psz, void *ptr, size_t bytes, tiosize offset)
+{
+    return fh->ReadAtx
+        ? fh->ReadAtx(fh, psz, ptr, bytes, offset)
+        : tio_Error_Unsupported;
+}
+
+TIO_EXPORT tio_error tiov_fwriteatx(tiov_FH *fh, size_t *psz, const void *ptr, size_t bytes, tiosize offset)
+{
+    return fh->WriteAtx
+        ? fh->WriteAtx(fh, psz, ptr, bytes, offset)
+        : tio_Error_Unsupported;
+}
+
 
 TIO_EXPORT tio_error tiov_fseek(tiov_FH *fh, tiosize offset, tio_Seek origin)
 {
@@ -150,13 +183,6 @@ TIO_EXPORT tio_error tiov_fflush(tiov_FH *fh)
 {
     return fh->Flush
         ? fh->Flush(fh)
-        : tio_Error_Unsupported;
-}
-
-TIO_EXPORT int tiov_feof(tiov_FH *fh)
-{
-    return fh->Eof
-        ? fh->Eof(fh)
         : tio_Error_Unsupported;
 }
 

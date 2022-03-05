@@ -15,11 +15,11 @@ tio_error zf_close(tiov_FH *f)
 {
     return -1; // TODO
 }
-size_t zf_read(tiov_FH *f, void *dst, size_t bytes)
+tio_error zf_readx(tiov_FH *f, size_t *psz, void *dst, size_t bytes)
 {
     return 0; // TODO
 }
-size_t zf_readat(tiov_FH *f, void *dst, size_t bytes, tiosize offset)
+tio_error zf_readatx(tiov_FH *f, size_t *psz, void *dst, size_t bytes, tiosize offset)
 {
     return 0; // TODO
 }
@@ -35,10 +35,6 @@ tio_error zf_flush(tiov_FH *f)
 {
     return -1; // TODO
 }
-int zf_eof(tiov_FH *f)
-{
-    return -1; // TODO
-}
 tio_error zf_getsize(tiov_FH *f, tiosize *psize)
 {
     return -1; // TODO
@@ -51,14 +47,13 @@ tio_error zf_setsize(tiov_FH *f, tiosize bytes)
 static const tiov_FileOps zipfs_fops =
 {
     zf_close,
-    zf_read,
-    NULL, // write
-    zf_readat,
-    NULL, // writeat
+    zf_readx,
+    NULL, // writex
+    zf_readatx,
+    NULL, // writeatx
     zf_seek,
     zf_tell,
     NULL, // flush
-    zf_eof,
     zf_getsize,
     NULL // setsize
 };

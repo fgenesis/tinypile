@@ -19,21 +19,21 @@ static tio_error f_close(tiov_FH *f)
 {
     return tio_kclose(FH);
 }
-static size_t f_read(tiov_FH *f, void *dst, size_t bytes)
+static tio_error f_readx(tiov_FH *f, size_t *psz, void *dst, size_t bytes)
 {
-    return tio_kread(FH, dst, bytes);
+    return tio_kreadx(FH, psz, dst, bytes);
 }
-static size_t f_write(tiov_FH *f, const void *src, size_t bytes)
+static tio_error f_writex(tiov_FH *f, size_t *psz, const void *src, size_t bytes)
 {
-    return tio_kwrite(FH, src, bytes);
+    return tio_kwritex(FH, psz, src, bytes);
 }
-static size_t f_readat(tiov_FH *f, void *dst, size_t bytes, tiosize offset)
+static tio_error f_readatx(tiov_FH *f, size_t *psz, void *dst, size_t bytes, tiosize offset)
 {
-    return tio_kreadat(FH, dst, bytes, offset);
+    return tio_kreadatx(FH, psz, dst, bytes, offset);
 }
-static size_t f_writeat(tiov_FH *f, const void *src, size_t bytes, tiosize offset)
+static tio_error f_writeatx(tiov_FH *f, size_t *psz, const void *src, size_t bytes, tiosize offset)
 {
-    return tio_kwriteat(FH, src, bytes, offset);
+    return tio_kwriteatx(FH, psz, src, bytes, offset);
 }
 static tio_error f_seek(tiov_FH *f, tiosize offset, tio_Seek origin)
 {
@@ -46,11 +46,6 @@ static tio_error f_tell(tiov_FH *f, tiosize *poffset)
 static tio_error f_flush(tiov_FH *f)
 {
     return tio_kflush(FH);
-}
-static int f_eof(tiov_FH *f)
-{
-    (void)f;
-    return -1; // tio_keof(FH); // FIXME
 }
 static tio_error f_getsize(tiov_FH *f, tiosize *psize)
 {
@@ -65,14 +60,13 @@ static tio_error f_setsize(tiov_FH *f, tiosize bytes)
 static const tiov_FileOps sysfs_fops =
 {
     f_close,
-    f_read,
-    f_write,
-    f_readat,
-    f_writeat,
+    f_readx,
+    f_writex,
+    f_readatx,
+    f_writeatx,
     f_seek,
     f_tell,
     f_flush,
-    f_eof,
     f_getsize,
     f_setsize
 };

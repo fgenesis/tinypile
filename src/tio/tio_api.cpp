@@ -140,7 +140,7 @@ TIO_EXPORT size_t tio_kreadat(tio_Handle fh, void* dst, size_t bytes, tiosize of
     return sz;
 }
 
-TIO_EXPORT tio_error tio_kreadx(tio_Handle fh, size_t* psz, void* dst, size_t bytes)
+TIO_EXPORT tio_error tio_kreadx(tio_Handle fh, size_t *psz, void* dst, size_t bytes)
 {
     checkhandle_err(fh);
     checknotnull_err(psz);

@@ -219,7 +219,7 @@ TIO_EXPORT tio_error tio_zip_readCDH(tio_ZipFileList *pFiles, tio_Stream *sm, co
         if(!(rd >> h) || h.sig != 0x02014b50)
             return tio_Error_DataError;
 
-        NameEntry ne = z->addName(h.fileNameLen + 1); // + \0
+        NameEntry ne = z->addName(size_t(h.fileNameLen) + 1); // + \0
         if(!tmp.resize(h.extraFieldLen) || !ne.dst)
         {
             err = tio_Error_MemAllocFail;
@@ -269,5 +269,3 @@ size_t files[] -> indices into ArchiveFileHelper
 ArchiveFileHelper class that manages array of
 { StringPool::Ref name, filesize, filetype, offset, ...? }
 */
-
-k

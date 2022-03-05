@@ -338,13 +338,19 @@ tiov_FH* tiov_FH::New(const tiov_FS* fs, const tiov_FileOps* fops, tio_Mode mode
     if(features & tioF_Sequential)
     {
         fh->Seek = NULL;
-        fh->ReadAt = NULL;
-        fh->WriteAt = NULL;
+        fh->ReadAtx = NULL;
+        fh->WriteAtx = NULL;
     }
     if(!(mode & tio_W))
-        fh->Write = NULL;
+    {
+        fh->Writex = NULL;
+        fh->WriteAtx = NULL;
+    }
     if(!(mode & tio_R))
-        fh->Read = NULL;
+    {
+        fh->Readx = NULL;
+        fh->ReadAtx = NULL;
+    }
 
     return fh;
 }
