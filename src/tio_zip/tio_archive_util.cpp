@@ -1,5 +1,11 @@
 #include "tio_archive_util.h"
 
+void BinRead::skip(size_t n)
+{
+    while(n)
+        n -= tio_sskip(sm, n);
+}
+
 BinRead &BinRead::_readslow(void *dst, size_t have, size_t n)
 {
     char *p = (char*)dst;
@@ -12,7 +18,7 @@ BinRead &BinRead::_readslow(void *dst, size_t have, size_t n)
         {
             have = tio_srefill(sm); // assumes that the stream will not permanently refill 0 bytes without eventually setting error
             if(sm->err)
-                break;
+                return *this;
             src = sm->cursor;
         }
     slowcopy:

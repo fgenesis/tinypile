@@ -30,6 +30,13 @@ enum
 
 };
 
+// operator new() without #include <new>
+struct zipNewDummy {};
+inline void* operator new(size_t, zipNewDummy, void* ptr) { return ptr; }
+inline void  operator delete(void*, zipNewDummy, void*)       {}
+
+#define ZIP_PLACEMENT_NEW(p) new(zipNewDummy(), p)
+
 
 static Maybe parseEOCDNoSig(tio_ZipInfo *info, tio_Stream *sm)
 {
@@ -38,7 +45,7 @@ static Maybe parseEOCDNoSig(tio_ZipInfo *info, tio_Stream *sm)
     u16 diskNum;
     u16 diskCDHStart;
     u16 myCDHNum;
-    u32 totalCDH;
+    u16 totalCDH;
     u32 sizeofCDH;
     u32 offsetCDH;
     u16 commentLen;
@@ -53,8 +60,8 @@ static Maybe parseEOCDNoSig(tio_ZipInfo *info, tio_Stream *sm)
         return SOFT_NOPE;
 
     // check that we're really a properly terminated footer
-    if(commentLen != tio_savail(sm))
-        return SOFT_NOPE;
+    //if(commentLen != tio_savail(sm))
+    //    return SOFT_NOPE;
 
     // looks valid.
     // But don't support multi-archive zips. If it is one then there's no use trying other offsets
@@ -110,6 +117,9 @@ TIO_EXPORT tio_error tio_zip_findEOCD(tio_ZipInfo* info, const void* tailbuf, si
 // there's probably extra padding but that doesn't matter
 struct CDH
 {
+    u32 sig;
+    u16 versionMadeBy;
+    u16 versionNeeded;
     u16 gpBit;
     u16 compMethod;
     u16 modtime;
@@ -129,178 +139,126 @@ struct CDH
     // u8[fileCommentLen]
 };
 
-struct FileEntry
-{
-    const char *fileName;
-    size_t fileNameLen;
-    tiosize compSize;
-    tiosize uncompSize;
-    tiosize absOffset;
-    unsigned compMethod;
-};
-
 static BinRead& operator>>(BinRead& rd, CDH& h)
 {
-    rd >> h.gpBit >> h.compMethod >> h.modtime >> h.moddate >> h.crc >> h.compSize >> h.uncompSize
+    rd >> h.sig >> h.versionMadeBy >> h.versionNeeded
+       >> h.gpBit >> h.compMethod >> h.modtime >> h.moddate >> h.crc >> h.compSize >> h.uncompSize
        >> h.fileNameLen >> h.extraFieldLen >> h.fileCommentLen >> h.diskNum >> h.internalAttrib
        >> h.externalAttrib >> h.relOffset;
     // rd is now at beginning of file name
     return rd;
 }
 
-// precond: sm reading position is at first CDH entry
-// TODO: returns list of FileEntry
-TIO_EXPORT tio_error tio_zip_readCDH(tio_ZipIndex **pIdx, size_t *pNum, tio_Stream *sm, const tio_ZipInfo *info, tio_Alloc alloc, void *allocUD)
+struct NameEntry
 {
-    BinRead rd(sm);
-    PodVec<char> filenames(alloc, allocUD);
-    PodVec<FileEntry> files(alloc, allocUD);
-    const size_t N = info->numCentralDirEntries;
-    for(size_t i = 0; i < N; ++i)
-    {
-        CDH h;
-        if(!(rd >> h))
-            return tio_Error_DataError;
-
-        // do checks
-        switch(h.compMethod) {}
-
-    }
-}
-
-/*
-u32 signature; // +0
-u16 diskNumber; // +4
-u16 centralDirectoryDiskNumber; // +6
-u16 numEntriesThisDisk; // +8
-u16 numEntries; // +10
-u32 centralDirectorySize; // +12
-u32 centralDirectoryOffset; // +16
-u16 commentLen; // +20
-*/
-struct ZipFooter // relevant parts we need
-{
-    unsigned numEntries;
-    unsigned centralDirectorySize;
-    unsigned centralDirectoryOffset;
+    char *dst;
+    char *rel;
 };
 
-inline static unsigned short read16LE(const char *p)
+struct ZipFileListData
 {
-    return p[0] | (p[1] << 8);
-}
-inline static unsigned short read32LE(const char *p)
-{
-    return p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24);
-}
-
-static bool checkEndRecord(ZipFooter *dst, const char *p, const char *end)
-{
-    size_t diff = end - p;
-    if(diff < ZIP_END_HDR_SIZE)
-        return false;
-
-    size_t spaceForComment = diff - ZIP_END_HDR_SIZE;
-    size_t commentLen = read16LE(p + 20);
-    if(spaceForComment < commentLen)
-        return false;
-
-    unsigned diskNum = read16LE(p + 4);
-    if(diskNum)
-        return false; // We don't support split archives
-
-    unsigned centralDirectoryDiskNumber = read16LE(p + 6);
-    if(centralDirectoryDiskNumber)
-        return false;
-
-    unsigned numEntriesThisDisk = read16LE(p + 8);
-    unsigned numEntries = read16LE(p + 10);
-    if(numEntriesThisDisk != numEntries)
-        return false; // This is different only for split archives
-
-    unsigned centralDirOffset = read32LE(p + 12);
-    unsigned centralDirSize = read32LE(p + 16);
-    if(!centralDirSize) // FIXME: lowest limit?
-        return false;
-
-    dst->numEntries = numEntries;
-    dst->centralDirectoryOffset = centralDirOffset;
-    dst->centralDirectorySize = centralDirSize;
-
-    return true;
-}
-
-static bool findEndRecord(ZipFooter *dst, const char * const begin, const char * const end)
-{
-    const size_t avail = end - begin;
-    if(avail < ZIP_END_HDR_SIZE)
-        return false;
-
-    const char *p = end - 4;
-    unsigned a = read32LE(p);
-    do
+    ZipFileListData(tio_Alloc alloc, void *allocUD)
+        : filenames(alloc, allocUD), files(alloc, allocUD)
     {
-        if(a == ZIP_END_MAGIC && checkEndRecord(dst, p, end))
-            return true;
-
-        a <<= 8;
-        a |= *p;
     }
-    while(begin < --p);
-    return false;
+
+    // no, this doesn't return an actual pointer, just the offset
+    NameEntry addName(size_t n) // n includes \0
+    {
+        char * const begin = (char*)(uintptr_t)filenames.size();
+        char *p = filenames.alloc(n);
+        NameEntry e { p, begin };
+        return e;
+    }
+
+    // after calling this, the file names are actual pointers
+    void finalize()
+    {
+        const size_t N = files.size();
+        for(size_t i = 0; i < N; ++i)
+            files[i].fileName += uintptr_t(filenames.data);
+    }
+
+    PodVec<char> filenames;
+    PodVec<tio_ZipFileEntry> files;
+};
+
+TIO_EXPORT void tio_zip_freeCDH(tio_ZipFileList *pFiles)
+{
+    ZipFileListData *z = (ZipFileListData*)pFiles->opaque;
+    tio_Alloc alloc = z->files._alloc;
+    void *allocUD = z->files._allocUD;
+    z->~ZipFileListData();
+    alloc(allocUD, z, sizeof(*z), 0);
 }
 
-static bool readIndex(tio_Mapping *map)
+// precond: sm reading position is at first CDH entry
+TIO_EXPORT tio_error tio_zip_readCDH(tio_ZipFileList *pFiles, tio_Stream *sm, const tio_ZipInfo *info, tio_Alloc alloc, void *allocUD)
 {
-    // We only want to walk from the back up until a maximally-sized comment field.
-    // In order to avoid scanning an entire multi-gigabyte-file, we'll stop when
-    // the footer isn't somewhere in the last 64K of the file.
-    // This will not work for zip files that have extra data attached at the bottom,
-    // but who cares about those.
-    size_t offset, mapsize;
-    if(map->filesize >= ZIP_END_MAXSIZE)
+    pFiles->opaque = 0;
+    pFiles->files = 0;
+    pFiles->n = 0;
+
+    BinRead rd(sm);
+
+    void *zz = alloc(allocUD, 0, tioAllocMarker, sizeof(ZipFileListData));
+    if(!zz)
+        return tio_Error_MemAllocFail;
+
+    ZipFileListData *z = ZIP_PLACEMENT_NEW(zz) ZipFileListData(alloc, allocUD);
+    int err = 0;
+
+    const size_t N = info->numCentralDirEntries;
+    tio_ZipFileEntry *e = z->files.alloc(N);
+
+    PodVec<char> tmp(alloc, allocUD);
+
+    for(size_t i = 0; i < N; ++i, ++e)
     {
-        offset =  map->filesize - ZIP_END_MAXSIZE;
-        mapsize = ZIP_END_MAXSIZE;
+        CDH h;
+        if(!(rd >> h) || h.sig != 0x02014b50)
+            return tio_Error_DataError;
+
+        NameEntry ne = z->addName(h.fileNameLen + 1); // + \0
+        if(!tmp.resize(h.extraFieldLen) || !ne.dst)
+        {
+            err = tio_Error_MemAllocFail;
+            break;
+        }
+
+        rd.read(ne.dst, h.fileNameLen);
+        rd.read(tmp.data, h.extraFieldLen);
+        rd.skip(h.fileCommentLen);
+
+        ne.dst[h.fileNameLen] = 0;
+
+        // TODO: parse the extra field
+
+        e->fileName = ne.rel;
+        e->fileNameLen = h.fileNameLen;
+        e->compSize = h.compSize;
+        e->absOffset = h.relOffset; // FIXME
+        e->uncompSize = h.uncompSize;
+        e->compMethod = h.compMethod;
+    }
+
+    if(!err)
+    {
+        z->finalize();
+        pFiles->files = z->files.data;
+        pFiles->opaque = z;
     }
     else
     {
-        mapsize =  map->filesize;
-        offset = 0;
-
+        z->~ZipFileListData();
+        alloc(allocUD, z, sizeof(*z), 0);
     }
 
+    pFiles->n = N;
 
-    unsigned numEntries;
-    {
-        ZipFooter ft;
-        if (tio_mmremap(map, offset, mapsize, 0))
-            return false;
-        const char* foot = map->begin;
-        const char* end = map->end;
-
-        if(!findEndRecord(&ft, foot, end))
-            return false;
-
-        if(size_t(ft.centralDirectoryOffset) + ft.centralDirectorySize > map->filesize)
-            return false;
-
-        offset = ft.centralDirectoryOffset;
-        mapsize = ft.centralDirectorySize;
-        numEntries = ft.numEntries;
-    }
-
-    if (tio_mmremap(map, offset, mapsize, tioF_Sequential))
-        return false;
-
-    const char* cdrp = map->begin;
-    const char* end = map->end;
-
-    for(unsigned i = 0; i < numEntries; ++i)
-    {
-
-    }
+    return err;
 }
+
 
 /* TREE STRUCTURE
 Node {
@@ -312,3 +270,4 @@ ArchiveFileHelper class that manages array of
 { StringPool::Ref name, filesize, filetype, offset, ...? }
 */
 
+k

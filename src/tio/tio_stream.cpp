@@ -80,7 +80,7 @@ TIO_PRIVATE size_t streamfail(tio_Stream* sm)
     sm->Close(sm); // Whatever the old stream was, dispose it cleanly
     if (!sm->err)   // Keep existing error, if any
         sm->err = tio_Error_Unspecified;
-    streamInitFail(sm, sm->common.flags);
+    streamInitFail(sm, (tio_StreamFlags)sm->common.flags);
     return 0;
 }
 
@@ -293,7 +293,7 @@ static size_t streamRefillMem(tio_Stream* sm)
     return blk;
 }
 
-TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, const void *mem, size_t memsize, tio_StreamFlags flags, size_t blocksize)
+TIO_PRIVATE void initmemstream(tio_Stream *sm, const void *mem, size_t memsize, tio_StreamFlags flags, size_t blocksize)
 {
     tio__memzero(sm, sizeof(*sm));
     sm->Refill = streamRefillMem;
@@ -302,7 +302,6 @@ TIO_PRIVATE tio_error initmemstream(tio_Stream *sm, const void *mem, size_t mems
     sm->priv.blockSize = blocksize ? blocksize : memsize;
     sm->priv.size = memsize;
     sm->priv.aux = const_cast<void*>(mem);
-    return 0;
 }
 
 TIO_PRIVATE tio_error initmmiostream(tio_Stream* sm, tio_MMIO* mmio, tiosize offset, tiosize maxsize, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD)

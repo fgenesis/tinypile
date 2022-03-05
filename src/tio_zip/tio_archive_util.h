@@ -57,6 +57,76 @@ typedef  int64_t s64;
 #  define tio__comptime_memcmp(dst, src, n) tio_memcmp(dst, src, n)
 #endif
 
+
+template<typename T>
+struct PodVec
+{
+    PodVec(tio_Alloc alloc, void *allocUD)
+        : data(0), used(0), cap(0), _alloc(alloc), _allocUD(allocUD)
+    {}
+    ~PodVec()
+    {
+        dealloc();
+    }
+    void dealloc()
+    {
+        if(data)
+        {
+            _alloc(_allocUD, data, cap * sizeof(T), 0);
+            data = 0;
+            used = 0;
+            cap = 0;
+        }
+    }
+    inline void clear()
+    {
+        used = 0;
+    }
+    inline T *push_back(const T& e)
+    {
+        T *dst = alloc(1);
+        if(dst)
+            *dst = e;
+        return dst;
+    }
+    T *alloc(size_t n)
+    {
+        T *e = 0;
+        if(used+n < cap || _grow(used+n))
+        {
+            e = data + used;
+            used += n;
+        }
+        return e;
+    }
+    T *resize(size_t n)
+    {
+        used = n;
+        return n < cap ? data : _grow(n);
+    }
+    inline size_t size() const { return used; }
+    inline T& operator[](size_t idx) const { return data[idx]; }
+
+    T *_grow(size_t mincap)
+    {
+        size_t newcap = cap ? cap : 1;
+        while(newcap < mincap)
+            newcap *= 2;
+        T *p = (T*)_alloc(_allocUD, data, cap * sizeof(T), newcap * sizeof(T));
+        if(p)
+        {
+            data = p;
+            cap = newcap;
+        }
+        return p;
+    }
+
+    T *data;
+    size_t used, cap;
+    tio_Alloc const _alloc;
+    void * const _allocUD;
+};
+
 // don't use this with nonblocking streams!
 class BinRead
 {
@@ -111,71 +181,8 @@ public:
         return x;
     }
 
+    void skip(size_t n);
+
 private:
     BinRead& _readslow(void *dst, size_t have, size_t n);
-};
-
-
-template<typename T>
-struct PodVec
-{
-    PodVec(tio_Alloc alloc, void *allocUD)
-        : data(0), used(0), cap(0), _alloc(alloc), _allocUD(allocUD)
-    {}
-    ~PodVec()
-    {
-        dealloc();
-    }
-    void dealloc()
-    {
-        if(data)
-        {
-            _alloc(_allocUD, data, cap * sizeof(T), 0);
-            data = 0;
-            used = 0;
-            cap = 0;
-        }
-    }
-    inline void clear()
-    {
-        used = 0;
-    }
-    inline T *push_back(const T& e)
-    {
-        T *dst = alloc(1);
-        if(dst)
-            *dst = e;
-        return dst;
-    }
-    T *alloc(size_t n)
-    {
-        T *e = 0;
-        if(used+n < cap || _grow(used+n))
-        {
-            e = data + used;
-            ++used;
-        }
-        return e;
-    }
-    inline size_t size() const { return used; }
-    inline T& operator[](size_t idx) const { return data[idx]; }
-
-    T *_grow(size_t mincap)
-    {
-        size_t newcap = cap ? cap : 1;
-        while(newcap < mincap)
-            newcap *= 2;
-        T *p = (T*)_alloc(_allocUD, data, cap * sizeof(T), newcap * sizeof(T));
-        if(p)
-        {
-            data = p;
-            cap = newcap;
-        }
-        return p;
-    }
-
-    T *data;
-    size_t used, cap;
-    tio_Alloc const _alloc;
-    void * const _allocUD;
 };

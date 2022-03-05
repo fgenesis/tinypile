@@ -70,7 +70,7 @@ int main()
     }*/
 
     tio_Stream sm;
-    if(tio_sopen(&sm, "T:/tobi_pc.img.lz4", tioF_Background, 0, 0, myalloc, NULL))
+    if(tio_sopen(&sm, "T:/tobi_pc.img.lz4", tioF_Background, tioS_Default, 0, myalloc, NULL))
         return 1;
 
     tio_Stream dc;

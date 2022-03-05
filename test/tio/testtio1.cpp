@@ -47,7 +47,7 @@ static void showhhash(const char *fn)
 
         // For testing, use the smallest possible block size the OS can handle
         // Production code shouldn't do this, of course
-        if(tio_error err = tio_sopen(&sm, fn, tioF_NoBuffer | tioF_Background | tioF_PreferMMIO, 0, 1, myalloc, NULL))
+        if(tio_error err = tio_sopen(&sm, fn, tioF_NoBuffer | tioF_Background | tioF_PreferMMIO, tioS_Default, 1, myalloc, NULL))
         {
             printf("Failed to open: %s, error = %d\n", fn, err);
             return;
