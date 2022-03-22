@@ -123,7 +123,12 @@ typedef uint64_t tiosize;
 #  include <pstdint.h> /* get from http://www.azillionmonkeys.com/qed/pstdint.h */
 typedef uint64_t tiosize;
 #else
-typedef size_t tiosize; /* Not guaranteed to be 64 bits */
+typedef long long tiosize; /* Not guaranteed to be 64 bits */
+#endif
+
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 26812) /* Unscoped enum (C++11 feature we don't even care about in a C header) */
 #endif
 
 #ifdef __cplusplus
@@ -227,6 +232,7 @@ TIO_DECL_ENUM(tio_Seek, tio_Seek_)
    Note that these hints are really just hints and the underlying implementation is free to ignore them.
    --- Suggestions / TL;DR ---
    - Whenever possible, use tio_Stream and add tioF_Background (and maybe tioF_PreferMMIO) for good measure
+   - If you don't need random access, add tioF_Sequential
 */
 enum tio_Features_
 {
@@ -247,7 +253,7 @@ enum tio_Features_
                                When writing: May use more memory to buffer writes in an attempt to write the data
                                in background. */
 
-    // TODO: split tioF_NoBuffer into tioF_NoCache?
+    /* TODO: split tioF_NoBuffer into tioF_NoCache? */
 
     tioF_NoBuffer = 0x04, /* Disable buffering. Reads/writes should go directly to storage.
                              If possible, avoid going through the OS's file cache, possibly increasing throughput.
@@ -901,6 +907,11 @@ TIO_EXPORT int tio_memcmp(const void *a, const void *b, size_t n);
 TIO_EXPORT void tio_memset(void *dst, int x, size_t n);
 
 
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+
+
 /* ---- Begin compile config ---- */
 
 // This is a safe upper limit for stack allocations.
@@ -922,4 +933,5 @@ TIO_EXPORT void tio_memset(void *dst, int x, size_t n);
 - remove unconditional tioF_Sequential for streams and instead make it disable snapshots
   stream can still stay naturally sequential though
 - implement vfs read functions for archives entirely via streams? snapshot on seek?
+- remove tioF_Sequential, use tioM_Seekable instead?
 */

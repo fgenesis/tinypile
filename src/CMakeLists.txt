@@ -1,6 +1,7 @@
 add_subdirectory(tio)
 add_subdirectory(tio_addons)
 add_subdirectory(tio_vfs)
+add_subdirectory(tio_archive)
 #add_subdirectory(tbsp)
 
 option(TIO_ADDON_ZIP "Build support for inflate/deflate (zip) compression?" TRUE)
@@ -12,7 +13,6 @@ option(TIO_ADDON_ZSTD "Build support for zstd compression?" FALSE)
 if(TIO_ADDON_ZSTD)
     add_subdirectory(tio_zstd)
 endif()
-
 
 add_library(nolibc nolibc.c nolibc.h)
 hide_symbols(nolibc)

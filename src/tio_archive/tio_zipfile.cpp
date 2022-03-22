@@ -1,4 +1,4 @@
-#include "tio_zip.h"
+#include "tio_archive_zip.h"
 #include "tio_archive_util.h"
 
 
@@ -206,7 +206,7 @@ TIO_EXPORT tio_error tio_zip_readCDH(tio_ZipFileList *pFiles, tio_Stream *sm, co
         return tio_Error_MemAllocFail;
 
     ZipFileListData *z = ZIP_PLACEMENT_NEW(zz) ZipFileListData(alloc, allocUD);
-    int err = 0;
+    tio_error err = 0;
 
     const size_t N = info->numCentralDirEntries;
     tio_ZipFileEntry *e = z->files.alloc(N);

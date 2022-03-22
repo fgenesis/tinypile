@@ -7,10 +7,6 @@ set(src
     wrap_miniz.h
     tio_inflate.cpp
     tio_deflate.cpp
-    tio_zipfile.cpp
-    tio_archive_util.cpp
-    tio_archive_util.h
-    tiov_fs_zipfile.cpp
 )
 
 add_library(tio_zip ${src})

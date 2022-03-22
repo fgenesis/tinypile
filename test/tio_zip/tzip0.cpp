@@ -1,8 +1,8 @@
 #include "tio.h"
-#include "tio_zip.h"
+#include "tio_archive_zip.h"
 #include <stdlib.h>
 #include <stdio.h>
-
+#include <iostream>
 
 static void *tioalloc(void*, void* ptr, size_t, size_t nsize)
 {
@@ -32,7 +32,7 @@ int main(int argc, char *argv[])
 
     for(size_t i = 0; i < zf.n; ++i)
     {
-        puts(zf.files[i].fileName);
+        std::cout << zf.files[i].fileName << "  (" << zf.files[i].compSize << " -> " << zf.files[i].uncompSize << ")\n";
     }
 
     tio_zip_freeCDH(&zf);
