@@ -3,7 +3,7 @@ add_subdirectory(tio_addons)
 add_subdirectory(tio_vfs)
 #add_subdirectory(tio_archive)
 #add_subdirectory(tbspx)
-#add_subdirectory(tws)
+add_subdirectory(tws)
 
 option(TIO_ADDON_ZIP "Build support for inflate/deflate (zip) compression?" TRUE)
 if(TIO_ADDON_ZIP)

@@ -1,10 +1,10 @@
+/* Tiny, backend-agnostic lockless work/job scheduler */
+
 #pragma once
 
-/* Tiny, backend-agnostic mostly-lockless threadpool and scheduler */
+#include <stddef.h> // size_t, uintptr_t
 
-#include <stddef.h> // for size_t, intptr_t, uintptr_t
-
-/* All public functions defined in tws.c are marked with this */
+/* All public library functions are marked with this */
 #ifndef TWS_EXPORT
 #define TWS_EXPORT
 #endif
@@ -13,168 +13,148 @@
 extern "C" {
 #endif
 
-// ---- Worker function ----
+struct tws_PoolInfo
+{
+    unsigned maxjobs;
+    unsigned maxchannels;
+    unsigned maxpayload;
+};
+typedef struct tws_PoolInfo tws_PoolInfo;
+
+
+typedef struct tws_Pool tws_Pool; /* opaque */
+
+/* Generic worker and callback function type. */
+typedef void (*tws_Func)(tws_Pool *pool, void *ud);
+
+typedef struct tws_Event tws_Event;
+
+/* Describes a to-be-submitted job. */
+struct tws_JobDesc
+{
+    /* Job to run. */
+    tws_Func func;
+
+    /* If payloadSize == 0:
+           The payload ptr will be passed through to the job func directly. No copy takes place.
+       Else:
+           Copy payloadSize bytes from payload ptr into the job. The job func will get a pointer to the copy.
+    */
+    void *payload;
+    size_t payloadSize; /* must be <= the pool's payloadSize */
+
+    /* "Channel" aka category this job goes into. Can be used to denote different job types (I/O, render, compute, etc).
+       Used as parameter to tws_run() to pick jobs of a certain channel. If not needed, set this to 0. */
+    unsigned channel;
+
+    /* If this job does not start other jobs, this must be 0.
+       Otherwise set this to *one* followup job's relative index that will be started when this job is complete.
+       In case multiple other jobs specify the same followup job, they all must be finished before the followup is started.
+       Note that next is relative -- multiple tws_JobDesc are passed as an array, and next is added to the current job's index.
+       (Yes, this is intentionally not signed or an absolute index, so that simply doing jobs in order correctly handles dependencies!) */
+    unsigned next;
+};
+typedef struct tws_JobDesc tws_JobDesc;
+
+typedef struct tws_PoolCallbacks tws_PoolCallbacks;
+struct tws_PoolCallbacks
+{
+    /* Called when one job is ready to execute */
+    void (*readyOne)(void *ud, unsigned channel);
+
+    /* Called when a batch of jobs has been submitted */
+    void (*readyBatch)(void *ud, size_t num);
+};
+
+
+/* Used as temporary buffer for tws_submit(). Don't touch anything here; this struct is only public to get the correct size. */
+struct tws_WorkTmp
+{
+    uintptr_t x;
+};
+typedef struct tws_WorkTmp tws_WorkTmp;
+
+/* Calculate memory required to create a pool with these parameters. numChannels must be > 0. Returns 0 for bogus params. */
+TWS_EXPORT size_t tws_size(size_t concurrentJobs, unsigned numChannels, size_t payloadSize, size_t cacheLineSize);
+
+/* Returns read-only struct with some infos about a pool */
+TWS_EXPORT const tws_PoolInfo *tws_info(const tws_Pool *pool);
+
+/* Create a pool in mem. Returns mem casted to tws_Pool*. Returns NULL on failure.
+   numChannels must be at least 1.
+   payloadSize is the max. tws_JobDesc::payloadSize you're going to use. Keep this as small as possible!
+   Use payloadSize == 0 if a single void* is enough.
+   As cacheLineSize, pass the L1 cache line size of your system (or whatever padding is needed to avoid false sharing).
+   Should be a power of 2. If in doubt, 64 should be fine.
+   There is no function to free a pool. If you don't need it anymore, dispose the underlying mem and you're good;
+   but it's probably a good idea to run all queued jobs to completion to prevent leaks in your own code. */
+TWS_EXPORT tws_Pool *tws_init(void *mem, size_t memsz, unsigned numChannels, size_t payloadSize, size_t cacheLineSize, const tws_PoolCallbacks *cb, void *callbackUD);
+
+/* Submit a list of jobs. When the function returns, all jobs have been queued (but not necessarily executed).
+   jobs is an array of jobs with n elements.
+   Returns immediately if all jobs could be queued.
+   If the pool is full:
+       - If fallback is present, calls fallback(pool, fallbackUD) repeatedly, until all jobs could be queued.
+         Hint: A good strategy is to call tws_run() in the fallback to make sure all jobs will be processed eventually.
+       - If fallback is NULL, execute jobs directly. Note that this ignores the channel.
+   The user must pass in a tws_WorkTmp[n] array of temporary storage. */
+TWS_EXPORT void tws_submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Event *ev, tws_Func fallback, void *fallbackUD);
+
+/* Like tws_submit(), but returns only when all jobs in this batch have been run.
+   This function *requires* a fallback! */
+TWS_EXPORT void tws_submitwait(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Func fallback, void *fallbackUD);
+
+/* Like tws_submit(), but always returns immediately.
+   Returns the number of jobs that could be queued since the first call, ie. the next start index.
+   Job submission starts at jobs[start], tmp[start], ie. pass 0 on the first call of a new batch.
+   When less than n jobs were queued, call this again sometime later with the same parameters
+   but use the previously returned value as 'start'. Make sure that ALL parameters except 'start'
+   are the same and stay untouched between incremental calls.
+   Important: - The first time you call this for a batch, start MUST be == 0.
+              - When you start calling this, you MUST call this to the end, until the return value is == n.
+                Otherwise there will be unrecoverable internal leaks. */
+TWS_EXPORT size_t tws_submitsome(size_t start, tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Event *ev);
+
+/* Run one job waiting on the given channel.
+   Returns 1 if a job was executed, 0 if not, ie. there was no waiting job on this channel.
+   If channel is not needed, pass 0. */
+TWS_EXPORT int tws_run(tws_Pool *pool, unsigned channel);
+
+
+
+// --- Event functions ---
 
 typedef struct tws_Event // opaque, job completion notification
 {
     uintptr_t opaque; // enough bytes to hold an atomic int
+    void (*done)(void *ud); // optional function to call whenever the event counter reaches 0
+    void *ud; // passed to done(ud)
 } tws_Event;
 
-// Job work function -- main entry point of your job code
-// * data1, data2 are entirely opaque and whatever you passed in.
-// * ev is the (optional) event associated with the task,
-//   you may pass this along to further submit() calls.
-// * If you're in C++, this function must never throw.
-//   If you use exceptions, handle them internally.
-typedef void (*tws_JobFunc)(uintptr_t data1, uintptr_t data2, tws_Event *ev);
-
-// ---- Setup config ----
-
-typedef struct tws_Pool tws_Pool;
-
-typedef struct tws_Setup
-{
-    unsigned cacheLineSize; // The desired alignment of most internal structs, in bytes.
-                            // Should be equal to or a multiple of the CPU's L1 cache line size to avoid false sharing.
-                            // Must be power of 2.
-                            // Recommended: 64, unless you know your architecture is different.
-
-    unsigned maxChannels; // Set this to the largest number of channel you'll use.
-                          // Internally, this sets up one queue per channel. Must be > 0.
-
-} tws_Setup;
-
-// TODO: make function to calculate memory requirements
-// for a given setup + a desired number of total jobs
-
-typedef struct tws_Info
-{
-    unsigned totalJobs;
-} tws_Info;
-
-// --- Job pool control ---
-
-// Setup the pool in 'mem' given a setup configuration.
-// Returns 'mem' casted to tws_Pool* when successful, or NULL when failed.
-// Fills an optional info struct if not NULL.
-// To delete the pool, finish all jobs to ensure you don't leak resources,
-// make sure it's not in use, then just delete the memory as you normally would,
-// ie. free() when it was allocated via malloc(), or if it's an array
-// on the stack then just let it go out of scope.
-TWS_EXPORT tws_Pool *tws_init(void *mem, size_t size, const tws_Setup *cfg, tws_Info *info);
-
-// --- Job functions ---
-
-/* FIXME: can have X-shaped trees (some deps, middle node,
-multiple that depend on middle)
--> need to submit entire array
-
-
-*/
-typedef struct JobDescriptor
-{
-    /* Function to call and its args. f can be NULL. */
-    tws_JobFunc f; // function to run.
-    uintptr_t data1, data2; // payload
-    tws_Event *notify; // when completed
-    /* Dependency chain. Fill before[0..nbefore] with pointers to other JobDescriptors
-       that need to be completed before this one can run */
-    const JobDescriptor * const * before;
-    size_t nbefore;
-} JobDescriptor;
-
-/* Submits a bunch of JobDescriptors for processing.
-   This function usually queues up all jobs and returns immediately.
-   If the thread pool can not queue enough jobs because the internal processing
-   queues are full, the function will process some jobs directly before returning.
-*/
-// TODO: submitEx() for flags? we may want to fail instead and report that?
-TWS_EXPORT void tws_submit(tws_Pool *pool, const JobDescriptor * const * trees, size_t num);
-
-/* Attempt to work on one job queued up in a given channel.
-   Returns 1 if work was done and 0 if there was nothing to do.
-   Can be called from any thread. */
-TWS_EXPORT int tws_work(tws_Pool *pool, unsigned channel);
-
-// --- Event functions ---
 // Init a tws_Event like this:
-//   tws_Event ev = {0};
+//   tws_Event ev = {N};
+// If you need a callback when the event is done:
+//   tws_Event ev = {N, callback, userptr};
+// Where N is the number of jobs that need to finish before the event is considered done.
 // There is no function to delete an event. Just let it go out of scope.
 // Make sure the event stays valid while it's used.
 
-// Quick check whether an event is done. Non-blocking. Zero when not done.
-TWS_EXPORT int tws_eventDone(const tws_Event *ev);
+// Quick check whether an event is done. Non-blocking. 1 if done, 0 if not.
+TWS_EXPORT int tws_done(const tws_Event *ev);
+
+// Call this to change the internal counter.
+TWS_EXPORT void tws_eventInc(tws_Event *ev);
+
+/* Call this to notify an event that a job has completed. Decrements the internal counter and fires the callback when 0 is reached.
+   Returns 1 if the counter has reached zero, 0 otherwise.  */
+TWS_EXPORT int tws_notify(tws_Event *ev);
 
 /* No, there is no function to wait on an event.
-Help draining the pool or go do something useful in the meantime, e.g.
-    for(unsigned c = 0; c < MAXCHANNEL; ++c)
-        while(!tws_eventDone(ev) && tws_work(pool, c)) {}
+   Help draining the pool or go do something useful in the meantime, e.g.
+   for(unsigned c = 0; c < MAXCHANNEL; ++c)
+       while(!tws_eventDone(ev) && tws_run(pool, c)) {}
 */
-
-// ---------------------------------------------------------------
-// ------ Goodies and generally optional things below here -------
-// ---------------------------------------------------------------
-
-// --- Kernel dispatch ---
-
-// Helper functions to split work into bite-sized chunks, each of which is processed by a kernel.
-// The kernel function is called concurrently so that a dataset in 'ud'
-// is processed in small pieces. 'first' is your starting index, 'n' the number of elements to process.
-// It's like a 1D kernel launch if you're familiar with CUDA, OpenCL, compute shaders, or similar.
-
-typedef void (*tws_Kernel)(void *ud, size_t first, size_t n);
-
-/* How to use? Assume you have an array of floats:
-
-float array[N] = {...}; // assume N is Very Large
-
-// If you want to eg. add 1.0f to each element, you would write this:
-
-for(size_t i = 0; i < N; ++i) // A serial loop, single-core. Yawn!
-    array[i] += 1.0f;
-
-// Time to multithread all the things!
-// A simple kernel function could look like this:
-void addOne(void *ud, size_t first, size_t n) // ud is passed through, first and n changes per call.
-{
-    float *array = (float*)ud;
-    float *slice = &array[first]; // slice[0..n) is the part we're allowed to touch.
-    for(size_t i = 0; i < n; ++i) // Same loop as above except you're given a starting index and a smaller size.
-        slice[i] += 1.0f;
-}
-
-// -- Submit a job to do the processing in parallel: --
-tws_dispatchEven(addOne, array, N, 1024, CHANNEL, ev); // process in up to 1024 element chunks
-
-// As the job runs, it will spawn more jobs and subdivide until the kernel can be called with n <= 1024.
-// ev is signaled once processing is complete.
-*/
-
-// Calls a *kernel function* for a given array.
-// 'ud' will be passed through unchanged.
-// 'n' is the total number of elements to process.
-// 'maxElems' is an upper limit for the chunk size thrown at your kernel.
-// The function splits the size in half each subdivision, so when you pass size=20 and maxElems=16,
-// you will get 2x 10 elements.
-TWS_EXPORT void tws_dispatchEven(tws_Kernel kernel, void *ud, size_t n, size_t maxElems,
-    unsigned channel, tws_Event *ev);
-
-// Similar to the above function, but instead of splitting evenly, it will prefer an uneven split
-// and call your kernel repeatedly with exactly n == maxElems and once with (size % maxElems) if this is not 0.
-// In the above example with size=20 and maxElems=16 that would result in 16 and 4 elements.
-// The uneven split is useful for eg. processing as many elements as your L2 cache can fit, *hint hint*.
-TWS_EXPORT void tws_dispatchMax (tws_Kernel kernel, void *ud, size_t n, size_t maxElems,
-   unsigned channel, tws_Event *ev);
-
-
-
-// --- Utility functions ---
-
-TWS_EXPORT void tws_memoryFence();
-
-TWS_EXPORT void tws_atomicIncRef(unsigned *pcount);
-TWS_EXPORT int tws_atomicDecRef(unsigned *pcount); // returns 1 when count == 0 after decrementing
 
 #ifdef __cplusplus
-}
+} /* end extern C */
 #endif
