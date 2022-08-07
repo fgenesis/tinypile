@@ -213,16 +213,16 @@ enum tio_Mode_
                                 - tioM_Create becomes the default if nothing is specified.
                                 Attempting to open a file that is not seekable will fail. */
 
-    tioM_Mkdir = 0x80, /* When attempting to create the file, also create the directory
+    tioM_Mkdir = 0x100, /* When attempting to create the file, also create the directory
                           hierarchy required if not already present */
 };
 TIO_DECL_BITWISE_ENUM(tio_Mode, tio_Mode_)
 
 enum tio_Seek_
 {
-    tio_SeekBegin = 0,
-    tio_SeekCur = 1,
-    tio_SeekEnd = 2
+    tio_SeekBegin = 0, /* aka SEEK_SET */
+    tio_SeekCur = 1,   /* aka SEEK_CUR */
+    tio_SeekEnd = 2    /* aka SEEK_END */
 };
 TIO_DECL_ENUM(tio_Seek, tio_Seek_)
 
@@ -238,7 +238,7 @@ enum tio_Features_
 {
     tioF_Default    = 0x00, /* Nothing special */
 
-    tioF_Sequential = 0x01, /* For file handles: Disable seeking. Attempting to seek becomes undefined behavior.
+    tioF_Sequential = 0x01, /* For file handles: Only seek forwards. Attempting to seek backwards becomes undefined behavior.
                                tio_kreadat() and tio_kwriteat() become undefined behavior.
                                Notify the OS that files/memory is expected to be read/written sequentially (low to high address).
                                This way the OS can prefetch/flush more efficiently. */
@@ -302,33 +302,39 @@ enum tio_StdHandle_
 };
 TIO_DECL_ENUM(tio_StdHandle, tio_StdHandle_)
 
-/* Error codes.
-   These are best-effort and informational only.
-   Don't rely on the returned errors to be consistent across platforms. */
+/* Error codes. */
 enum tio_error_
 {
-    /* > 0  : we're done */
-    tio_Error_EOF = 1,            /* Reached end of file; all previous operations were successful.
-                                     Primarily used to easily get out of loops like while(!err)
-                                     ie. while(err == tio_NoError) */
+    /* > 0  : something to report but not an error. Never permanently set. */
+    tio_Error_Wouldblock = 1,     /* Non-blocking operation can't proceed because it would block.
+                                     Try again shortly. This error code is never sticky. */
     /* == 0 : all good so far */
     tio_NoError = 0,
-    /* < 0  : real errors */
-    tio_Error_Unspecified = -1,   /* Something went wrong. Dont't know more, sorry */
-    tio_Error_Unsupported = -2,   /* Not supported by the library or the underlying OS */
-    tio_Error_NotFound = -3,      /* Thing doesn't exist */
-    tio_Error_BadPath = -4,       /* Path is lexically invalid (attempt to go above the root, malformed, etc) */
-    tio_Error_PathMismatch = -5,  /* Attempt to open a directory as a file or vice versa */
-    tio_Error_ResAllocFail = -6,  /* failed to allocate an OS resource */
-    tio_Error_MemAllocFail = -7,  /* Allocator returned NULL. Out of memory? */
-    tio_Error_Empty = -8,         /* no data; file is empty where it must not be or specified offset is beyond size of file */
-    tio_Error_OSParamError = -9,  /* some parameter was not accepted by a syscall. Invalid handle? */
-    tio_Error_DeviceFull = -10,   /* Time to clean some junk */
-    tio_Error_DataError = -11,    /* Data format could not be handled */
-    tio_Error_TooBig = -12,       /* Whatever you're trying to do is too large to handle. Try a smaller size */
-    tio_Error_Forbidden = -13,    /* Thing exists but you may not have it */
-    tio_Error_RTFM = -14,         /* You mis-used the API. Go read the docs and fix your code! */
-    tio_Error_IOError = -15       /* An IO operation failed. */
+
+    /* -1 : EOF */
+    tio_Error_EOF = -1,           /* Reached end of file; all previous operations were successful.
+                                     Primarily used to easily get out of loops like while(!err)
+                                     ie. while(err == tio_NoError) */
+
+    /* < -1  : real errors.
+               These are best-effort and informational only.
+               Don't rely on the returned errors to be consistent across platforms. */
+
+    tio_Error_Unspecified = -2,   /* Something went wrong. Dont't know more, sorry */
+    tio_Error_Unsupported = -3,   /* Not supported by the library or the underlying OS */
+    tio_Error_NotFound = -4,      /* Thing doesn't exist */
+    tio_Error_BadPath = -5,       /* Path is lexically invalid (attempt to go above the root, malformed, etc) */
+    tio_Error_PathMismatch = -6,  /* Attempt to open a directory as a file or vice versa */
+    tio_Error_ResAllocFail = -7,  /* failed to allocate an OS resource */
+    tio_Error_MemAllocFail = -8,  /* Allocator returned NULL. Out of memory? */
+    tio_Error_Empty = -9,         /* no data; file is empty where it must not be or specified offset is beyond size of file */
+    tio_Error_OSParamError = -10, /* some parameter was not accepted by a syscall. Invalid handle? */
+    tio_Error_DeviceFull = -11,   /* Time to clean some junk */
+    tio_Error_DataError = -12,    /* Data format could not be handled */
+    tio_Error_TooBig = -13,       /* Whatever you're trying to do is too large to handle. Try a smaller size */
+    tio_Error_Forbidden = -14,    /* Thing exists but you may not have it */
+    tio_Error_RTFM = -15,         /* You mis-used the API. Go read the docs and fix your code! */
+    tio_Error_IOError = -16       /* An IO operation failed. */
 };
 typedef int tio_error; /* Typedef'd to make places for error handling easier to spot */
 
@@ -634,7 +640,10 @@ enum tio_StreamFlags_
 };
 TIO_DECL_BITWISE_ENUM(tio_StreamFlags, tio_StreamFlags_)
 
+
+typedef struct tio_StreamImpl tio_StreamImpl;
 typedef struct tio_Stream tio_Stream;
+
 struct tio_Stream
 {
     /* public, read, modify */
@@ -647,11 +656,12 @@ struct tio_Stream
     const char *end;      /* one past the end */
 
     /* public, callable, changed by Refill and Close. Prefer calling tio_srefill() and tio_sclose() instead. */
-    size_t (*Refill)(tio_Stream *s); /* Required. Sets cursor, begin, end. Sets err on failure. Returns #bytes refilled. */
-    void   (*Close)(tio_Stream *s);  /* Required. Must set cursor, begin, end, Refill, Close to NULL. Must NOT touch err. */
+    tio_error (*Refill)(tio_Stream *s); /* Required. Sets cursor, begin, end. Sets err on failure. Returns error. */
+    const tio_StreamImpl *impl; /* Required. Less often called functions. */
 
     /* public, read only */
-    tio_error err;  /* != 0 is error. Set by Refill(). Sticky -- once set, stays set. */
+    tio_error err;  /* != 0 is error. Set by Refill(). Sticky -- once set, stays set.
+                       tio_Error_Wouldblock is never set here. */
 
 
     /* --- Private. Don't touch, ever. --- */
@@ -673,6 +683,21 @@ struct tio_Stream
     } priv;
 };
 
+/* Function pointers used by stream back-end. Don't call directly, use the front-end functions below. */
+struct tio_StreamImpl
+{
+    void   (* const Close)(tio_Stream *sm);  /* Required. Must set cursor, begin, end, Refill to NULL. Must NOT touch err. */
+    tio_Alloc (* const GetAlloc)(tio_Stream *sm, void **pallocUD); /* Optional. Return stream alloc + associated userdata if the stream has one */
+
+    /* Planned/Ideas
+       Do users actually need this? */
+#if 0
+    tio_error (* const SkipForward)(tio_Stream *sm, tiosize n); /* Optional. Efficiently skip ahead n bytes. Discards current begin & end, skips n bytes, and Refill()s at the new position */
+#endif
+
+};
+
+
 /* Init a tio_Stream struct from a file name. A stream is always read-only.
    Blocksize is a suggestion for the number bytes to read between refills:
    - 0 to use a suitable size based on the system's capabilities (the most portable option).
@@ -683,7 +708,7 @@ struct tio_Stream
 TIO_EXPORT tio_error tio_sopen(tio_Stream *sm, const char *fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);
 
 /* Close a stream and free associated resources. The stream will become invalid. */
-inline static tio_error tio_sclose(tio_Stream *sm) { sm->Close(sm); return sm->err; }
+inline static tio_error tio_sclose(tio_Stream *sm) { sm->impl->Close(sm); return sm->err; }
 
 /* Refill a stream.
    Sets sm->err if there is an error or EOF is reached. In this case there are
@@ -697,7 +722,12 @@ inline static tio_error tio_sclose(tio_Stream *sm) { sm->Close(sm); return sm->e
    for whatever reason (ie. a nonblocking stream that is busy reading bytes in the background
    but that has nothing available right now).
    If this happens and a stream is async, try again in a bit. Otherwise just keep reading. */
-inline static size_t tio_srefill(tio_Stream *sm) { return sm->Refill(sm); }
+inline static size_t tio_srefill(tio_Stream *sm) { sm->Refill(sm); return sm->end - sm->begin; }
+
+/* Like tio_srefill(), but returns an error instead of the available size.
+   This function is the only way to correctly detect a refill() failure for non-blocking streams;
+   in that case, the call returns tio_Error_Wouldblock. */
+inline static tio_error tio_srefillx(tio_Stream *sm) { return sm->Refill(sm); }
 
 /* Return number of bytes available for reading, in [cursor, end). */
 inline static size_t tio_savail(tio_Stream *sm) { return sm->end - sm->cursor; }
@@ -724,19 +754,6 @@ TIO_EXPORT tiosize tio_sread(tio_Stream *sm, void *dst, size_t bytes);
 */
 TIO_EXPORT tiosize tio_sskip(tio_Stream *sm, tiosize bytes);
 
-/* [For extensions! Ignore this function if you're just a library user!]
-   Close a valid stream and cleanly transition into the previously set failure state:
-    - Emit infinite zeros if tioS_Infinite was passed to tio_sopen()
-    - Emit no data otherwise
-   Sets the error flag on the stream if not previously set.
-   Use this function ONLY inside of a Refill() function!
-   There are two correct uses of this function:
-   1) If you know in advance that the current call to Refill() is the last valid one,
-      set stream->Refill = tio_streamfail. If another call is made, the stream will fail.
-   2) If you notice that you can't Refill() a stream (I/O error, EOF, whatever),
-      call and return tio_streamfail().
-   Return value: Always 0. */
-TIO_EXPORT size_t tio_streamfail(tio_Stream *sm);
 
 /* -- Stream utility -- */
 
@@ -760,8 +777,21 @@ TIO_EXPORT void tio_memstream(tio_Stream *sm, const void *mem, size_t memsize,
    Pass tioS_CloseBoth to close mmio together with the stream; if you do this,
    make sure that no other tio_Mapping derived from this mmio exists when the stream is closed. */
 TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, tio_MMIO *mmio, tiosize offset, tiosize maxsize,
-     tio_Features features, tio_StreamFlags flags, size_t blocksize,
+    tio_Features features, tio_StreamFlags flags, size_t blocksize,
     tio_Alloc alloc, void *allocUD);
+
+
+/* Wrap an existing tio_Handle into a stream. The handle must have been opened in a way that is compatible.
+   Pass exclusive = 0 to use tio_kreadat() and keep track of the offset internally.
+   This this mode, you can freely use the handle for other things.
+   Pass exclusive = 1 to use tio_kread() internally.
+   In exclusive mode, do not share the handle while the stream is open unless:
+     1) accesses using the handle are properly syncronized
+     2) other readers that use the handle ONLY use the readat() family of functions.
+   The stream uses the caller-provided buf & bufsize to read data into; this buffer
+   must stay alive while the stream is in use. */
+TIO_EXPORT void tio_streamFromHandle(tio_Stream *sm, tio_Handle h, int exclusive,
+    tio_Features features, tio_StreamFlags flags, void *buf, size_t bufsize);
 
 
 /* ---------------------------- */
@@ -769,7 +799,7 @@ TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, tio_MMIO *mmio, tiosize offs
 /* ---------------------------- */
 
 /* Initialize one stream to pull its source data from another.
-   The target stream stores a *pointer* to the source, so make sure that the source stream is not moved
+   The target stream stores a *pointer* to the source, so make sure that the source stream is not moved in memory
    after the target was initialized.
 */
 
@@ -851,7 +881,22 @@ inline static tio_error tio_init()
     return tio_init_version(tio_headerversion());
 }
 
-/* ---- Internal structs, for extensions and backends ---- */
+/* ---- Semi-internal stuff, for extensions and backends ---- */
+
+/* [For extensions! Ignore this function if you're just a library user!]
+Close a valid stream and cleanly transition into the previously set failure state:
+- Emit infinite zeros if tioS_Infinite was passed to tio_sopen()
+- Emit no data otherwise
+Sets the error flag on the stream if not previously set.
+Use this function ONLY inside of a Refill() function!
+There are two correct uses of this function:
+1) If you know in advance that the current call to Refill() is the last valid one,
+set stream->Refill = tio_streamfail. If another call is made, the stream will fail.
+2) If you notice that you can't Refill() a stream (I/O error, EOF, whatever),
+call and return tio_streamfail().
+Return value: sm->err. */
+TIO_EXPORT tio_error tio_streamfail(tio_Stream *sm);
+
 
 struct tio_MMFunc
 {
@@ -863,30 +908,6 @@ struct tio_MMFunc
     tio_error (*close)(tio_MMIO* mmio);
 };
 
-/*
-**DRAFT**
-struct tio_StreamSnapshot
-{
-    void (*Free)(tio_StreamSnapshot *self);
-
-    struct
-    {
-        tiosize pos;
-        void *data;
-        size_t size;
-        tio_Alloc alloc;
-        void *allocUD;
-    } priv;
-};
-void tio_freeSnapshot(tio_Snapshot *snap);
-
-struct tio_StreamFunc
-{
-    void      (*Close)(tio_Stream *s);
-    tio_error (*Snapshot)(tio_StreamSnapshot *snap, const tio_Stream *sm);
-    tio_error (*Seek)(tio_Stream *sm, const tio_StreamSnapshot *snap);
-};
-*/
 
 /* Markers so that a custom allocator can see who requested memory. */
 enum tioAllocConstants

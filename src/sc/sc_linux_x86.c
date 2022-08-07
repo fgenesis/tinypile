@@ -226,49 +226,49 @@ static sc_error sc_fin(sc_out ret)
     return ret > 0 || ret <= -4096 ? 0 : -(int)ret;
 }
 
-SC_EXPORT sc_out sc_call0(sc_out *out, sc_id id)
+SC_EXPORT sc_error sc_call0(sc_out *out, sc_id id)
 {
     sc_out ret = ((sc_f0)s_calltab[0])(id);
     *out = ret;
     return sc_fin(ret);
 }
 
-SC_EXPORT sc_out sc_call1(sc_out *out, sc_id id, sc_param a)
+SC_EXPORT sc_error sc_call1(sc_out *out, sc_id id, sc_param a)
 {
     sc_out ret = ((sc_f1)s_calltab[1])(id, a);
     *out = ret;
     return sc_fin(ret);
 }
 
-SC_EXPORT sc_out sc_call2(sc_out *out, sc_id id, sc_param a, sc_param b)
+SC_EXPORT sc_error sc_call2(sc_out *out, sc_id id, sc_param a, sc_param b)
 {
     sc_out ret = ((sc_f2)s_calltab[2])(id, a, b);
     *out = ret;
     return sc_fin(ret);
 }
 
-SC_EXPORT sc_out sc_call3(sc_out *out, sc_id id, sc_param a, sc_param b, sc_param c)
+SC_EXPORT sc_error sc_call3(sc_out *out, sc_id id, sc_param a, sc_param b, sc_param c)
 {
     sc_out ret = ((sc_f3)s_calltab[3])(id, a, b, c);
     *out = ret;
     return sc_fin(ret);
 }
 
-SC_EXPORT sc_out sc_call4(sc_out *out, sc_id id, sc_param a, sc_param b, sc_param c, sc_param d)
+SC_EXPORT sc_error sc_call4(sc_out *out, sc_id id, sc_param a, sc_param b, sc_param c, sc_param d)
 {
     sc_out ret = ((sc_f4)s_calltab[4])(id, a, b, c, d);
     *out = ret;
     return sc_fin(ret);
 }
 
-SC_EXPORT sc_out sc_call5(sc_out *out, sc_id id, sc_param a, sc_param b, sc_param c, sc_param d, sc_param e)
+SC_EXPORT sc_error sc_call5(sc_out *out, sc_id id, sc_param a, sc_param b, sc_param c, sc_param d, sc_param e)
 {
     sc_out ret = ((sc_f5)s_calltab[5])(id, a, b, c, d, e);
     *out = ret;
     return sc_fin(ret);
 }
 
-SC_EXPORT sc_out sc_call6(sc_out *out, sc_id id, sc_param a, sc_param b, sc_param c, sc_param d, sc_param e, sc_param f)
+SC_EXPORT sc_error sc_call6(sc_out *out, sc_id id, sc_param a, sc_param b, sc_param c, sc_param d, sc_param e, sc_param f)
 {
     sc_out ret = ((sc_f6)s_calltab[6])(id, a, b, c, d, e, f);
     *out = ret;

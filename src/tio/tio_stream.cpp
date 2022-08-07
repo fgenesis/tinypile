@@ -5,9 +5,20 @@ static void invalidate(tio_Stream* sm)
 {
     // err is kept as-is on purpose
     sm->cursor = sm->begin = sm->end = NULL;
-    sm->Close = NULL;
+    sm->impl = NULL;
     sm->Refill = NULL;
 }
+
+static tio_error nopOK(tio_Stream *sm)
+{
+    return 0;
+}
+
+/*static tio_error nopSkip(tio_Stream *sm, tiosize n)
+{
+    return 0;
+}*/
+
 
 // Some pointer that isn't NULL to help ensure the caller's logic is correct.
 // Also used as a small area to store zeros for the infinite zeros stream.
@@ -18,7 +29,8 @@ static inline char *someptr(tio_Stream* sm)
 
 // -- Empty stream -- for reading -- Doesn't emit anything --
 
-static size_t streamRefillEmpty(tio_Stream* sm)
+
+static tio_error streamRefillEmpty(tio_Stream* sm)
 {
     char* p = someptr(sm);
     // User is not supposed to modify those...
@@ -29,16 +41,29 @@ static size_t streamRefillEmpty(tio_Stream* sm)
     return 0;
 }
 
+static const tio_StreamImpl s_emptyImpl =
+{
+    invalidate,
+    NULL,
+};
+
+
 static void streamInitEmpty(tio_Stream* sm)
 {
-    sm->Close = invalidate;
+    sm->impl = &s_emptyImpl;
     sm->Refill = streamRefillEmpty;
     sm->begin = sm->cursor = sm->end = someptr(sm);
 }
 
 // -- Infinite zeros stream -- for reading --
 
-static size_t streamRefillZeros(tio_Stream* sm)
+static const tio_StreamImpl s_infiniteImpl =
+{
+    invalidate,
+    NULL,
+};
+
+static tio_error streamRefillZeros(tio_Stream* sm)
 {
     char* begin = someptr(sm);
     char* end = begin + sizeof(sm->priv);
@@ -49,14 +74,14 @@ static size_t streamRefillZeros(tio_Stream* sm)
     // ... but make it fail-safe
     sm->begin = begin;
     sm->end = end;
-    return sizeof(sm->priv);
+    return 0;
 }
 
 static void streamInitInfiniteZeros(tio_Stream* sm)
 {
     char *p = someptr(sm);
     tio__memzero(p, sizeof(sm->priv));
-    sm->Close = invalidate;
+    sm->impl = &s_infiniteImpl;
     sm->Refill = streamRefillZeros;
     sm->begin = sm->cursor = p;
     sm->end = sm->begin + sizeof(sm->priv);
@@ -75,16 +100,16 @@ static void streamInitFail(tio_Stream* sm, tio_StreamFlags flags)
 
 // close valid stream and transition to failure state
 // should be called during or instead of Refill()
-TIO_PRIVATE size_t streamfail(tio_Stream* sm)
+TIO_PRIVATE tio_error streamfail(tio_Stream* sm)
 {
-    sm->Close(sm); // Whatever the old stream was, dispose it cleanly
+    sm->impl->Close(sm); // Whatever the old stream was, dispose it cleanly
     if (!sm->err)   // Keep existing error, if any
         sm->err = tio_Error_Unspecified;
     streamInitFail(sm, (tio_StreamFlags)sm->common.flags);
-    return 0;
+    return sm->err;
 }
 
-TIO_PRIVATE size_t streamEOF(tio_Stream* sm)
+TIO_PRIVATE tio_error streamEOF(tio_Stream* sm)
 {
     sm->err = tio_Error_EOF;
     return streamfail(sm);
@@ -92,7 +117,6 @@ TIO_PRIVATE size_t streamEOF(tio_Stream* sm)
 
 // -- Handle-based stream, for reading. ---
 // Probably the worst way to do this but ok as a fallback if everything else fails...
-// Does not use a tio_Handle's file pointer so it can be created from a user-provided handle
 
 struct streamHandleReadBufferHeader
 {
@@ -110,7 +134,36 @@ static void streamHandleReadClose(tio_Stream* sm)
     invalidate(sm);
 }
 
-static size_t streamHandleReadRefill(tio_Stream* sm)
+static tio_Alloc streamHandleGetAlloc(tio_Stream *sm, void **pallocUD)
+{
+    streamHandleReadBufferHeader* buf = (streamHandleReadBufferHeader*)sm->priv.extra;
+    --buf; // go back to the actual header
+    *pallocUD = buf->allocUD;
+    return buf->alloc;
+}
+
+/*static tio_error streamHandleSkipForwardXOffset(tio_Stream *sm, tiosize n)
+{
+    tio_Handle h = (tio_Handle)sm->priv.aux;
+    tio_error err = tio_kseek(h, n, tio_SeekCur);
+    if(err)
+    {
+        sm->err = err;
+        return streamfail(sm);
+    }
+    return streamHandleReadXOffset(sm);
+}*/
+
+
+// function pointers for stream impl that does not use the file handle's internal offset
+// and instead has its own, so the handle can be shared
+static const tio_StreamImpl s_handleImplXOffset =
+{
+    streamHandleReadClose,
+    streamHandleGetAlloc,
+};
+
+static tio_error streamHandleReadRefillXOffset(tio_Stream* sm)
 {
     size_t n = sm->priv.blockSize;
     char* p = (char*)sm->priv.extra;
@@ -125,7 +178,7 @@ static size_t streamHandleReadRefill(tio_Stream* sm)
     sm->priv.offset += done;
     sm->begin = sm->cursor = p;
     sm->end = p + done;
-    return done;
+    return err;
 }
 
 static tio_error streamHandleReadInit(tio_Stream* sm, tio_Handle h, size_t blocksize, tio_Alloc alloc, void *allocUD)
@@ -141,8 +194,8 @@ static tio_error streamHandleReadInit(tio_Stream* sm, tio_Handle h, size_t block
     buf->alloc = alloc;
     buf->allocUD = allocUD;
 
-    sm->Refill = streamHandleReadRefill;
-    sm->Close = streamHandleReadClose;
+    sm->Refill = streamHandleReadRefillXOffset;
+    sm->impl = &s_handleImplXOffset;
 
     sm->priv.aux = h;
     sm->priv.extra = buf + 1; // don't touch the header
@@ -175,13 +228,26 @@ static void streamMMIOClose(tio_Stream* sm)
     invalidate(sm);
 }
 
+static tio_Alloc streamMMIOGetAlloc(tio_Stream *sm, void **pallocUD)
+{
+    tioMMIOStreamData* m = streamdata<tioMMIOStreamData>(sm);
+    *pallocUD = m->allocUD;
+    return m->alloc;
+}
+
+static const tio_StreamImpl s_mmioImpl =
+{
+    streamMMIOClose,
+    streamMMIOGetAlloc,
+};
+
 /*static void streamMMIOPrefetchBlocks(tio_Stream* sm, unsigned blocks)
 {
     tioMMIOStreamData* m = streamdata<tioMMIOStreamData>(sm);
     os_preloadvmem(m->map.begin, sm->priv.blockSize * blocks);
 }*/
 
-static size_t streamMMIOReadRefill(tio_Stream* sm)
+static tio_error streamMMIOReadRefill(tio_Stream* sm)
 {
     tioMMIOStreamData* m = streamdata<tioMMIOStreamData>(sm);
 
@@ -211,7 +277,7 @@ static size_t streamMMIOReadRefill(tio_Stream* sm)
     sm->priv.offset += sz;
     sm->begin = sm->cursor = p;
     sm->end = p + sz;
-    return sz;
+    return err;
 }
 
 // FIXME: uuhhh not sure
@@ -263,7 +329,7 @@ static tio_error _streamInitMapping(tio_Stream* sm, size_t blocksize, tiosize of
     sm->priv.blockSize = blocksize;
     sm->priv.offset = offset;
 
-    sm->Close = streamMMIOClose;
+    sm->impl = &s_mmioImpl;
     sm->Refill = streamMMIOReadRefill;
     sm->begin = sm->cursor = sm->end = NULL;
     sm->err = 0;
@@ -272,9 +338,15 @@ static tio_error _streamInitMapping(tio_Stream* sm, size_t blocksize, tiosize of
     return 0;
 }
 
-// -- Handle-based stream --
+// -- Memory-based stream --
 
-static size_t streamRefillMem(tio_Stream* sm)
+static const tio_StreamImpl s_justInvalidateImpl =
+{
+    invalidate,
+    NULL,
+};
+
+static tio_error streamRefillMem(tio_Stream* sm)
 {
     const size_t curoffs = sm->priv.offset;
     const size_t blk = sm->priv.blockSize;
@@ -290,14 +362,14 @@ static size_t streamRefillMem(tio_Stream* sm)
     sm->cursor = beg;
     sm->begin = beg;
     sm->end = beg + endoffs;
-    return blk;
+    return 0;
 }
 
 TIO_PRIVATE void initmemstream(tio_Stream *sm, const void *mem, size_t memsize, tio_StreamFlags flags, size_t blocksize)
 {
     tio__memzero(sm, sizeof(*sm));
     sm->Refill = streamRefillMem;
-    sm->Close = invalidate;
+    sm->impl = &s_justInvalidateImpl;
     sm->common.flags = flags;
     sm->priv.blockSize = blocksize ? blocksize : memsize;
     sm->priv.size = memsize;
@@ -353,9 +425,8 @@ TIO_PRIVATE tio_error initmmiostream(tio_Stream* sm, tio_MMIO* mmio, tiosize off
 
     return err;
 }
-
 // One successful refill of 0 bytes, after that fail
-static size_t streamRefillEmptyReadOnce(tio_Stream* sm)
+static tio_error streamRefillEmptyReadOnce(tio_Stream* sm)
 {
     sm->cursor = sm->begin = sm->end = someptr(sm);
     sm->Refill = streamEOF;
@@ -365,7 +436,7 @@ static size_t streamRefillEmptyReadOnce(tio_Stream* sm)
 static void streamInitEmptyReadOnce(tio_Stream* sm)
 {
     sm->cursor = sm->begin = sm->end = 0;
-    sm->Close = invalidate;
+    sm->impl = &s_justInvalidateImpl;
     sm->Refill = streamRefillEmptyReadOnce;
 }
 
@@ -440,26 +511,40 @@ static void streamPrependRestore(tio_Stream *sm)
     pd->alloc(pd->allocUD, pd, sizeof(PrependData) + sz, 0);
 }
 
-static size_t streamPrependRefillRestore(tio_Stream *sm)
+static tio_error streamPrependRefillRestore(tio_Stream *sm)
 {
     streamPrependRestore(sm);
-    return tio_savail(sm); // continue as if nothing had happened with cursor/begin/end as they were
+    return 0; // continue as if nothing had happened with cursor/begin/end as they were
 }
 
 // for when the user closes the stream while it's still transmogrified
 static void streamPrependClose(tio_Stream *sm)
 {
     streamPrependRestore(sm);
-    sm->Close(sm);
+    sm->impl->Close(sm);
 }
 
-static size_t streamPrependRefill(tio_Stream *sm)
+static tio_Alloc streamPrependGetAlloc(tio_Stream *sm, void **pallocUD)
+{
+    PrependData *pd = (PrependData*)sm->priv.extra;
+    *pallocUD = pd->allocUD;
+    return pd->alloc;
+}
+
+static const tio_StreamImpl s_prependImpl =
+{
+    streamPrependClose,
+    streamPrependGetAlloc
+};
+
+
+static tio_error streamPrependRefill(tio_Stream *sm)
 {
     const size_t sz = sm->priv.size;
     sm->begin = sm->cursor = (char*)sm->priv.extra + sizeof(PrependData);
     sm->end = sm->begin + sz;
     sm->Refill = streamPrependRefillRestore; // next time undo self
-    return sz;
+    return 0;
 }
 
 TIO_PRIVATE tio_error streamprepend(tio_Stream *sm, const void *data, size_t sz, tio_Alloc alloc, void *allocUD)
@@ -476,7 +561,7 @@ TIO_PRIVATE tio_error streamprepend(tio_Stream *sm, const void *data, size_t sz,
     sm->begin = sm->cursor = p;
     sm->end = p + sz;
     sm->Refill = streamPrependRefill;
-    sm->Close = streamPrependClose;
+    sm->impl = &s_prependImpl;
     sm->priv.extra = state;
     sm->priv.size = sz;
     return 0;

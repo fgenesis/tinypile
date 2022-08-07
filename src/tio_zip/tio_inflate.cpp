@@ -12,7 +12,14 @@ struct tioInflateStreamPriv
     void* allocUD;
 };
 
-static size_t decomp_inflate_refill(tio_Stream* sm)
+static tio_error fail(tio_Stream *sm, tio_error err)
+{
+    sm->err = err;
+    return tio_streamfail(sm);
+}
+
+
+static tio_error decomp_inflate_refill(tio_Stream* sm)
 {
     tioInflateStreamPriv* priv = (tioInflateStreamPriv*)sm->priv.extra;
     tinfl_decompressor* dc = &priv->decomp;
@@ -21,6 +28,7 @@ static size_t decomp_inflate_refill(tio_Stream* sm)
     unsigned dict_ofs = priv->dict_ofs;
     sm->begin = sm->cursor = (char*)&priv->dict[0] + dict_ofs;
     size_t totalsize = 0;
+    tio_error err = 0;
     for(;;)
     {
         size_t inavail = tio_savail(src);
@@ -28,12 +36,12 @@ static size_t decomp_inflate_refill(tio_Stream* sm)
         // grab some bytes first
         if (!inavail)
         {
-            inavail = tio_srefill(src); // may be 0 for async streams
-            if (src->err)
-            {
-                sm->err = src->err;
-                return tio_streamfail(sm);
-            }
+            err = tio_srefillx(src);
+            inavail = tio_savail(src); // may be 0 for async streams
+            if (err > 0 || !inavail)
+                break;
+            if(err < 0)
+                return fail(sm, src->err);
         }
         // at this point, we may or may not have some bytes to decompress
 
@@ -62,20 +70,20 @@ static size_t decomp_inflate_refill(tio_Stream* sm)
         else
         {
             if (status != TINFL_STATUS_DONE)
-                sm->err = tio_Error_DataError;
+                return fail(sm, tio_Error_DataError);
             break;
         }
     }
 
     priv->dict_ofs = dict_ofs;
     sm->end = (char*)sm->begin + totalsize;
-    return totalsize;
+    return 0;
 }
 
 static void decomp_inflate_close(tio_Stream* sm)
 {
     sm->Refill = 0;
-    sm->Close = 0;
+    sm->impl = 0;
     sm->begin = sm->end = sm->cursor = 0;
 
     tioInflateStreamPriv* priv = (tioInflateStreamPriv*)sm->priv.extra;
@@ -84,6 +92,19 @@ static void decomp_inflate_close(tio_Stream* sm)
     if (sm->common.flags & tioS_CloseBoth)
         tio_sclose((tio_Stream *)sm->priv.aux);
 }
+
+static tio_Alloc decomp_inflate_getAlloc(tio_Stream *sm, void **pallocUD)
+{
+    tioInflateStreamPriv* priv = (tioInflateStreamPriv*)sm->priv.extra;
+    *pallocUD = priv->allocUD;
+    return priv->alloc;
+}
+
+static const tio_StreamImpl s_decomp_infl =
+{
+    decomp_inflate_close,
+    decomp_inflate_getAlloc
+};
 
 static tio_error _tio_init_inflate(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void *allocUD, unsigned mzflags)
 {
@@ -98,7 +119,7 @@ static tio_error _tio_init_inflate(tio_Stream* sm, tio_Stream* packed, tio_Strea
 
     tio_memset(sm, 0, sizeof(*sm));
     sm->Refill = decomp_inflate_refill;
-    sm->Close = decomp_inflate_close;
+    sm->impl = &s_decomp_infl;
     sm->common.flags = flags;
     sm->priv.aux = packed;
     sm->priv.extra = priv;

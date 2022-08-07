@@ -421,7 +421,7 @@ loopstart:
     return prevbytes - bytes;
 }
 
-TIO_EXPORT size_t tio_streamfail(tio_Stream* sm)
+TIO_EXPORT tio_error tio_streamfail(tio_Stream* sm)
 {
     checknotnull_0(sm);
     return streamfail(sm);

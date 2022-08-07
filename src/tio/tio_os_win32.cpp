@@ -443,7 +443,7 @@ static void _streamWin32OverlappedRequestNextChunk(tio_Stream* sm)
     }
 }
 
-static size_t streamWin32OverlappedRefill(tio_Stream* sm)
+static tio_error streamWin32OverlappedRefill(tio_Stream* sm)
 {
     tioWin32OverlappedStreamOverlay *ovl = _streamoverlay(sm);
     tioWin32OverlappedExtra * ex = _memoverlay(sm);
@@ -510,13 +510,26 @@ eof:
     sm->cursor = p;
     sm->begin = p;
     sm->end = p + done;
-    return done;
+    return 0;
 }
 
 template<typename T> static inline T alignedRound(T val, T aln)
 {
     return ((val + (aln - 1)) / aln) * aln;
 }
+
+static tio_Alloc streamWin32OverlappedGetAlloc(tio_Stream *sm, void **pallocUD)
+{
+    tioWin32OverlappedExtra * ex = _memoverlay(sm);
+    *pallocUD = ex->allocUD;
+    return ex->alloc;
+}
+
+static const tio_StreamImpl s_win32Impl =
+{
+    streamWin32OverlappedClose,
+    streamWin32OverlappedGetAlloc
+};
 
 static tio_error streamWin32OverlappedInit(tio_Stream* sm, tio_Handle hFile, size_t blocksize, tio_Features features, tio_Alloc alloc, void *allocUD)
 {
@@ -604,7 +617,7 @@ static tio_error streamWin32OverlappedInit(tio_Stream* sm, tio_Handle hFile, siz
     sm->err = 0;
 
     sm->Refill = streamWin32OverlappedRefill;
-    sm->Close = streamWin32OverlappedClose;
+    sm->impl = &s_win32Impl;
 
     // Keep one block free -- external code will be working on that one block
     // while the OS processes the others in the background.

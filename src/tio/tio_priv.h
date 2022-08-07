@@ -83,8 +83,8 @@ struct OpenMode
 
 // Internal utility functions
 TIO_PRIVATE OpenMode checkmode(unsigned& mode, tio_Features& features); // adjust mode and features and checks validity
-TIO_PRIVATE size_t streamfail(tio_Stream* sm);
-TIO_PRIVATE size_t streamEOF(tio_Stream* sm); // sets err = EOF, then calls streamfail()
+TIO_PRIVATE tio_error streamfail(tio_Stream* sm);
+TIO_PRIVATE tio_error streamEOF(tio_Stream* sm); // sets err = EOF, then calls streamfail()
 TIO_PRIVATE tio_error sanitizePath(char* dst, const char* src, size_t space, size_t srcsize, tio_CleanFlags flags);
 TIO_PRIVATE tio_error openfile(tio_Handle *hOut, OpenMode *om, char *fn, tio_Mode mode, tio_Features& features, unsigned wflags = 0);
 TIO_PRIVATE tio_error initfilestream(tio_Stream* sm, char* fn, tio_Features features, tio_StreamFlags flags, size_t blocksize, tio_Alloc alloc, void* allocUD);

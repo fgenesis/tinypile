@@ -21,14 +21,14 @@ struct tioDeflateStreamPriv
     char *packbuf() { return (char*)(this + 1); }
 };
 
-static size_t decomp_deflate_finish(tio_Stream* sm)
+static tio_error comp_deflate_finish(tio_Stream* sm)
 {
     tioDeflateStreamPriv* priv = (tioDeflateStreamPriv*)sm->priv.extra;
     sm->err = priv->nexterror ? priv->nexterror : tio_Error_EOF;
     return tio_streamfail(sm);
 }
 
-static size_t decomp_deflate_drain(tio_Stream* sm)
+static tio_error comp_deflate_drain(tio_Stream* sm)
 {
     tioDeflateStreamPriv* priv = (tioDeflateStreamPriv*)sm->priv.extra;
     char * const p = priv->packbuf();
@@ -36,16 +36,16 @@ static size_t decomp_deflate_drain(tio_Stream* sm)
     size_t out = priv->blocksize;
     tdefl_status status = tdefl_compress(&priv->comp, NULL, NULL, p, &out, TDEFL_FINISH);
     if(status == TDEFL_STATUS_DONE)
-        sm->Refill = decomp_deflate_finish;
+        sm->Refill = comp_deflate_finish;
     else if(status == TDEFL_STATUS_OKAY)
     { /* keep draining */ }
     else
         return tio_streamfail(sm);
     sm->end = sm->begin + out;
-    return out;
+    return 0;
 }
 
-static size_t decomp_deflate_refill(tio_Stream* sm)
+static tio_error comp_deflate_refill(tio_Stream* sm)
 {
     tioDeflateStreamPriv* priv = (tioDeflateStreamPriv*)sm->priv.extra;
     tdefl_compressor* comp = &priv->comp;
@@ -63,15 +63,16 @@ static size_t decomp_deflate_refill(tio_Stream* sm)
         tdefl_flush flush = TDEFL_NO_FLUSH;
         if (!inavail)
         {
-            inavail = tio_srefill(src); // may be 0 for async streams
-            if (src->err)
+            const tio_error err = tio_srefillx(src);
+            if (src->err < 0)
             {
                 // Remember the error, but first flush everything
                 priv->nexterror = src->err;
-                sm->Refill = decomp_deflate_drain;
+                sm->Refill = comp_deflate_drain;
                 flush = TDEFL_FINISH;
             }
-            if(!inavail)
+            inavail = tio_savail(src); // may be 0 for async streams
+            if(!inavail || err)
                 break;
         }
         // at this point, we may or may not have some bytes to compress
@@ -82,7 +83,7 @@ static size_t decomp_deflate_refill(tio_Stream* sm)
         switch(status)
         {
             case TDEFL_STATUS_DONE:
-                sm->Refill = decomp_deflate_finish;
+                sm->Refill = comp_deflate_finish;
                 // fall through
             case TDEFL_STATUS_OKAY:
                 src->cursor += in;
@@ -99,10 +100,10 @@ static size_t decomp_deflate_refill(tio_Stream* sm)
     return totalsize;
 }
 
-static void decomp_deflate_close(tio_Stream* sm)
+static void comp_deflate_close(tio_Stream* sm)
 {
     sm->Refill = 0;
-    sm->Close = 0;
+    sm->impl = 0;
     sm->begin = sm->end = sm->cursor = 0;
 
     tioDeflateStreamPriv* priv = (tioDeflateStreamPriv*)sm->priv.extra;
@@ -111,6 +112,20 @@ static void decomp_deflate_close(tio_Stream* sm)
     if (sm->common.flags & tioS_CloseBoth)
         tio_sclose((tio_Stream *)sm->priv.aux);
 }
+
+tio_Alloc comp_deflate_getAlloc(tio_Stream *sm, void **pallocUD)
+{
+    tioDeflateStreamPriv* priv = (tioDeflateStreamPriv*)sm->priv.extra;
+    *pallocUD = priv->allocUD;
+    return priv->alloc;
+}
+
+static const tio_StreamImpl s_comp_defl =
+{
+    comp_deflate_close,
+    comp_deflate_getAlloc
+};
+
 
 static tio_error _tio_init_deflate(tio_Stream* sm, unsigned level, size_t blocksize, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void *allocUD, int windowBits)
 {
@@ -129,8 +144,8 @@ static tio_error _tio_init_deflate(tio_Stream* sm, unsigned level, size_t blocks
     priv->allocUD = allocUD;
 
     tio_memset(sm, 0, sizeof(*sm));
-    sm->Refill = decomp_deflate_refill;
-    sm->Close = decomp_deflate_close;
+    sm->Refill = comp_deflate_refill;
+    sm->impl = &s_comp_defl;
     sm->common.flags = flags;
     sm->priv.aux = packed;
     sm->priv.extra = priv;

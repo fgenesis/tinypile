@@ -17,7 +17,7 @@ struct tioLZ4StreamPriv
     char dict[_LZ4_WINDOW_SIZE]; // 64k dict, wrapping
     tio_Alloc alloc;
     void* allocUD;
-    size_t (*onBlockEnd)(tio_Stream* sm); // transition to this Refill function once decomp() has finished a block
+    tio_error (*onBlockEnd)(tio_Stream* sm); // transition to this Refill function once decomp() has finished a block
     // frame/header only
     size_t blocksize; // for decomp() to know the (remaining) size of the current block
     size_t framestodo;
@@ -45,8 +45,21 @@ inline static size_t min3(size_t a, size_t b, size_t c)
     return x < c ? x : c;
 }
 
+static tio_error fail(tio_Stream *sm, tio_error err)
+{
+    tio__ASSERT(err < 0);
+    if(!sm->err)
+        sm->err = err;
+    return tio_streamfail(sm);
+}
 
-static size_t transition(tio_Stream* sm, size_t(*f)(tio_Stream*))
+static tio_error checkfail(tio_Stream *sm, tio_error err)
+{
+    return err >= 0 ? err : fail(sm, err);
+}
+
+
+static tio_error transition(tio_Stream* sm, tio_error(*f)(tio_Stream*))
 {
     tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)&sm->priv;
     priv->state = 0;
@@ -76,7 +89,7 @@ static size_t transition(tio_Stream* sm, size_t(*f)(tio_Stream*))
 
 // This decomp loop is about 20% slower than the lz4 reference implementation,
 // but small and readable enough to serve as an example for streaming decompression
-static size_t decomp(tio_Stream* sm)
+static tio_error decomp(tio_Stream* sm)
 {
     tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
     tio_Stream* const src = (tio_Stream*)sm->priv.aux;
@@ -92,6 +105,7 @@ static size_t decomp(tio_Stream* sm)
 
     size_t wr = 0; // bytes of output produced
     size_t rd = 0; // bytes of input consumed
+    tio_error err = 0;
 
     const unsigned char* p = (const unsigned char*)src->cursor;
     const unsigned char* end = (const unsigned char*)src->end;
@@ -100,18 +114,13 @@ static size_t decomp(tio_Stream* sm)
     {
 refill:
         rd += (char*)p - src->cursor; // Keep track of consumed input across refills
-        if (!tio_srefill(src)) // possibly 0 bytes if async or EOF
-        {
-            if (!src->err)
-                goto saveandexit; // stream is ok but doesn't want to deliver -> back to caller.
-            else
-            {
-                sm->err = src->err;
-                return tio_streamfail(sm);
-            }
-        }
+        tio_error err = tio_srefillx(src);
+        if(err < 0)
+            return fail(sm, err);
         p = (const unsigned char*)src->cursor;
         end = (const unsigned char*)src->end;
+        if(p == end || err) // possibly 0 bytes if async or EOF
+            goto saveandexit; // stream is ok but doesn't want to deliver -> back to caller.
     }
 
     switch (state) for (;;)
@@ -210,7 +219,7 @@ saveandexit:
 finish:
     src->cursor = (char*)p;
     sm->end = sm->begin + wr;
-    return wr;
+    return err;
 lastblockdone:
     if (priv->blocksize == rd + ((char*)p - src->cursor))
     {
@@ -220,39 +229,38 @@ lastblockdone:
     }
     // probably a data error. missed the sequence boundary -> decompressed too far. no good.
 dataerror:
-    sm->err = tio_Error_DataError;
-    return tio_streamfail(sm);
+    return fail(sm, tio_Error_DataError);
 }
 
 #undef _LZ4_ADVANCE_DICT_OR_YIELD
 #undef _LZ4_BEGIN_STATE_OR_REFILL
 
 // Probably not that fast. Only used by _lz4_getbyte() for header parsing.
-static int _tryfill(tio_Stream* sm, tio_Stream* src)
+static tio_error _tryfill(tio_Stream* sm, tio_Stream* src)
 {
-    int ok = src->cursor != src->end || tio_srefill(src);
-    if(!ok)
-        sm->err = src->err; // may or may not have an error set
-    return ok;
-}
-
-static size_t _failOr0(tio_Stream *sm)
-{
-    return !sm->err ? 0 : tio_streamfail(sm);
+    tio_error err = 0;
+    if(src->cursor == src->end)
+    {
+        err = tio_srefillx(src);
+        if(err < 0) // Sticky error? Set it.
+            return fail(sm, err);
+    }
+    return err;
 }
 
 // grab one byte, refill src as necessary. if that fails, goto out.
-#define _lz4_getbyte(stateID, c) case stateID: if(!_tryfill(sm, src)) { priv->state = stateID; goto out; } c = *src->cursor++;
+#define _lz4_getbyte(stateID, c) case stateID: if( (err = _tryfill(sm, src)) ) { priv->state = stateID; goto out; } c = *src->cursor++;
 
 // pre-decl
-static size_t magic(tio_Stream* sm);
-static size_t blockbegin(tio_Stream* sm);
+static tio_error magic(tio_Stream* sm);
+static tio_error blockbegin(tio_Stream* sm);
 
-static size_t footer(tio_Stream* sm)
+static tio_error footer(tio_Stream* sm)
 {
     tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
     tio_Stream *const src = (tio_Stream *)sm->priv.aux;
     unsigned char c;
+    tio_error err = 0;
 
     if (priv->flg & (1 << 2)) // C.Checksum bit
         switch (priv->state)
@@ -266,10 +274,10 @@ static size_t footer(tio_Stream* sm)
     priv->framestodo--; // this underflows if this started as 0
     sm->Refill = priv->framestodo ? magic : streamEOF; // either it's EOF or the start of the next concatenated frame
 out:
-    return _failOr0(sm);
+    return err;
 }
 
-static size_t blockend(tio_Stream* sm)
+static tio_error blockend(tio_Stream* sm)
 {
     // 0x00000000 is already handled in blockbegin(),
     // so all we need to handle here is the (optional) block checksum
@@ -277,6 +285,7 @@ static size_t blockend(tio_Stream* sm)
     tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
     tio_Stream* const src = (tio_Stream *)sm->priv.aux;
     unsigned char c;
+    tio_error err = 0;
 
     if (!(priv->flg & (1 << 4))) // B.Checksum bit
         goto nextblock;
@@ -290,12 +299,12 @@ static size_t blockend(tio_Stream* sm)
         nextblock:
         return transition(sm, &blockbegin); // success
     }
-    sm->err = tio_Error_DataError;
+    err = tio_Error_DataError;
 out:
-    return _failOr0(sm);
+    return checkfail(sm, err);
 }
 
-static size_t uncompressed(tio_Stream* sm)
+static tio_error uncompressed(tio_Stream* sm)
 {
     tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
     tio_Stream *const src = (tio_Stream *)sm->priv.aux;
@@ -303,12 +312,10 @@ static size_t uncompressed(tio_Stream* sm)
     size_t avail = tio_savail(src);
     if(!avail)
     {
-        avail = tio_srefill(src);
-        if(src->err)
-        {
-            sm->err = src->err;
-            return tio_streamfail(sm);
-        }
+        tio_error err = tio_srefillx(src);
+        if(err)
+            return checkfail(sm, err);
+        avail = tio_savail(src);
     }
     size_t actual = avail < priv->blocksize ? avail : priv->blocksize;
     priv->blocksize -= actual;
@@ -319,13 +326,14 @@ static size_t uncompressed(tio_Stream* sm)
     sm->end = sm->begin + actual;
     src->cursor += actual;
 
-    return actual;
+    return 0;
 }
 
-static size_t blockbegin(tio_Stream* sm)
+static tio_error blockbegin(tio_Stream* sm)
 {
     tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
     tio_Stream *const src = (tio_Stream *)sm->priv.aux;
+    tio_error err = 0;
 
     unsigned char c;
     switch (priv->state) // break means fail, everything else is fall through
@@ -341,16 +349,17 @@ static size_t blockbegin(tio_Stream* sm)
         priv->blocksize = priv->offset & ~0x80000000;
         return transition(sm, priv->offset & 0x80000000 ? &uncompressed : &decomp);
     }
-    sm->err = tio_Error_DataError;
+    err = tio_Error_DataError;
 out:
-    return _failOr0(sm);
+    return checkfail(sm, err);
 }
 
-static size_t header(tio_Stream* sm)
+static tio_error header(tio_Stream* sm)
 {
     tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
     tio_Stream *const src = (tio_Stream *)sm->priv.aux;
     unsigned char c;
+    tio_error err = 0;
     switch (priv->state) // break means fail, everything else is fall through
     {
         _lz4_getbyte(0, c); // FLG byte
@@ -381,17 +390,18 @@ static size_t header(tio_Stream* sm)
 
         return transition(sm, &blockbegin); // success
     }
-    sm->err = tio_Error_DataError;
+    err = tio_Error_DataError;
 out:
-    return _failOr0(sm);
+    return checkfail(sm, err);
 }
 
 // begin frame: starts with 4 magic bytes
-static size_t magic(tio_Stream* sm)
+static tio_error magic(tio_Stream* sm)
 {
     tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
     tio_Stream *const src = (tio_Stream *)sm->priv.aux;
     unsigned char c;
+    tio_error err = 0;
     switch (priv->state)
     {
         _lz4_getbyte(0, c); priv->magicbuf[0] = c;
@@ -405,7 +415,7 @@ static size_t magic(tio_Stream* sm)
     else if(!priv->framesdone)
     {
         // first frame and already a mismatch? that's not even LZ4
-        sm->err = tio_Error_DataError;
+        err = tio_Error_DataError;
     }
     else
     {
@@ -422,13 +432,11 @@ static size_t magic(tio_Stream* sm)
             // since we still have those bytes in magicbuf (and it wasn't what we expected)
             // construct a tiny thunk stream that emits those bytes and then switches back
             // to the current stream state.
-            tio_error err = streamprepend(src, priv->magicbuf, sizeof(priv->magicbuf), priv->alloc, priv->allocUD);
-            if(err) // uhhh.. no way to get back to old state, just give up and cry
-                sm->err = err;
+            err = streamprepend(src, priv->magicbuf, sizeof(priv->magicbuf), priv->alloc, priv->allocUD);
         }
     }
 out:
-    return _failOr0(sm);
+    return checkfail(sm, err);
 }
 
 #undef _lz4_getbyte
@@ -439,11 +447,25 @@ static void close(tio_Stream* sm)
     priv->alloc(priv->allocUD, priv, sizeof(*priv), 0);
 
     sm->Refill = 0;
-    sm->Close = 0;
+    sm->impl = 0;
     sm->begin = sm->end = sm->cursor = 0;
+
 }
 
-static tio_error commonInit(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD, size_t(*onBlockEnd)(tio_Stream*), size_t blocksize, size_t maxframes)
+static tio_Alloc getalloc(tio_Stream *sm, void **pallocUD)
+{
+    tioLZ4StreamPriv* const priv = (tioLZ4StreamPriv*)sm->priv.extra;
+    *pallocUD = priv->allocUD;
+    return priv->alloc;
+}
+
+static const tio_StreamImpl s_lz4impl =
+{
+    close,
+    getalloc
+};
+
+static tio_error commonInit(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD, tio_error(*onBlockEnd)(tio_Stream*), size_t blocksize, size_t maxframes)
 {
     tioLZ4StreamPriv *const priv = (tioLZ4StreamPriv *)alloc(allocUD, 0, tioDecompAllocMarker, sizeof(tioLZ4StreamPriv));
     if (!priv)
@@ -457,7 +479,7 @@ static tio_error commonInit(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags 
     priv->framestodo = maxframes;
     priv->framesdone = 0;
 
-    sm->Close = close;
+    sm->impl = &s_lz4impl;
     sm->common.flags = flags;
     sm->priv.aux = packed;
     sm->priv.extra = priv;

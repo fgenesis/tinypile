@@ -46,19 +46,19 @@ static tioZstdStreamExtra*_zstdx(tio_Stream* sm)
     return reinterpret_cast<tioZstdStreamExtra*>(sm->priv.extra);
 }
 
-static size_t _zstdfail(tio_Stream* sm, tio_error err)
+static tio_error _zstdfail(tio_Stream* sm, tio_error err)
 {
     sm->err = err;
     return tio_streamfail(sm);
 }
 
-static size_t tioZstdStreamEOF(tio_Stream* sm)
+static tio_error tioZstdStreamEOF(tio_Stream* sm)
 {
     sm->err = tio_Error_EOF;
     return tio_streamfail(sm);
 }
 
-static size_t tioZstdStreamRefill(tio_Stream* sm)
+static tio_error tioZstdStreamRefill(tio_Stream* sm)
 {
     tio_Stream* const packed = (tio_Stream*)sm->priv.aux;
     if (packed->err)
@@ -73,13 +73,14 @@ static size_t tioZstdStreamRefill(tio_Stream* sm)
         if (!input.size)
         {
 refill:
-            input.size = tio_srefill(packed);
-            if (packed->err)
-                return _zstdfail(sm, packed->err);
-            if (!input.size)
+            const tio_error err = tio_srefillx(packed);
+            if (err < 0)
+                return _zstdfail(sm, err);
+            input.size = tio_savail(packed);
+            if (!input.size || err)
             {
                 sm->begin = sm->cursor = sm->end = NULL;
-                return 0;
+                return err;
             }
             input.src = packed->cursor;
             input.pos = 0;
@@ -105,7 +106,7 @@ refill:
     packed->cursor += input.pos;
     sm->begin = sm->cursor = (char*)output.dst;
     sm->end = (char*)output.dst + output.size;
-    return output.size;
+    return 0;
 }
 
 static void tioZstdStreamClose(tio_Stream* sm)
@@ -120,6 +121,19 @@ static void tioZstdStreamClose(tio_Stream* sm)
 
     z->alloc(z->allocUD, z, sizeof(*z), 0);
 }
+
+static tio_Alloc tioZstdStreamGetAlloc(tio_Stream *sm, void **pallocUD)
+{
+    tioZstdStreamExtra* z = _zstdx(sm);
+    *pallocUD = z->allocUD;
+    return z->alloc;
+}
+
+static const tio_StreamImpl s_zstdImpl =
+{
+    tioZstdStreamClose,
+    tioZstdStreamGetAlloc
+};
 
 extern "C" TIO_EXPORT tio_error tio_sdecomp_zstd(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD)
 {
@@ -150,7 +164,7 @@ extern "C" TIO_EXPORT tio_error tio_sdecomp_zstd(tio_Stream* sm, tio_Stream* pac
         sm->priv.aux = packed;
         sm->begin = sm->cursor = sm->end = NULL;
         sm->Refill = tioZstdStreamRefill;
-        sm->Close = tioZstdStreamClose;
+        sm->impl = &s_zstdImpl;
         sm->common.flags = flags;
         sm->err = 0;
     }
