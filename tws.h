@@ -13,14 +13,6 @@
 extern "C" {
 #endif
 
-struct tws_PoolInfo
-{
-    unsigned maxjobs;
-    unsigned maxchannels;
-    unsigned maxpayload;
-};
-typedef struct tws_PoolInfo tws_PoolInfo;
-
 
 typedef struct tws_Pool tws_Pool; /* opaque */
 
@@ -76,6 +68,15 @@ typedef struct tws_WorkTmp tws_WorkTmp;
 
 /* Calculate memory required to create a pool with these parameters. numChannels must be > 0. Returns 0 for bogus params. */
 TWS_EXPORT size_t tws_size(size_t concurrentJobs, unsigned numChannels, size_t payloadSize, size_t cacheLineSize);
+
+
+struct tws_PoolInfo
+{
+    unsigned maxjobs;
+    unsigned maxchannels;
+    unsigned maxpayload;
+};
+typedef struct tws_PoolInfo tws_PoolInfo;
 
 /* Returns read-only struct with some infos about a pool */
 TWS_EXPORT const tws_PoolInfo *tws_info(const tws_Pool *pool);
@@ -158,3 +159,12 @@ TWS_EXPORT int tws_notify(tws_Event *ev);
 #ifdef __cplusplus
 } /* end extern C */
 #endif
+
+
+/* TODO:
+- limit channel to uint8
+- pass counts array to multi-ready callback
+- remove submitwait()? + event from job struct?
+- remove event callback?
+
+*/

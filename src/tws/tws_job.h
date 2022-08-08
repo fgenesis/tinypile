@@ -45,19 +45,21 @@ struct tws_Pool
 inline static tws_ChannelHead *channelHead(tws_Pool *pool, unsigned channel)
 {
     TWS_ASSERT(channel < pool->info.maxchannels, "channel out of bounds");
-    return (tws_ChannelHead*)((((char*)pool) + pool->channelHeadOffset) + (channel * pool->channelHeadSize));
+    return (tws_ChannelHead*)((((char*)pool) + pool->channelHeadOffset) + (channel * (size_t)pool->channelHeadSize));
 }
 
 inline static unsigned jobToIndex(tws_Pool *pool, tws_Job *job)
 {
     TWS_ASSERT(job, "why is this NULL here");
-    return job - (tws_Job*)(((char*)pool) + pool->jobsArrayOffset);
+    ptrdiff_t diff = job - (tws_Job*)(((char*)pool) + pool->jobsArrayOffset);
+    TWS_ASSERT(diff < pool->info.maxjobs, "job ended up as bad index");
+    return (unsigned)diff;
 }
 
 inline static tws_Job *jobByIndex(tws_Pool *pool, unsigned idx)
 {
     TWS_ASSERT(idx < pool->info.maxjobs, "job idx out of bounds");
-    return (tws_Job*)((((char*)pool) + pool->jobsArrayOffset) + (idx * pool->jobSize));
+    return (tws_Job*)((((char*)pool) + pool->jobsArrayOffset) + (idx * (size_t)pool->jobSize));
 }
 
 

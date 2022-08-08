@@ -1,5 +1,6 @@
 set(src
     "${REPO_ROOT}/tws.h"
+    "${REPO_ROOT}/tws_thread.h"
     tws_api.c
     tws_atomic.h
     tws_atomic.c
