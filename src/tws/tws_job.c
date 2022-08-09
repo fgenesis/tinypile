@@ -1,5 +1,26 @@
 #include "tws_job.h"
 
+inline static TWS_NOTNULL tws_ChannelHead *channelHead(tws_Pool *pool, unsigned channel)
+{
+    TWS_ASSERT(channel < pool->info.maxchannels, "channel out of bounds");
+    return (tws_ChannelHead*)((((char*)pool) + pool->channelHeadOffset) + (channel * (size_t)pool->channelHeadSize));
+}
+
+inline static unsigned jobToIndex(tws_Pool *pool, tws_Job *job)
+{
+    TWS_ASSERT(job, "why is this NULL here");
+    ptrdiff_t diff = job - (tws_Job*)(((char*)pool) + pool->jobsArrayOffset);
+    TWS_ASSERT(diff < pool->info.maxjobs, "job ended up as bad index");
+    return (unsigned)(diff + 1);
+}
+
+inline static TWS_NOTNULL tws_Job *jobByIndex(tws_Pool *pool, unsigned idx)
+{
+    TWS_ASSERT(idx, "should not be called with idx==0");
+    --idx;
+    TWS_ASSERT(idx < pool->info.maxjobs, "job idx out of bounds");
+    return (tws_Job*)((((char*)pool) + pool->jobsArrayOffset) + (idx * (size_t)pool->jobSize));
+}
 
 static tws_Job *allocJob(tws_Pool *pool, const tws_JobDesc *desc)
 {
@@ -7,10 +28,11 @@ static tws_Job *allocJob(tws_Pool *pool, const tws_JobDesc *desc)
     if(job)
     {
         job->func = desc->func;
+        job->p0 = desc->p0;
+        job->p1 = desc->p1;
         job->a_remain.val = 1;
-        job->ev = NULL;
-        job->followup = NULL;
-        job->channel = desc->channel;
+        job->followupIdx = 0;
+        job->u.channel = desc->channel;
     }
     // the rest is initialized in submit()
     return job;
@@ -23,9 +45,9 @@ static void recycleJob(tws_Pool *pool, tws_Job *job)
 
 static void enqueue(tws_Pool *pool, tws_Job *job)
 {
-    const unsigned channel = job->channel;
+    const unsigned channel = job->u.channel;
     tws_ChannelHead *ch = channelHead(pool, channel);
-    ail_push(&ch->list, job);
+    ail_push(&ch->list, job); /* this trashes job->u */
     /* don't touch job below here */
     if(pool->cb && pool->cb->readyOne)
         pool->cb->readyOne(pool->callbackUD, channel);
@@ -43,28 +65,21 @@ static void tryToReady(tws_Pool *pool, tws_Job *job)
         enqueue(pool, job);
 }
 
-static void finish(tws_Pool *pool, tws_Job *job)
+TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job)
 {
-    tws_Job *followup = job->followup;
-    if(followup)
-        tryToReady(pool, followup);
-    if(job->ev)
-        tws_notify(job->ev);
+    /* save some things. Note that job->u has been trashed. */
+    const tws_Func func = job->func;
+    const uintptr_t p0 = job->p0;
+    const uintptr_t p1 = job->p1;
+    const unsigned followupIdx = job->followupIdx;
+    /* At this point we have everything we need -- recycle the job early to reduce pressure */
     recycleJob(pool, job);
+    func(pool, p0, p1); /* Do actual work */
+    if(followupIdx)
+        tryToReady(pool, jobByIndex(pool, followupIdx));
 }
 
-static void *payloadArea(tws_Job *job)
-{
-    return job + 1;
-}
-
-TWS_PRIVATE void exec(tws_Pool *pool, tws_Job *job)
-{
-    job->func(pool, job->payload);
-    finish(pool, job);
-}
-
-TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* tmp, size_t n, tws_Event *ev)
+TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* tmp, size_t n)
 {
     /* Preconds:
        - tmp[0..n) is zero'd
@@ -75,7 +90,7 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
     {
         /* No pool? It's actually that simple */
         for(size_t i = 0; i < n; ++i)
-            jobs[i].func(pool, jobs[i].payload);
+            jobs[i].func(pool, jobs[i].p0, jobs[i].p1);
         return n;
     }
 
@@ -108,44 +123,26 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
             if(!job)
             {
                 n = i;
-                return i; /* Job system is full, continue here later */
+                break; /* Job system is full, continue here later */
             }
         }
 
-        tmp[i].x = 0;
+        tmp[i].x = 0; /* It'll be started now for sure */
 
         if(followup)
         {
-            job->followup = followup;
+            job->followupIdx = jobToIndex(pool, followup);
+            TWS_ASSERT(job->followupIdx, "never 0 if valid");
             /* Another job pointing to the same followup might already be running and just finish,
                so this must be done atomically */
             _AtomicInc_Acq(&followup->a_remain); /* Followup depends on us ie. we must finish first */
-        }
-        else if(ev) /* Only need to add jobs without followup to signal completion */
-        {
-            job->ev = ev;
-            tws_eventInc(ev);
-        }
-
-        job->channel = jobs[i].channel;
-
-        /* Prepare payload */
-        size_t psz = jobs[i].payloadSize;
-        if(!psz)
-            job->payload = jobs[i].payload;
-        else
-        {
-            // FIXME: what to do if it's too big? run the job inline?
-            TWS_ASSERT(psz < pool->info.maxpayload, "payload too large");
-            job->payload = payloadArea(job);
-            tws__memcpy(job->payload, jobs[i].payload, psz);
         }
 
         /* This will enqueue the job when there are no deps, or deps are already done */
         tryToReady(pool, job);
     }
 
-    if(pool->cb && pool->cb->readyBatch)
+    if(n && pool->cb && pool->cb->readyBatch)
         pool->cb->readyBatch(pool->callbackUD, n);
 
 

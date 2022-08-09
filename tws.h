@@ -16,8 +16,12 @@ extern "C" {
 
 typedef struct tws_Pool tws_Pool; /* opaque */
 
-/* Generic worker and callback function type. */
-typedef void (*tws_Func)(tws_Pool *pool, void *ud);
+/* Generic worker and callback function type. Two user params, eg. pointer + size. */
+typedef void (*tws_Func)(tws_Pool *pool, uintptr_t p0, uintptr_t p1);
+
+/* Fallback callback. Return 1 when progress was made. */
+typedef int (*tws_Fallback)(tws_Pool *pool, void *ud);
+
 
 typedef struct tws_Event tws_Event;
 
@@ -26,14 +30,8 @@ struct tws_JobDesc
 {
     /* Job to run. */
     tws_Func func;
-
-    /* If payloadSize == 0:
-           The payload ptr will be passed through to the job func directly. No copy takes place.
-       Else:
-           Copy payloadSize bytes from payload ptr into the job. The job func will get a pointer to the copy.
-    */
-    void *payload;
-    size_t payloadSize; /* must be <= the pool's payloadSize */
+    uintptr_t p0; /* Two params is all you get, eg. pointer + size */
+    uintptr_t p1;
 
     /* "Channel" aka category this job goes into. Can be used to denote different job types (I/O, render, compute, etc).
        Used as parameter to tws_run() to pick jobs of a certain channel. If not needed, set this to 0. */
@@ -67,14 +65,13 @@ struct tws_WorkTmp
 typedef struct tws_WorkTmp tws_WorkTmp;
 
 /* Calculate memory required to create a pool with these parameters. numChannels must be > 0. Returns 0 for bogus params. */
-TWS_EXPORT size_t tws_size(size_t concurrentJobs, unsigned numChannels, size_t payloadSize, size_t cacheLineSize);
+TWS_EXPORT size_t tws_size(size_t concurrentJobs, unsigned numChannels, size_t cacheLineSize);
 
 
 struct tws_PoolInfo
 {
     unsigned maxjobs;
     unsigned maxchannels;
-    unsigned maxpayload;
 };
 typedef struct tws_PoolInfo tws_PoolInfo;
 
@@ -83,13 +80,11 @@ TWS_EXPORT const tws_PoolInfo *tws_info(const tws_Pool *pool);
 
 /* Create a pool in mem. Returns mem casted to tws_Pool*. Returns NULL on failure.
    numChannels must be at least 1.
-   payloadSize is the max. tws_JobDesc::payloadSize you're going to use. Keep this as small as possible!
-   Use payloadSize == 0 if a single void* is enough.
    As cacheLineSize, pass the L1 cache line size of your system (or whatever padding is needed to avoid false sharing).
    Should be a power of 2. If in doubt, 64 should be fine.
    There is no function to free a pool. If you don't need it anymore, dispose the underlying mem and you're good;
    but it's probably a good idea to run all queued jobs to completion to prevent leaks in your own code. */
-TWS_EXPORT tws_Pool *tws_init(void *mem, size_t memsz, unsigned numChannels, size_t payloadSize, size_t cacheLineSize, const tws_PoolCallbacks *cb, void *callbackUD);
+TWS_EXPORT tws_Pool *tws_init(void *mem, size_t memsz, unsigned numChannels, size_t cacheLineSize, const tws_PoolCallbacks *cb, void *callbackUD);
 
 /* Submit a list of jobs. When the function returns, all jobs have been queued (but not necessarily executed).
    jobs is an array of jobs with n elements.
@@ -99,11 +94,7 @@ TWS_EXPORT tws_Pool *tws_init(void *mem, size_t memsz, unsigned numChannels, siz
          Hint: A good strategy is to call tws_run() in the fallback to make sure all jobs will be processed eventually.
        - If fallback is NULL, execute jobs directly. Note that this ignores the channel.
    The user must pass in a tws_WorkTmp[n] array of temporary storage. */
-TWS_EXPORT void tws_submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Event *ev, tws_Func fallback, void *fallbackUD);
-
-/* Like tws_submit(), but returns only when all jobs in this batch have been run.
-   This function *requires* a fallback! */
-TWS_EXPORT void tws_submitwait(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Func fallback, void *fallbackUD);
+TWS_EXPORT void tws_submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Fallback fallback, void *fallbackUD);
 
 /* Like tws_submit(), but always returns immediately.
    Returns the number of jobs that could be queued since the first call, ie. the next start index.
@@ -114,7 +105,7 @@ TWS_EXPORT void tws_submitwait(tws_Pool *pool, const tws_JobDesc * jobs, tws_Wor
    Important: - The first time you call this for a batch, start MUST be == 0.
               - When you start calling this, you MUST call this to the end, until the return value is == n.
                 Otherwise there will be unrecoverable internal leaks. */
-TWS_EXPORT size_t tws_submitsome(size_t start, tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Event *ev);
+TWS_EXPORT size_t tws_submitsome(size_t start, tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n);
 
 /* Run one job waiting on the given channel.
    Returns 1 if a job was executed, 0 if not, ie. there was no waiting job on this channel.
@@ -127,9 +118,7 @@ TWS_EXPORT int tws_run(tws_Pool *pool, unsigned channel);
 
 typedef struct tws_Event // opaque, job completion notification
 {
-    uintptr_t opaque; // enough bytes to hold an atomic int
-    void (*done)(void *ud); // optional function to call whenever the event counter reaches 0
-    void *ud; // passed to done(ud)
+    int opaque; // enough bytes to hold an atomic int
 } tws_Event;
 
 // Init a tws_Event like this:
@@ -162,9 +151,7 @@ TWS_EXPORT int tws_notify(tws_Event *ev);
 
 
 /* TODO:
-- limit channel to uint8
+- limit channel to uint8?
 - pass counts array to multi-ready callback
-- remove submitwait()? + event from job struct?
-- remove event callback?
 
 */

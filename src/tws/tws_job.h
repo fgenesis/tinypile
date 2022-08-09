@@ -5,13 +5,19 @@
 typedef struct tws_Job tws_Job;
 struct tws_Job
 {
-    void *_ail_next; // placeholder for atomic intrusive list
-    unsigned channel; // this can probably be moved in the AIL region since it's only relevant while the job is not part of a list
-    tws_Func func;
+    /* The unstable region will be overwritten when stored in an AIL.
+       But since the channel is only needed after it was allocated and before it's submitted,
+       it's the perfect place to store the channel. */
+    union Unstable
+    {
+        void *_ail_next; // placeholder for atomic intrusive list
+        unsigned channel;
+    } u;
     NativeAtomic a_remain;
-    tws_Job *followup; // TODO: make this an index
-    tws_Event *ev;
-    void *payload;
+    unsigned followupIdx;
+    tws_Func func;
+    uintptr_t p0;
+    uintptr_t p1;
 }
 ;
 struct tws_ChannelHead
@@ -42,28 +48,7 @@ struct tws_Pool
     */
 };
 
-inline static tws_ChannelHead *channelHead(tws_Pool *pool, unsigned channel)
-{
-    TWS_ASSERT(channel < pool->info.maxchannels, "channel out of bounds");
-    return (tws_ChannelHead*)((((char*)pool) + pool->channelHeadOffset) + (channel * (size_t)pool->channelHeadSize));
-}
-
-inline static unsigned jobToIndex(tws_Pool *pool, tws_Job *job)
-{
-    TWS_ASSERT(job, "why is this NULL here");
-    ptrdiff_t diff = job - (tws_Job*)(((char*)pool) + pool->jobsArrayOffset);
-    TWS_ASSERT(diff < pool->info.maxjobs, "job ended up as bad index");
-    return (unsigned)diff;
-}
-
-inline static tws_Job *jobByIndex(tws_Pool *pool, unsigned idx)
-{
-    TWS_ASSERT(idx < pool->info.maxjobs, "job idx out of bounds");
-    return (tws_Job*)((((char*)pool) + pool->jobsArrayOffset) + (idx * (size_t)pool->jobSize));
-}
-
-
 TWS_PRIVATE tws_Job *allocJob(tws_Pool *pool, const tws_JobDesc *desc);
-TWS_PRIVATE size_t submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Event *ev);
-TWS_PRIVATE void exec(tws_Pool *pool, tws_Job *job);
+TWS_PRIVATE size_t submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n);
+TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job);
 TWS_PRIVATE tws_Job *dequeue(tws_Pool *pool, unsigned channel);
