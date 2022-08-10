@@ -5,16 +5,14 @@
 typedef struct tws_Job tws_Job;
 struct tws_Job
 {
-    /* The unstable region will be overwritten when stored in an AIL.
-       But since the channel is only needed after it was allocated and before it's submitted,
-       it's the perfect place to store the channel. */
+    /* The unstable region will be overwritten when stored in an AIL. */
     union Unstable
     {
         void *_ail_next; // placeholder for atomic intrusive list
-        unsigned channel;
     } u;
     NativeAtomic a_remain;
     unsigned followupIdx;
+    unsigned channel;
     tws_Func func;
     uintptr_t p0;
     uintptr_t p1;
@@ -48,7 +46,6 @@ struct tws_Pool
     */
 };
 
-TWS_PRIVATE tws_Job *allocJob(tws_Pool *pool, const tws_JobDesc *desc);
 TWS_PRIVATE size_t submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n);
 TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job);
 TWS_PRIVATE tws_Job *dequeue(tws_Pool *pool, unsigned channel);

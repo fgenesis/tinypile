@@ -63,14 +63,22 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     return pool;
 }
 
-static size_t doOneJob(tws_Pool *pool, const tws_JobDesc * desc, tws_Fallback fallback, void *fallbackUD)
+static size_t doOneJob(tws_Pool *pool, const tws_JobDesc * desc, const tws_WorkTmp *tmp, tws_Fallback fallback, void *fallbackUD)
 {
     if(fallback && fallback(pool, fallbackUD))
         return 0; /* Fallback made progress -> some other task was done */
 
-    /* Run job inline */
-    desc->func(pool, desc->p0, desc->p1);
-    return 1;
+    /* Run job inline unless there's already an allocated job.
+       If there is, there are unfulfilled dependencies */
+    if(!tmp->x)
+    {
+        desc->func(pool, desc->p0, desc->p1);
+        return 1;
+    }
+
+    /* Of crap. Didn't make progress. If we're the only thread this is a livelock. */
+    TWS_ASSERT(0, "FIXME");
+    return 0;
 }
 
 TWS_EXPORT void tws_submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Fallback fallback, void *fallbackUD)
@@ -85,7 +93,7 @@ TWS_EXPORT void tws_submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp
         if(idx == n)
             break;
 
-        idx += doOneJob(pool, jobs + idx, fallback, fallbackUD);
+        idx += doOneJob(pool, jobs + idx, tmp + idx, fallback, fallbackUD);
     }
 }
 

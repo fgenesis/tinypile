@@ -22,20 +22,23 @@ inline static TWS_NOTNULL tws_Job *jobByIndex(tws_Pool *pool, unsigned idx)
     return (tws_Job*)((((char*)pool) + pool->jobsArrayOffset) + (idx * (size_t)pool->jobSize));
 }
 
-static tws_Job *allocJob(tws_Pool *pool, const tws_JobDesc *desc)
+static tws_Job *allocJob(tws_Pool *pool)
 {
     tws_Job *job = (tws_Job*)ail_pop(&pool->freelist);
-    if(job)
+    if(TWS_LIKELY(job))
     {
-        job->func = desc->func;
-        job->p0 = desc->p0;
-        job->p1 = desc->p1;
-        job->a_remain.val = 1;
+        job->a_remain.val = 0;
         job->followupIdx = 0;
-        job->u.channel = desc->channel;
     }
-    // the rest is initialized in submit()
     return job;
+}
+
+static void initJob(tws_Job *job, const tws_JobDesc *desc)
+{
+    job->func = desc->func;
+    job->p0 = desc->p0;
+    job->p1 = desc->p1;
+    job->channel = desc->channel;
 }
 
 static void recycleJob(tws_Pool *pool, tws_Job *job)
@@ -45,7 +48,7 @@ static void recycleJob(tws_Pool *pool, tws_Job *job)
 
 static void enqueue(tws_Pool *pool, tws_Job *job)
 {
-    const unsigned channel = job->u.channel;
+    const unsigned channel = job->channel;
     tws_ChannelHead *ch = channelHead(pool, channel);
     ail_push(&ch->list, job); /* this trashes job->u */
     /* don't touch job below here */
@@ -61,7 +64,7 @@ TWS_PRIVATE tws_Job *dequeue(tws_Pool *pool, unsigned channel)
 
 static void tryToReady(tws_Pool *pool, tws_Job *job)
 {
-    if(!_AtomicDec_Rel(&job->a_remain)) // FIXME
+    if(!_AtomicDec_Rel(&job->a_remain))
         enqueue(pool, job);
 }
 
@@ -96,6 +99,7 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
 
     for(size_t i = 0 ; i < n; ++i)
     {
+        tws_Job *job = (tws_Job*)tmp[i].x; /* Maybe this job was created as a followup job already? */
         tws_Job *followup = NULL;
         size_t next = jobs[i].next;
         if(next)
@@ -106,28 +110,84 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
             followup = (tws_Job*)tmp[next].x;
             if(!followup)
             {
-                followup = allocJob(pool, &jobs[next]);
-                if(!followup)
+                followup = allocJob(pool);
+                if(TWS_UNLIKELY(!followup))
                 {
-                    n = i;
-                    break; /* Job system is full, continue here later */
+
+                    n = i; /* Job system is full, continue here later */
+
+                    if(!job)
+                        break; /* Easy case -- no jobs have been allocated, no cleanup required */
+
+                    /* Edge case -- Given a job dependency chain A->B->C:
+                    - B is allocated first (as dependency), then A.
+                    - A is submitted. B stays allocated but mostly uninitialized
+                      (A has a ref to B and will update B.a_remain at some point)
+                    - When this iteration here reaches B, it tries to allocate C as dep, which FAILS.
+                    - Now we have an allocated B that A still points to that we can't submit.
+
+                    If we just return, the caller may or may not decide to run the function inline, which:
+                    - needs to wait until A is done
+                    - would cause B to linger in an uninited state and eventually leak when B goes out of scope
+
+                    One possibility is that we forbid running the function inline, but then
+                    it's possible that we never make any progess (eg. if we're the only thread in existence,
+                    tws_update() in the fallback, pick A to work on, but A decides to spawn more jobs
+                    that depend on one another).
+
+                    The easy case is if any deps are already done and we can re-provision the job to become
+                    our own dependency. In that case we don't need to recycle it and save some work
+                    because we'll attempt to create C sometime in future anyway. Now we know there are no jobs
+                    B depends on and we can safely run the function directly.*/
+
+                    if(!_AtomicGet_Seq(&job->a_remain))
+                    {
+                        followup = job;
+                        job = NULL;
+                        /* ... and just fall through to the regular job handling */
+                    }
+                    else
+                    {
+                        /* This is bad -- Need to keep the job allocated.
+                        The caller needs to check tmp[i] and decide that it can't run the function inline.
+                        So we go and run the fallback, which should help in finishing A, because we know
+                        that all our deps are already in flight and will finish at some point.
+                        *Unless* A decides to spawn a lot more jobs with dependencies.
+                        Let's assume some of these jobs fail to allocate. Any previous situation we end up in
+                        is fine and leads to progress.
+                        Is it a problem if we end up here again?
+                        Probably not, because unless the chain continues forever we will eventually
+                        end in a situation where no more jobs are spawned and the dependency backlog is worked
+                        down. (Unless we go so deep that it blows the stack)
+                        Should A (and all further children) continue to spawn jobs indefinitely it's not
+                        a situation that would be solvable under normal circumstances even if we assume
+                        that job creation never failed in the first place.
+                        So either way it's a livelock because the caller asks for one.
+                        This is the only remaining case ad we have reached the halting problem. */
+
+                        break; /* TL;DR it's now up to the caller to make progress */
+                    }
                 }
 
                 tmp[next].x = (uintptr_t)followup; /* Note it for others */
             }
         }
-        tws_Job *job = (tws_Job*)tmp[i].x; /* Maybe this job was created as a followup job already? */
+
+        /* At this point it'll fail to be allocated (was NULL, so this is a nop)
+           or be executed (no reason to keep it) */
+        tmp[i].x = 0;
+
         if(!job)
         {
-            job = allocJob(pool, &jobs[i]);
+            job = allocJob(pool);
             if(!job)
             {
                 n = i;
                 break; /* Job system is full, continue here later */
             }
         }
-
-        tmp[i].x = 0; /* It'll be started now for sure */
+        /* Below here, the job will run for sure (maybe now, maybe as followup) */
+        initJob(job, &jobs[i]);
 
         if(followup)
         {
@@ -139,7 +199,8 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
         }
 
         /* This will enqueue the job when there are no deps, or deps are already done */
-        tryToReady(pool, job);
+        if(!_AtomicGet_Seq(&job->a_remain))
+            enqueue(pool, job);
     }
 
     if(n && pool->cb && pool->cb->readyBatch)
