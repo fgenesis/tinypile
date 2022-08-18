@@ -59,6 +59,44 @@ TWS_PRIVATE void *ail_pop(AList *al)
     return p;
 }
 
+TWS_PRIVATE void *ail_popn(AList* al, size_t minn, size_t maxn)
+{
+    TWS_ASSERT(minn && maxn, "should pop at least 1 elem");
+    --maxn;
+    --minn;
+    _atomicLock(&al->popLock);
+    void *hd = al->head;
+    void *next;
+    void *last = NULL;
+    size_t i;
+    for(;;)
+    {
+        next = hd;
+        for(i = 0; next && i < maxn; ++i) /* Excluding last elem */
+            next = *(void**)next;
+        if(i < minn)
+        {
+            hd = NULL; /* Not enough elements available */
+            break;
+        }
+
+        /* Last iteration, remember last elem */
+        last = next;
+        if(next)
+            next = *(void**)next;
+
+        /* If this fails, someone else managed to steal elems */
+        if(_AtomicPtrCAS_Weak(&al->head, &hd, next))
+            break;
+
+        /* else hd is updated, try again */
+    }
+    _atomicUnlock(&al->popLock);
+    if(last)
+        *(void**)last = NULL;
+    return hd;
+}
+
 TWS_PRIVATE void ail_push(AList *al, void *p)
 {
     void *cur = al->head;
@@ -66,6 +104,35 @@ TWS_PRIVATE void ail_push(AList *al, void *p)
     {
         *(void**)p = cur; // We still own p; make it so that once the CAS succeeds everything is proper.
         if(_AtomicPtrCAS_Weak(&al->head, &cur, p))
+            break;
+    }
+}
+
+TWS_PRIVATE void ail_pushn(AList* al, void** ps, size_t n)
+{
+    TWS_ASSERT(n, "needs at least 1 elem");
+
+    void ** const first = ps;
+
+    /* Link up elements non-atomically (we still own them all) */
+    if(--n)
+    {
+        do /* Not run for n == 1 */
+        {
+            void **p = ps++;
+            *p = *ps;
+        }
+        while(--n);
+    }
+    /* ps is now the last valid element */
+
+    /* Push the chain so that begin becomes the new head
+       and the existing list is appended to the end of the new tail */
+    void *cur = al->head;
+    for(;;)
+    {
+        *ps = cur;
+        if(_AtomicPtrCAS_Weak(&al->head, &cur, first))
             break;
     }
 }

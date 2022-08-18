@@ -69,7 +69,7 @@ static void fillKnotVector(K *knots, size_t points, size_t degree, K mink, K max
 
     // end pointer interpolation, end
     for(size_t i = n - degree - 1; i < numknots; ++i)
-        knots[i] = maxk
+        knots[i] = maxk;
 }
 
 template<typename K, typename T>

@@ -28,6 +28,7 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
 
     size_t channelHeadSize = AlignUp(sizeof(tws_ChannelHead), cacheLineSize);
 
+    /* After the data come the cacheline-aligned channel heads */
     uintptr_t p = (uintptr_t)(pool + 1);
     p = AlignUp(p, cacheLineSize);
     if(p + (numChannels * channelHeadSize) >= end)
@@ -45,16 +46,14 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
 
     TWS_ASSERT(IsAligned(p, cacheLineSize), "should still be aligned");
 
-    size_t jobSize = AlignUp(sizeof(tws_Job), TWS_MIN_ALIGN);
     pool->jobsArrayOffset = p - (uintptr_t)pool;
-    pool->jobSize = jobSize;
 
     size_t jobspace = end - p;
-    size_t numjobs = jobspace / jobSize;
+    size_t numjobs = jobspace / sizeof(tws_Job);
     if(!numjobs)
         return NULL;
 
-    ail_format((char*)p, (char*)end, jobSize, TWS_MIN_ALIGN);
+    ail_format((char*)p, (char*)end, sizeof(tws_Job), TWS_MIN_ALIGN);
 
     pool->freelist.head = (void*)p;
     pool->info.maxjobs = numjobs;
@@ -63,45 +62,34 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     return pool;
 }
 
-static size_t doOneJob(tws_Pool *pool, const tws_JobDesc * desc, const tws_WorkTmp *tmp, tws_Fallback fallback, void *fallbackUD)
-{
-    if(fallback && fallback(pool, fallbackUD))
-        return 0; /* Fallback made progress -> some other task was done */
-
-    /* Run job inline unless there's already an allocated job.
-       If there is, there are unfulfilled dependencies */
-    if(!tmp->x)
-    {
-        desc->func(pool, desc->p0, desc->p1);
-        return 1;
-    }
-
-    /* Of crap. Didn't make progress. If we're the only thread this is a livelock. */
-    TWS_ASSERT(0, "FIXME");
-    return 0;
-}
-
 TWS_EXPORT void tws_submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Fallback fallback, void *fallbackUD)
 {
-    cleartmp(tmp, n);
+    /* In case of overload, if there's no fallback, the only way forward is to exec things right away */
+    SubmitFlags flags = SUBMIT_DEFAULT;
+    if(!fallback)
+        flags |= SUBMIT_CAN_EXEC;
+
     size_t idx = 0;
     for(;;)
     {
         /* Precond: All jobs[0..idx) have been submitted or executed */
-        size_t done = submit(pool, jobs + idx, tmp + idx, n - idx);
+        size_t done = submit(pool, jobs + idx, tmp + idx, n - idx, flags);
         idx += done;
         if(idx == n)
             break;
 
-        idx += doOneJob(pool, jobs + idx, tmp + idx, fallback, fallbackUD);
+        if(fallback)
+            fallback(pool, fallbackUD);
     }
 }
 
 TWS_EXPORT size_t tws_submitsome(size_t start, tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* tmp, size_t n)
 {
+    TWS_ASSERT(start < n, "Check your damn sizes!");
     if(!start)
         cleartmp(tmp, n);
-    return start + submit(pool, jobs + start, tmp + start, n - start);
+    /* Since this is non-blocking, we are not allowed to exec jobs inside of submit(). */
+    return start + submit(pool, jobs + start, tmp + start, n - start, SUBMIT_DEFAULT);
 }
 
 TWS_EXPORT int tws_run(tws_Pool* pool, unsigned channel)
@@ -114,20 +102,3 @@ TWS_EXPORT int tws_run(tws_Pool* pool, unsigned channel)
     }
     return 0;
 }
-
-TWS_EXPORT int tws_done(const tws_Event* ev)
-{
-    return !_AtomicGet_Seq((NativeAtomic*)&ev->opaque);
-}
-
-TWS_EXPORT void tws_eventInc(tws_Event* ev)
-{
-    _AtomicInc_Acq((NativeAtomic*)&ev->opaque);
-}
-
-TWS_EXPORT int tws_notify(tws_Event* ev)
-{
-    return !_AtomicDec_Rel((NativeAtomic*)&ev->opaque);
-}
-
-

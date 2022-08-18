@@ -5,10 +5,10 @@
 typedef struct tws_Job tws_Job;
 struct tws_Job
 {
-    /* The unstable region will be overwritten when stored in an AIL. */
+    /* The unstable region will be overwritten when stored in an atomic intrusive list. */
     union Unstable
     {
-        void *_ail_next; // placeholder for atomic intrusive list
+        tws_Job *nextInList; /* ptr to next elem in AIL */
     } u;
     NativeAtomic a_remain;
     unsigned followupIdx;
@@ -27,25 +27,36 @@ typedef struct tws_ChannelHead tws_ChannelHead;
 
 
 
+/* Only effective in case of overload situations */
+enum SubmitFlags
+{
+    SUBMIT_DEFAULT = 0x00,
+    SUBMIT_CAN_EXEC = 0x01,
+};
+typedef enum SubmitFlags SubmitFlags;
+
 /* Declared in tws.h */
+/* Additional data follow after the struct, with the exact layout unknown at compile-time.
+   That's why we do the internal allocation at runtime and just save the offsets. */
 struct tws_Pool
 {
     AList freelist;
+    unsigned channelHeadOffset;
+    unsigned channelHeadSize; /* Incl. padding to cache line */
+    unsigned jobsArrayOffset;
+
     tws_PoolInfo info;
     const tws_PoolCallbacks *cb;
     void *callbackUD;
-    unsigned channelHeadOffset;
-    unsigned channelHeadSize;
-    unsigned jobsArrayOffset;
-    unsigned jobSize;
 
     /* padding...
     tws_ChannelHead[0..numchannels], each with enough padding to be on a separate cache line
     ...
-    tws_Job[], each is (sizeof(tws_Job) + pool->info.maxpayload) bytes
+    tws_Job[...]
     */
 };
 
-TWS_PRIVATE size_t submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n);
+
+TWS_PRIVATE size_t submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, SubmitFlags flags);
 TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job);
 TWS_PRIVATE tws_Job *dequeue(tws_Pool *pool, unsigned channel);

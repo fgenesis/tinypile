@@ -1,10 +1,5 @@
 #pragma once
 
-#ifndef tws__memcpy
-#  include <assert.h>
-#  define tws__memcpy(dst, src, sz) memcpy(dst, src, sz)
-#endif
-
 #ifndef TWS_PRIVATE
 #define TWS_PRIVATE
 #endif
