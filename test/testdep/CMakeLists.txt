@@ -8,6 +8,7 @@ set(src
     ustd.h
     #tws_test_common.cpp
     #tws_test_common.h
+    testutil.h
 )
 
 add_library(testdep ${src})
