@@ -13,6 +13,7 @@ Pile of various tiny (single- or two-file) libs.
 |:------|:-------|:-----|:-----|:-----|
 |LuaAlloc|[.c](luaalloc.c) + [.h](luaalloc.h)|C |Small block allocator (not only) for [Lua](http://lua.org/)| Stable.
 |JPS v2|[.hh](jps.hh)|C++|2D Pathfinding: A*, [Jump Point Search](http://en.wikipedia.org/wiki/Jump_point_search)| Stable.
+|tbsp|[.hh](tbsp.hh)|C++|[B-Spline](https://en.wikipedia.org/wiki/B-spline) evaluation. | WIP.
 |tio<sup>1,2</sup>|[.cpp](tio.cpp) + [.h](tio.h)|C|File/Path-I/O (and *fopen()* on steroids)|WIP, don't use!
 |tio_vfs<sup>2</sup>|[.cpp](tio_vfs.cpp) + [.h](tio_vfs.h)|C|Virtual file system add-on for **tio**|WIP, don't use!
 |tio_zip<sup>2</sup>|[.cpp](tio_zip.cpp) + [.h](tio_zip.h)|C|*Inflate* & *Deflate* streams for **tio**<br />(requires [miniz](https://github.com/richgel999/miniz))|WIP, don't use!
