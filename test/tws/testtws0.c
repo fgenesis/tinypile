@@ -17,17 +17,11 @@ static void ready(tws_PoolCallbacks *cb, unsigned channel)
     tws_sem_leave(sem);
 }
 
-static int fallback0(tws_Pool *pool, void *ud)
+static void fallback0(tws_Pool *pool, void *ud)
 {
-    printf("fallback0 %p ... th %u\n", ud, GetCurrentThreadId());
-    return tws_run(pool, 0);
+    printf("fallback0\n");
+    tws_run(pool, 0);
     //printf("... th %u ran job: %d\n", GetCurrentThreadId(), ran);
-}
-
-static int fallback01(tws_Pool *pool, void *ud)
-{
-    printf("fallback01 %p ... th %u\n", ud, GetCurrentThreadId());
-    return tws_run(pool, 1) || tws_run(pool, 0);
 }
 
 static void work(tws_Pool *pool, uintptr_t p0, uintptr_t p1)
@@ -36,7 +30,7 @@ static void work(tws_Pool *pool, uintptr_t p0, uintptr_t p1)
 
     if(!p1)
     {
-        enum { N = 500 };
+        enum { N = 200 };
         tws_JobDesc d[N];
         for(unsigned i = 0; i < N; ++i)
         {
@@ -49,7 +43,7 @@ static void work(tws_Pool *pool, uintptr_t p0, uintptr_t p1)
         d[N-1].next = 0;
         d[N-1].channel = 1;
         tws_WorkTmp tmp[N];
-        tws_submit(pool, d, tmp, N, fallback01, NULL);
+        tws_submit(pool, d, tmp, N, NULL, NULL);
     }
 }
 
@@ -60,7 +54,7 @@ static const tws_PoolCallbacks cb = { ready };
 
 static void thrun(void *ud)
 {
-    //printf("spawned th %d\n", GetCurrentThreadId());
+    printf("spawned th\n");
     while(!quit)
     {
         while(tws_run(gpool, 1) || tws_run(gpool, 0)) {}
@@ -68,21 +62,23 @@ static void thrun(void *ud)
         tws_sem_enter(sem);
         //printf("wakeup th %d\n", GetCurrentThreadId());
     }
-    //printf("exiting th %d\n", GetCurrentThreadId());
+    printf("exiting th\n");
 }
 
 int main(int argc, char **argv)
 {
     //printf("main th %d\n", GetCurrentThreadId());
 
-    sem = tws_sem_create();
-    tws_Thread *th = tws_thread_create(thrun, "w0", NULL);
-
     gpool = tws_init(mem, sizeof(mem), 2, 64, &cb, NULL);
     const tws_PoolInfo *info = tws_info(gpool);
     printf("space for %u jobs\n", info->maxjobs);
 
-    const unsigned N = 1000;
+    sem = tws_sem_create();
+    tws_Thread *th0 = tws_thread_create(thrun, "w0", NULL);
+    tws_Thread *th1 = tws_thread_create(thrun, "w1", NULL);
+
+
+    const unsigned N = 100;
     for(unsigned i = 0; i < N; ++i)
     {
         tws_JobDesc d = { work, i, 0, 0, 0 };
@@ -93,7 +89,8 @@ int main(int argc, char **argv)
 
     quit = 1;
     tws_sem_leave(sem);
-    tws_thread_join(th);
+    tws_thread_join(th0);
+    tws_thread_join(th1);
 
     tws_sem_destroy(sem);
 

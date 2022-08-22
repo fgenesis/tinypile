@@ -57,7 +57,3 @@ static inline intptr_t IsAligned(uintptr_t v, uintptr_t aln) // aln must be powe
     TWS_ASSERT(IsPowerOfTwo(aln), "wtf");
     return !(v & (aln - 1));
 }
-
-
-
-TWS_PRIVATE void cleartmp(tws_WorkTmp *tmp, size_t n);

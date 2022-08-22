@@ -21,7 +21,3 @@ TWS_PRIVATE void *ail_pop(AList *al);
 TWS_PRIVATE void ail_push(AList *al, void *p);
 
 TWS_PRIVATE void *ail_popn(AList *al, size_t minn, size_t maxn);
-
-/* Pushes multiple elements [ps[0] .. ps[n]). More efficient than repeated ail_pushOne().
-   Must be called with n > 0. */
-TWS_PRIVATE void ail_pushn(AList *al, void **ps, size_t n); /* inclusive */

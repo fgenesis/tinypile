@@ -22,22 +22,11 @@ inline static TWS_NOTNULL tws_Job *jobByIndex(tws_Pool *pool, unsigned idx)
     return (tws_Job*)((((char*)pool) + pool->jobsArrayOffset) + (idx * sizeof(tws_Job)));
 }
 
-/*
-static tws_Job *allocOneJob(tws_Pool *pool)
+static size_t allocJobs(tws_WorkTmp *dst, tws_Pool *pool, size_t n)
 {
-    tws_Job *job = (tws_Job*)ail_pop(&pool->freelist);
-    if(TWS_LIKELY(job))
-    {
-        job->a_remain.val = 0;
-        job->followupIdx = 0;
-    }
-    return job;
-}
-*/
-
-static size_t allocJobs(tws_WorkTmp *dst, tws_Pool *pool, size_t minn, size_t maxn)
-{
-    tws_Job *job = (tws_Job*)ail_popn(&pool->freelist, minn, maxn);
+    if(n > 3)
+        n = 3;
+    tws_Job *job = (tws_Job*)ail_popn(&pool->freelist, 1, n);
     size_t i = 0;
     if(TWS_LIKELY(job))
     {
@@ -124,7 +113,7 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
     }
 
     /* Pre-alloc as many jobs as we need */
-    size_t k = allocJobs(tmp, pool, 1, n); /* k = allocated up until here */
+    size_t k = allocJobs(tmp, pool, n); /* k = allocated up until here */
     size_t w = 0; /* already executed before this index. Invariant: w <= k */
 
     if(k < n && (flags & SUBMIT_CAN_EXEC))
@@ -142,7 +131,7 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
             {
                 /* Re-purpose job of the func just executed for the next job that failed to alloc */
                 tws_Job *mv = (tws_Job*)tmp[w].x;
-                tmp[w].x = 0;
+                //tmp[w].x = 0;
                 tmp[k].x = (uintptr_t)mv;
             }
             ++w;
@@ -151,7 +140,7 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
                 break;
 
             /* Maybe someone else released some jobs in the meantime... */
-            k += allocJobs(tmp + k, pool, 1, n - k);
+            k += allocJobs(tmp + k, pool, n - k);
             if(k == n)
                 break;
         }
@@ -161,13 +150,13 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
     for(size_t i = w; i < k; ++i)
     {
         tws_Job *job = (tws_Job*)tmp[i].x;
-        tmp[i].x = 0;
+        //tmp[i].x = 0;
         initJob(job, &jobs[i]);
         unsigned next = jobs[i].next;
         if(next)
         {
             next += i;
-            TWS_ASSERT(next < n && next > i, "followup relative index out of bounds");
+            TWS_ASSERT(next < k && next > i, "followup relative index out of bounds");
             tws_Job *followup = (tws_Job*)tmp[next].x;
             job->followupIdx = jobToIndex(pool, followup);
             ++followup->a_remain.val;
@@ -176,7 +165,7 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
             enqueue(pool, job);
     }
 
-    if(n)
+    if(w < k)
     {
         if(pool->cb && pool->cb->readyBatch)
             pool->cb->readyBatch(pool->callbackUD, n);

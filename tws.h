@@ -1,8 +1,42 @@
-/* Tiny, backend-agnostic lockless work/job scheduler */
+/* Tiny, backend-agnostic lockless work/job scheduler
+
+Design goals:
+- Plain C API, KISS.
+- Bring your own threading. The scheduler is thread-safe but does not know the concept of threads or locks.
+- Fixed memory. No memory allocations whatsoever.
+- Safe operation even if grossly overloaded
+
+License:
+Public domain, WTFPL, CC0 or your favorite permissive license; whatever is available in your country.
+
+Dependencies:
+- Compiles as C99 or oldschool C++ code, but can benefit from C11 or if compiled as C++11
+- Does NOT require libc
+- Requires compiler/library support for:
+  - atomic pointer compare-and-swap (CAS)
+  - Optional: wide CAS (ie. 2x ptr-sized CAS)
+  - Optional: a yield/pause opcode.
+
+Origin:
+https://github.com/fgenesis/tinypile
+
+Inspired by / reading material:
+- https://github.com/DanEngelbrecht/bikeshed
+  (Conceptually very similar but I don't like the API, esp. how dependencies are handled)
+- https://blog.molecular-matters.com/2016/04/04/job-system-2-0-lock-free-work-stealing-part-5-dependencies/
+  (The entire series is good. But too complicated and fragile, imho)
+- http://cbloomrants.blogspot.com/2012/11/11-08-12-job-system-task-types.html
+- https://randomascii.wordpress.com/2012/06/05/in-praise-of-idleness/
+- https://www.1024cores.net/home/lock-free-algorithms
+*/
 
 #pragma once
 
-#include <stddef.h> // size_t, uintptr_t
+#include <stddef.h> // size_t, uintptr_t on MSVC
+
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L)
+#  include <stdint.h> /* uintptr_t on gcc/clang/posix */
+#endif
 
 /* All public library functions are marked with this */
 #ifndef TWS_EXPORT
@@ -19,8 +53,9 @@ typedef struct tws_Pool tws_Pool; /* opaque */
 /* Generic worker and callback function type. Two user params, eg. pointer + size. */
 typedef void (*tws_Func)(tws_Pool *pool, uintptr_t p0, uintptr_t p1);
 
-/* Fallback callback. Return 1 when progress was made. */
-typedef int (*tws_Fallback)(tws_Pool *pool, void *ud);
+/* Fallback callback. Called when tws_submit() is unable to queue jobs because the pool is full.
+   You probably want to call tws_run() in the fallback. */
+typedef void (*tws_Fallback)(tws_Pool *pool, void *ud);
 
 
 typedef struct tws_Event tws_Event;
@@ -33,15 +68,16 @@ struct tws_JobDesc
     uintptr_t p0; /* Two params is all you get, eg. pointer + size */
     uintptr_t p1;
 
-    /* "Channel" aka category this job goes into. Can be used to denote different job types (I/O, render, compute, etc).
-       Used as parameter to tws_run() to pick jobs of a certain channel. If not needed, set this to 0. */
+    /* "Channel" aka category this job goes into.
+       Can be used to denote different job types (I/O, render, compute, etc).
+       Used as parameter to tws_run() to pick jobs of a certain channel. */
     unsigned channel;
 
     /* If this job does not start other jobs, this must be 0.
        Otherwise set this to *one* followup job's relative index that will be started when this job is complete.
        In case multiple other jobs specify the same followup job, they all must be finished before the followup is started.
-       Note that next is relative -- multiple tws_JobDesc are passed as an array, and next is added to the current job's index.
-       (Yes, this is intentionally not signed or an absolute index, so that simply doing jobs in order correctly handles dependencies!) */
+       Note that next is relative -- multiple tws_JobDesc are submitted as an array, and next is added to the current job's index.
+       (This is intentionally not signed or an absolute index, so that simply doing jobs in order correctly handles dependencies!) */
     unsigned next;
 };
 typedef struct tws_JobDesc tws_JobDesc;
@@ -54,6 +90,9 @@ struct tws_PoolCallbacks
 
     /* Called when a batch of jobs has been submitted */
     void (*readyBatch)(void *ud, size_t num);
+
+    // TODO should be consolidated into:
+    //void (*ready)(void *ud, unsigned channel size_t num);
 };
 
 
@@ -90,60 +129,23 @@ TWS_EXPORT tws_Pool *tws_init(void *mem, size_t memsz, unsigned numChannels, siz
    jobs is an array of jobs with n elements.
    Returns immediately if all jobs could be queued.
    If the pool is full:
+       - If fallback is NULL, jobs may be executed directly. Note that this ignores the channel.
        - If fallback is present, calls fallback(pool, fallbackUD) repeatedly, until all jobs could be queued.
          Hint: A good strategy is to call tws_run() in the fallback to make sure all jobs will be processed eventually.
-       - If fallback is NULL, execute jobs directly. Note that this ignores the channel.
+         Note that if your job calls tws_submit() to submit child jobs, the same rules apply.
+         If there are fallbacks all the way down no actual work will get done and the scheduler may hang in a livelock.
+         It's therefore advisable to pass fallback=NULL when already in a job.
    The user must pass in a tws_WorkTmp[n] array of temporary storage. */
 TWS_EXPORT void tws_submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Fallback fallback, void *fallbackUD);
 
-/* Like tws_submit(), but always returns immediately.
-   Returns the number of jobs that could be queued since the first call, ie. the next start index.
-   Job submission starts at jobs[start], tmp[start], ie. pass 0 on the first call of a new batch.
-   When less than n jobs were queued, call this again sometime later with the same parameters
-   but use the previously returned value as 'start'. Make sure that ALL parameters except 'start'
-   are the same and stay untouched between incremental calls.
-   Important: - The first time you call this for a batch, start MUST be == 0.
-              - When you start calling this, you MUST call this to the end, until the return value is == n.
-                Otherwise there will be unrecoverable internal leaks. */
-TWS_EXPORT size_t tws_submitsome(size_t start, tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n);
+/* Submit ONE job in a non-blocking way. Returns 1 if the job was queued, 0 if the pool is full.
+   Never executes the job directly. The job can't have any followups so make sure that job->next == 0. */
+TWS_EXPORT int tws_submit1(tws_Pool *pool, const tws_JobDesc * job);
 
 /* Run one job waiting on the given channel.
-   Returns 1 if a job was executed, 0 if not, ie. there was no waiting job on this channel.
-   If channel is not needed, pass 0. */
+   Returns 1 if a job was executed, 0 if not, ie. there was no waiting job on this channel. */
 TWS_EXPORT int tws_run(tws_Pool *pool, unsigned channel);
 
-
-
-// --- Event functions ---
-
-typedef struct tws_Event // opaque, job completion notification
-{
-    int opaque; // enough bytes to hold an atomic int
-} tws_Event;
-
-// Init a tws_Event like this:
-//   tws_Event ev = {N};
-// If you need a callback when the event is done:
-//   tws_Event ev = {N, callback, userptr};
-// Where N is the number of jobs that need to finish before the event is considered done.
-// There is no function to delete an event. Just let it go out of scope.
-// Make sure the event stays valid while it's used.
-
-// Quick check whether an event is done. Non-blocking. 1 if done, 0 if not.
-TWS_EXPORT int tws_done(const tws_Event *ev);
-
-// Call this to change the internal counter.
-TWS_EXPORT void tws_eventInc(tws_Event *ev);
-
-/* Call this to notify an event that a job has completed. Decrements the internal counter and fires the callback when 0 is reached.
-   Returns 1 if the counter has reached zero, 0 otherwise.  */
-TWS_EXPORT int tws_notify(tws_Event *ev);
-
-/* No, there is no function to wait on an event.
-   Help draining the pool or go do something useful in the meantime, e.g.
-   for(unsigned c = 0; c < MAXCHANNEL; ++c)
-       while(!tws_eventDone(ev) && tws_run(pool, c)) {}
-*/
 
 #ifdef __cplusplus
 } /* end extern C */

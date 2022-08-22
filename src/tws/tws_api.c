@@ -79,17 +79,12 @@ TWS_EXPORT void tws_submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp
             break;
 
         if(fallback)
+        {
             fallback(pool, fallbackUD);
+            if(done)
+                flags |= SUBMIT_ISRUNNING;
+        }
     }
-}
-
-TWS_EXPORT size_t tws_submitsome(size_t start, tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* tmp, size_t n)
-{
-    TWS_ASSERT(start < n, "Check your damn sizes!");
-    if(!start)
-        cleartmp(tmp, n);
-    /* Since this is non-blocking, we are not allowed to exec jobs inside of submit(). */
-    return start + submit(pool, jobs + start, tmp + start, n - start, SUBMIT_DEFAULT);
 }
 
 TWS_EXPORT int tws_run(tws_Pool* pool, unsigned channel)

@@ -108,32 +108,3 @@ TWS_PRIVATE void ail_push(AList *al, void *p)
     }
 }
 
-TWS_PRIVATE void ail_pushn(AList* al, void** ps, size_t n)
-{
-    TWS_ASSERT(n, "needs at least 1 elem");
-
-    void ** const first = ps;
-
-    /* Link up elements non-atomically (we still own them all) */
-    if(--n)
-    {
-        do /* Not run for n == 1 */
-        {
-            void **p = ps++;
-            *p = *ps;
-        }
-        while(--n);
-    }
-    /* ps is now the last valid element */
-
-    /* Push the chain so that begin becomes the new head
-       and the existing list is appended to the end of the new tail */
-    void *cur = al->head;
-    for(;;)
-    {
-        *ps = cur;
-        if(_AtomicPtrCAS_Weak(&al->head, &cur, first))
-            break;
-    }
-}
-

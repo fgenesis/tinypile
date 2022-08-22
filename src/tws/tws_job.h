@@ -32,6 +32,7 @@ enum SubmitFlags
 {
     SUBMIT_DEFAULT = 0x00,
     SUBMIT_CAN_EXEC = 0x01,
+    SUBMIT_ISRUNNING = 0x02, /* some jobs in this batch have been already submitted and are running */
 };
 typedef enum SubmitFlags SubmitFlags;
 
