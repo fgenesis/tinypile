@@ -64,27 +64,14 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
 
 TWS_EXPORT void tws_submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Fallback fallback, void *fallbackUD)
 {
-    /* In case of overload, if there's no fallback, the only way forward is to exec things right away */
-    SubmitFlags flags = SUBMIT_DEFAULT;
-    if(!fallback)
-        flags |= SUBMIT_CAN_EXEC;
+    size_t done = submit(pool, jobs, tmp, n, fallback, fallbackUD, SUBMIT_CAN_EXEC);
+    TWS_ASSERT(done == n, "must always submit as many jobs as requested");
+}
 
-    size_t idx = 0;
-    for(;;)
-    {
-        /* Precond: All jobs[0..idx) have been submitted or executed */
-        size_t done = submit(pool, jobs + idx, tmp + idx, n - idx, flags);
-        idx += done;
-        if(idx == n)
-            break;
 
-        if(fallback)
-        {
-            fallback(pool, fallbackUD);
-            if(done)
-                flags |= SUBMIT_ISRUNNING;
-        }
-    }
+TWS_EXPORT size_t tws_trysubmit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* tmp, size_t n)
+{
+    return submit(pool, jobs, tmp, n, NULL, NULL, SUBMIT_ALL_OR_NONE);
 }
 
 TWS_EXPORT int tws_run(tws_Pool* pool, unsigned channel)

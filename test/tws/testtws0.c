@@ -5,7 +5,7 @@
 #define TWS_THREAD_IMPLEMENTATION
 #include "tws_thread.h"
 
-static char mem[4096];
+static char mem[40960];
 static tws_Pool *gpool;
 
 static tws_Sem *sem;
@@ -17,10 +17,10 @@ static void ready(tws_PoolCallbacks *cb, unsigned channel)
     tws_sem_leave(sem);
 }
 
-static void fallback0(tws_Pool *pool, void *ud)
+static int fallback0(tws_Pool *pool, void *ud)
 {
-    printf("fallback0\n");
-    tws_run(pool, 0);
+    //printf("fallback0\n");
+    return tws_run(pool, 0);
     //printf("... th %u ran job: %d\n", GetCurrentThreadId(), ran);
 }
 
@@ -30,7 +30,7 @@ static void work(tws_Pool *pool, uintptr_t p0, uintptr_t p1)
 
     if(!p1)
     {
-        enum { N = 200 };
+        enum { N = 20 };
         tws_JobDesc d[N];
         for(unsigned i = 0; i < N; ++i)
         {
@@ -69,30 +69,34 @@ int main(int argc, char **argv)
 {
     //printf("main th %d\n", GetCurrentThreadId());
 
-    gpool = tws_init(mem, sizeof(mem), 2, 64, &cb, NULL);
-    const tws_PoolInfo *info = tws_info(gpool);
-    printf("space for %u jobs\n", info->maxjobs);
-
-    sem = tws_sem_create();
-    tws_Thread *th0 = tws_thread_create(thrun, "w0", NULL);
-    tws_Thread *th1 = tws_thread_create(thrun, "w1", NULL);
-
-
-    const unsigned N = 100;
-    for(unsigned i = 0; i < N; ++i)
+    for(;;)
     {
-        tws_JobDesc d = { work, i, 0, 0, 0 };
-        tws_WorkTmp tmp[1];
-        tws_submit(gpool, &d, tmp, 1, fallback0, NULL);
+        gpool = tws_init(mem, sizeof(mem), 2, 64, &cb, NULL);
+        const tws_PoolInfo *info = tws_info(gpool);
+        printf("space for %u jobs\n", info->maxjobs);
+
+        sem = tws_sem_create();
+        tws_Thread *th0 = tws_thread_create(thrun, "w0", NULL);
+        tws_Thread *th1 = tws_thread_create(thrun, "w1", NULL);
+
+
+        const unsigned N = 10000;
+        for(unsigned i = 0; i < N; ++i)
+        {
+            tws_JobDesc d = { work, i, 0, 0, 0 };
+            tws_WorkTmp tmp[1];
+            tws_submit(gpool, &d, tmp, 1, fallback0, NULL);
+        }
+        while(tws_run(gpool, 0)) {};
+
+        quit = 1;
+        tws_sem_leave(sem);
+        tws_sem_leave(sem);
+        tws_thread_join(th0);
+        tws_thread_join(th1);
+
+        tws_sem_destroy(sem);
     }
-    while(tws_run(gpool, 0)) {};
-
-    quit = 1;
-    tws_sem_leave(sem);
-    tws_thread_join(th0);
-    tws_thread_join(th1);
-
-    tws_sem_destroy(sem);
 
     return 0;
 }

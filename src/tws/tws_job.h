@@ -25,14 +25,11 @@ struct tws_ChannelHead
 };
 typedef struct tws_ChannelHead tws_ChannelHead;
 
-
-
 /* Only effective in case of overload situations */
 enum SubmitFlags
 {
-    SUBMIT_DEFAULT = 0x00,
     SUBMIT_CAN_EXEC = 0x01,
-    SUBMIT_ISRUNNING = 0x02, /* some jobs in this batch have been already submitted and are running */
+    SUBMIT_ALL_OR_NONE = 0x02,
 };
 typedef enum SubmitFlags SubmitFlags;
 
@@ -58,6 +55,6 @@ struct tws_Pool
 };
 
 
-TWS_PRIVATE size_t submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, SubmitFlags flags);
+TWS_PRIVATE size_t submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Fallback fallback, void *fallbackUD, SubmitFlags flags);
 TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job);
 TWS_PRIVATE tws_Job *dequeue(tws_Pool *pool, unsigned channel);

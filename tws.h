@@ -54,8 +54,14 @@ typedef struct tws_Pool tws_Pool; /* opaque */
 typedef void (*tws_Func)(tws_Pool *pool, uintptr_t p0, uintptr_t p1);
 
 /* Fallback callback. Called when tws_submit() is unable to queue jobs because the pool is full.
-   You probably want to call tws_run() in the fallback. */
-typedef void (*tws_Fallback)(tws_Pool *pool, void *ud);
+   You probably want to call tws_run() in the fallback.
+   Return 1 if progress was made, 0 if not.
+   A simple fallback function could look like this:
+     int myfb(tws_Pool *pool, void *ud) {
+        return tws_run(pool, 0)  // try to run jobs on channel 0 first...
+            || tws_run(pool, 1); // ... if empty, try channel 1
+     } */
+typedef int (*tws_Fallback)(tws_Pool *pool, void *ud);
 
 
 typedef struct tws_Event tws_Event;
@@ -129,18 +135,20 @@ TWS_EXPORT tws_Pool *tws_init(void *mem, size_t memsz, unsigned numChannels, siz
    jobs is an array of jobs with n elements.
    Returns immediately if all jobs could be queued.
    If the pool is full:
-       - If fallback is NULL, jobs may be executed directly. Note that this ignores the channel.
        - If fallback is present, calls fallback(pool, fallbackUD) repeatedly, until all jobs could be queued.
          Hint: A good strategy is to call tws_run() in the fallback to make sure all jobs will be processed eventually.
-         Note that if your job calls tws_submit() to submit child jobs, the same rules apply.
-         If there are fallbacks all the way down no actual work will get done and the scheduler may hang in a livelock.
-         It's therefore advisable to pass fallback=NULL when already in a job.
+       - If fallback is NULL or can't make progress, jobs may be executed directly.
+         --Note that this ignores the channel!--
    The user must pass in a tws_WorkTmp[n] array of temporary storage. */
 TWS_EXPORT void tws_submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Fallback fallback, void *fallbackUD);
 
-/* Submit ONE job in a non-blocking way. Returns 1 if the job was queued, 0 if the pool is full.
-   Never executes the job directly. The job can't have any followups so make sure that job->next == 0. */
-TWS_EXPORT int tws_submit1(tws_Pool *pool, const tws_JobDesc * job);
+/* Like tws_submit() but will never execute jobs inline if the pool is full.
+   This function has transactional behavior: Either all jobs are submitted, or none.
+   Returns the number of jobs submitted (either 0 or n).
+   (Protip: This function is particularly interesting if the channel a job is run on must be respected
+   at all costs, eg. if OpenGL or thread local storage is used and specific threads
+   are supposed to service only specific channels) */
+TWS_EXPORT size_t tws_trysubmit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n);
 
 /* Run one job waiting on the given channel.
    Returns 1 if a job was executed, 0 if not, ie. there was no waiting job on this channel. */

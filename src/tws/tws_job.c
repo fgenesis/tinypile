@@ -22,11 +22,9 @@ inline static TWS_NOTNULL tws_Job *jobByIndex(tws_Pool *pool, unsigned idx)
     return (tws_Job*)((((char*)pool) + pool->jobsArrayOffset) + (idx * sizeof(tws_Job)));
 }
 
-static size_t allocJobs(tws_WorkTmp *dst, tws_Pool *pool, size_t n)
+static size_t allocJobs(tws_WorkTmp *dst, tws_Pool *pool, size_t minn, size_t maxn)
 {
-    if(n > 3)
-        n = 3;
-    tws_Job *job = (tws_Job*)ail_popn(&pool->freelist, 1, n);
+    tws_Job *job = (tws_Job*)ail_popn(&pool->freelist, minn, maxn);
     size_t i = 0;
     if(TWS_LIKELY(job))
     {
@@ -73,7 +71,9 @@ TWS_PRIVATE tws_Job *dequeue(tws_Pool *pool, unsigned channel)
 
 static void tryToReady(tws_Pool *pool, tws_Job *job)
 {
-    if(!_AtomicDec_Rel(&job->a_remain))
+    int remain = _AtomicDec_Rel(&job->a_remain);
+    TWS_ASSERT(remain >= 0, "should never < 0");
+    if(!remain)
         enqueue(pool, job);
 }
 
@@ -97,8 +97,7 @@ TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job)
         tryToReady(pool, jobByIndex(pool, followupIdx));
 }
 
-
-TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* tmp, size_t n, SubmitFlags flags)
+TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* tmp, size_t n, tws_Fallback fallback, void *fallbackUD, SubmitFlags flags)
 {
     /* Preconds:
        - jobs[a] may only start jobs[b] as followup if a < b
@@ -106,6 +105,9 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
 
     if(!pool)
     {
+        if(flags & SUBMIT_ALL_OR_NONE)
+            return 0;
+
         /* No pool? It's actually that simple */
         for(size_t i = 0; i < n; ++i)
             jobs[i].func(NULL, jobs[i].p0, jobs[i].p1);
@@ -113,34 +115,49 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
     }
 
     /* Pre-alloc as many jobs as we need */
-    size_t k = allocJobs(tmp, pool, n); /* k = allocated up until here */
+    const size_t minn = (flags & SUBMIT_ALL_OR_NONE) ? n : 1;
+    size_t k = allocJobs(tmp, pool, minn, n); /* k = allocated up until here */
     size_t w = 0; /* already executed before this index. Invariant: w <= k */
 
-    if(k < n && (flags & SUBMIT_CAN_EXEC))
+    if(k < n) /* Couldn't alloc enough? Try to make some space */
     {
-        /* Couldn't alloc enough, try to make some space */
+        if(flags & SUBMIT_ALL_OR_NONE)
+        {
+            TWS_ASSERT(k == 0, "should not alloc any job if not enough jobs free");
+            return 0;
+        }
+
+        TWS_ASSERT(flags & SUBMIT_CAN_EXEC, "at least one flag must be set");
         for(;;)
         {
-            /* Exec earliest reserved job directly.
-               We know, since we started at i=0, that no other job could have been already submitted
-               that has this job as followup, so once we're here either all deps have been executed in-line
-               or there were no deps in the first place. */
-            jobs[w].func(pool, jobs[w].p0, jobs[w].p1);
+            int progress = 0;
+            if(fallback)
+                progress = fallback(pool, fallbackUD);
 
-            if(w < k) /* Are there actually any reserved jobs? */
+            if(!progress)
             {
-                /* Re-purpose job of the func just executed for the next job that failed to alloc */
-                tws_Job *mv = (tws_Job*)tmp[w].x;
-                //tmp[w].x = 0;
-                tmp[k].x = (uintptr_t)mv;
+                /* Exec earliest reserved job directly.
+                   We know, since we started at i=0, that no other job could have been already submitted
+                   that has this job as followup, so once we're here either all deps have been executed in-line
+                   or there were no deps in the first place. */
+                jobs[w].func(pool, jobs[w].p0, jobs[w].p1);
+
+                if(w < k) /* Are there actually any reserved jobs? */
+                {
+                    /* Re-purpose job of the func just executed for the next job that failed to alloc */
+                    tws_Job *mv = (tws_Job*)tmp[w].x;
+                    //tmp[w].x = 0;
+                    tmp[k].x = (uintptr_t)mv;
+                }
+                ++w;
+                ++k;
+                if(k == n)
+                    break;
+
             }
-            ++w;
-            ++k;
-            if(k == n)
-                break;
 
             /* Maybe someone else released some jobs in the meantime... */
-            k += allocJobs(tmp + k, pool, n - k);
+            k += allocJobs(tmp + k, pool, 1, n - k);
             if(k == n)
                 break;
         }
