@@ -2,16 +2,20 @@
 #include <string.h>
 #include "tws.h"
 
+#ifndef _WIN32
+#include <pthread.h>
+#endif
+
 #define TWS_THREAD_IMPLEMENTATION
 #include "tws_thread.h"
 
-static char mem[40960];
+static char mem[4096];
 static tws_Pool *gpool;
 
 static tws_Sem *sem;
 static volatile int quit;
 
-static void ready(tws_PoolCallbacks *cb, unsigned channel)
+static void ready(void *ud, unsigned channel)
 {
     //puts("ready");
     tws_sem_leave(sem);

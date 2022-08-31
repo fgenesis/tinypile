@@ -66,11 +66,19 @@ typedef __int64 s64;
 
 #ifdef TWS_HAS_C11
 #  define TWS_STATIC_ASSERT(x) _Static_assert(x, #x)
+#  define TWS_ALIGN(x) _Alignas(x)
 #elif defined(TWS_HAS_CPP11)
 #  define TWS_STATIC_ASSERT(x) static_assert(x, #x)
+#  define TWS_ALIGN(x) alignas(x)
 #endif
 
-
+#ifndef TWS_ALIGN
+#  ifdef _MSC_VER
+#    define TWS_ALIGN(x) __declspec(align(x))
+#  else
+#    define TWS_ALIGN(x) __attribute__((aligned(x)))
+#  endif
+#endif
 
 /* Fallbacks */
 

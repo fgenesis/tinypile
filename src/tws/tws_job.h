@@ -8,12 +8,12 @@ struct tws_Job
     /* The unstable region will be overwritten when stored in an atomic intrusive list. */
     union Unstable
     {
-        tws_Job *nextInList; /* ptr to next elem in AIL */
+         AIdx nextInList; /* id of next elem in AIL */
     } u;
     NativeAtomic a_remain;
     unsigned followupIdx;
     unsigned channel;
-    tws_Func func;
+    volatile tws_Func func; // TEMP
     uintptr_t p0;
     uintptr_t p1;
 }

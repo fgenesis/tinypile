@@ -354,7 +354,7 @@ TWS_THREAD_EXPORT tws_Thread *tws_thread_create(tws_ThreadEntry run, const char 
 {
     // setting thread name is non-standardized across posix :<
     // https://stackoverflow.com/questions/2369738
-    pthread_t *pth = (pthread_t*)tws_malloc(sizeof(pthread_t));
+    pthread_t *pth = (pthread_t*)tws__malloc(sizeof(pthread_t));
     if(!pth)
         return NULL;
     int err = pthread_create(pth, NULL, (void *(*)(void*))run, ud);
@@ -364,12 +364,12 @@ TWS_THREAD_EXPORT tws_Thread *tws_thread_create(tws_ThreadEntry run, const char 
 TWS_THREAD_EXPORT void tws_thread_join(tws_Thread *th)
 {
     pthread_join(*(pthread_t*)th, NULL);
-    tws_free(th);
+    tws__free(th);
 }
 
 TWS_THREAD_EXPORT tws_Sem* tws_sem_create(void)
 {
-    sem_t *s = (sem_t*)tws_malloc(sizeof(sem_t));
+    sem_t *s = (sem_t*)tws__malloc(sizeof(sem_t));
     if(!s)
         return NULL;
     int err = sem_init(s, 0, 0);
@@ -379,7 +379,7 @@ TWS_THREAD_EXPORT tws_Sem* tws_sem_create(void)
 TWS_THREAD_EXPORT void tws_sem_destroy(tws_Sem *sem)
 {
     sem_destroy((sem_t*)sem);
-    tws_free(sem);
+    tws__free(sem);
 }
 
 TWS_THREAD_EXPORT void tws_sem_enter(tws_Sem *sem)

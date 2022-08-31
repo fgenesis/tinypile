@@ -17,13 +17,15 @@ TWS_PRIVATE void _AtomicSet_Seq(NativeAtomic *x, tws_Atomic newval) { atomic_sto
 TWS_PRIVATE void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval) { atomic_store_explicit(&x->val, newval, memory_order_release); }
 TWS_PRIVATE tws_Atomic _AtomicExchange_Acq(NativeAtomic *x, tws_Atomic newval) { return atomic_exchange_explicit(&x->val, newval, memory_order_acquire); } // return previous
 TWS_PRIVATE tws_Atomic _AtomicGet_Seq(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_seq_cst); }
-TWS_PRIVATE tws_Atomic _AtomicGet_Acq(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_acq); }
-TWS_PRIVATE tws_Atomic _AtomicGet_Rel(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_rel); }
+TWS_PRIVATE tws_Atomic _AtomicGet_Acq(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_acquire); }
+TWS_PRIVATE tws_Atomic _AtomicGet_Rel(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_release); }
 TWS_PRIVATE tws_Atomic _RelaxedGet(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_relaxed); }
 
+/*
 TWS_PRIVATE int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return atomic_compare_exchange_strong(&x->val, expected, newval); }
 TWS_PRIVATE void _Atomic64Set_Seq(NativeAtomic64 *x, tws_Atomic64 newval) { atomic_store(&x->val, newval); }
 TWS_PRIVATE tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x) { COMPILER_BARRIER(); return atomic_load_explicit((volatile atomic_int_least64_t*)&x->val, memory_order_relaxed); }
+*/
 
 TWS_PRIVATE int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void **expected, void *newval) { return atomic_compare_exchange_weak(x, expected, newval); }
 

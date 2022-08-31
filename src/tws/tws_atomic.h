@@ -3,10 +3,10 @@
 
 
 // Ordered by preference. First one that's available is taken.
-// Defines *one* TWS_USE_XXX macro for the chosen TWS_HAS_XXX that can be checked order-independently from now on.
+// Defines *one* TWS_ATOMIC_USE_XXX macro for the chosen TWS_HAS_XXX that can be checked order-independently from now on.
 #if defined(TWS_HAS_C11) // intrinsics
 #  include <stdatomic.h>
-#  define TWS_USE_C11
+#  define TWS_ATOMIC_USE_C11
 #  define TWS_DECL_ATOMIC(x) _Atomic x
 #  define COMPILER_BARRIER() atomic_signal_fence(memory_order_seq_cst)
 #elif defined(TWS_HAS_MSVC) // intrinsics

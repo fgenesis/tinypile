@@ -24,20 +24,27 @@ inline static TWS_NOTNULL tws_Job *jobByIndex(tws_Pool *pool, unsigned idx)
 
 static size_t allocJobs(tws_WorkTmp *dst, tws_Pool *pool, size_t minn, size_t maxn)
 {
-    tws_Job *job = (tws_Job*)ail_popn(&pool->freelist, minn, maxn);
-    size_t i = 0;
-    if(TWS_LIKELY(job))
+    AilPopnResult pn = ail_popn(&pool->freelist, minn, maxn);
+    if(TWS_LIKELY(pn.first))
     {
-        do
+        tws_Job* job = (tws_Job*)pn.first;
+        const size_t n = pn.n;
+        for(size_t i = 0; i < n; ++i)
         {
+            tws_Job *next = ail_next(job);
+            //job->u.nextInList = 0;
+            dst[i].x = (uintptr_t)job;
+
             job->a_remain.val = 0;
             job->followupIdx = 0;
-            dst[i++].x = (uintptr_t)job;
-            job = job->u.nextInList;
+
+            job->func = NULL; // DEBUG
+
+            job = next;
         }
-        while(job);
+        return n;
     }
-    return i;
+    return 0;
 }
 
 static void initJob(tws_Job *job, const tws_JobDesc *desc)
@@ -50,12 +57,17 @@ static void initJob(tws_Job *job, const tws_JobDesc *desc)
 
 static void recycleJob(tws_Pool *pool, tws_Job *job)
 {
+    job->func = (tws_Func)(uintptr_t)2; // DEBUG
     ail_push(&pool->freelist, job);
 }
 
 static void enqueue(tws_Pool *pool, tws_Job *job)
 {
     const unsigned channel = job->channel;
+    TWS_ASSERT(channel != (unsigned)-1, "eh");
+    job->channel = -1; // DEBUG
+    const tws_Func func = job->func;
+    TWS_ASSERT(func, "eh");
     tws_ChannelHead *ch = channelHead(pool, channel);
     ail_push(&ch->list, job); /* this trashes job->u */
     /* don't touch job below here */
@@ -71,28 +83,27 @@ TWS_PRIVATE tws_Job *dequeue(tws_Pool *pool, unsigned channel)
 
 static void tryToReady(tws_Pool *pool, tws_Job *job)
 {
+    const tws_Func func = job->func;
+    TWS_ASSERT(func, "eh");
     int remain = _AtomicDec_Rel(&job->a_remain);
     TWS_ASSERT(remain >= 0, "should never < 0");
     if(!remain)
         enqueue(pool, job);
 }
 
-TWS_PRIVATE void runSingleFunc(tws_Pool *pool, tws_Func func, uintptr_t p0, uintptr_t p1)
-{
-    /* Give it a different pool ptr so that re-entrant calls into the pool can do things differently */
-    func(pool, p0, p1);
-}
-
 TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job)
 {
     /* save some things. Note that job->u has been trashed. */
     const tws_Func func = job->func;
+    TWS_ASSERT((uintptr_t)func > 10, "he");
+    job->func = (tws_Func)(uintptr_t)1; // DEBUG
     const uintptr_t p0 = job->p0;
     const uintptr_t p1 = job->p1;
     const unsigned followupIdx = job->followupIdx;
     /* At this point we have everything we need -- recycle the job early to reduce pressure */
     recycleJob(pool, job);
-    runSingleFunc(pool, func, p0, p1); /* Do actual work */
+
+    func(pool, p0, p1); /* Do actual work */
     if(followupIdx)
         tryToReady(pool, jobByIndex(pool, followupIdx));
 }
@@ -146,7 +157,7 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
                 {
                     /* Re-purpose job of the func just executed for the next job that failed to alloc */
                     tws_Job *mv = (tws_Job*)tmp[w].x;
-                    //tmp[w].x = 0;
+                    tmp[w].x = 0;
                     tmp[k].x = (uintptr_t)mv;
                 }
                 ++w;
@@ -163,11 +174,13 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
         }
     }
 
-    /* Finalize and launch all jobs that were allocated */
+    TWS_ASSERT(k == n, "eh");
+
+    /* Finalize and launch all jobs that were allocated and not run directly */
     for(size_t i = w; i < k; ++i)
     {
         tws_Job *job = (tws_Job*)tmp[i].x;
-        //tmp[i].x = 0;
+        tmp[i].x = 0;
         initJob(job, &jobs[i]);
         unsigned next = jobs[i].next;
         if(next)
@@ -176,6 +189,7 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
             TWS_ASSERT(next < k && next > i, "followup relative index out of bounds");
             tws_Job *followup = (tws_Job*)tmp[next].x;
             job->followupIdx = jobToIndex(pool, followup);
+            TWS_ASSERT(followup->a_remain.val >= 0, "tmp");
             ++followup->a_remain.val;
         }
         if(!job->a_remain.val)
@@ -187,13 +201,6 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
         if(pool->cb && pool->cb->readyBatch)
             pool->cb->readyBatch(pool->callbackUD, n);
     }
-
-
-    /* Postconds:
-        Let k be the number of processed elements (<n if returned early), then:
-            - tmp[0..k) is zero'd
-            - tmp[k] is either NULL or out of bounds
-     */
 
     return k;
 }

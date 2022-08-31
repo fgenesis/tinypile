@@ -23,7 +23,6 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     cacheLineSize = AlignUp(cacheLineSize, TWS_MIN_ALIGN);
 
     tws_Pool * const pool = (tws_Pool*)mem;
-    ail_init(&pool->freelist);
     pool->info.maxchannels = numChannels;
 
     size_t channelHeadSize = AlignUp(sizeof(tws_ChannelHead), cacheLineSize);
@@ -40,7 +39,7 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     for(unsigned i = 0; i < numChannels; ++i)
     {
         tws_ChannelHead *ch = (tws_ChannelHead*)p;
-        ail_init(&ch->list);
+        ail_init(&ch->list, 2, NULL);
         p += channelHeadSize;
     }
 
@@ -53,9 +52,9 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     if(!numjobs)
         return NULL;
 
-    ail_format((char*)p, (char*)end, sizeof(tws_Job), TWS_MIN_ALIGN);
+    ail_format(1, (char*)p, (char*)end, sizeof(tws_Job), TWS_MIN_ALIGN);
+    ail_init(&pool->freelist, 1, (void*)p);
 
-    pool->freelist.head = (void*)p;
     pool->info.maxjobs = numjobs;
     pool->cb = cb;
 

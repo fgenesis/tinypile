@@ -1,20 +1,37 @@
 #include "tws_ail.h"
 #include "tws_priv.h"
 
-TWS_PRIVATE void ail_init(AList* al)
+enum
 {
-    al->head = NULL;
-    al->popLock.val = 0;
+    AIL_TAG_MASK = 0x3 /* Use lowest 2 bits for the tag */
+};
+
+static inline void* _addtag(void* p, AIdx tag)
+{
+    TWS_ASSERT(p, "no");
+    return (void*)(((AIdx)(p)) | tag);
 }
 
-TWS_PRIVATE void *ail_format(char *p, char *end, size_t stride, size_t alignment)
+#define UNTAG(p) ((void*)(((AIdx)(p)) & ~(AIdx)AIL_TAG_MASK))
+#define TAG(p, tag) _addtag((p), (tag))
+#define CHECKTAG(p, tag) ((((AIdx)(p)) & AIL_TAG_MASK) == (tag))
+
+TWS_PRIVATE void ail_init(AList* al, AIdx tag, void *head)
+{
+    TWS_ASSERT(tag <= AIL_TAG_MASK, "not enough bits for tag");
+    al->head = head ? TAG(head, tag) : NULL;
+    al->popLock.val = 0;
+    al->tag = tag;
+}
+
+TWS_PRIVATE void *ail_format(AIdx tag, char *p, char *end, size_t stride, size_t alignment)
 {
     for(;;)
     {
         char *next = (char*)AlignUp((intptr_t)(p + stride), alignment);
         if(next + stride >= end)
             break;
-        *(void**)p = next;
+        *(void**)p = TAG(next, tag);
         p = next;
     }
     TWS_ASSERT(p + stride < end, "oops: stomping memory");
@@ -22,6 +39,11 @@ TWS_PRIVATE void *ail_format(char *p, char *end, size_t stride, size_t alignment
     return p;
 }
 
+TWS_PRIVATE void* ail_next(const void *elem)
+{
+    void* p = *(void**)elem; /* elem is not tagged, p is */
+    return UNTAG(p);
+}
 
 // returns NULL if list has no more elements
 TWS_PRIVATE void *ail_pop(AList *al)
@@ -41,10 +63,14 @@ TWS_PRIVATE void *ail_pop(AList *al)
     // Fortunately popLock is only required right here, the other functions can stay lock-free.
 
     _atomicLock(&al->popLock);
-    void *p = al->head;
+    void *p = al->head; /* Tagged or NULL */
     while(TWS_LIKELY(p))
     {
-        void * const next = *(void**)p;
+        /* The head must always be tagged correctly. If the tag was wrong then it would be part of another AIL
+           and could not be this one's head */
+        TWS_ASSERT(CHECKTAG(p, al->tag), "improperly tagged");
+
+        void * const next = *(void**)UNTAG(p); /* Tagged or NULL */
 
         // The CAS can fail if:
         //   - some other thread called fl_push() in the meantime
@@ -56,55 +82,69 @@ TWS_PRIVATE void *ail_pop(AList *al)
         // Try again with that p.
     }
     _atomicUnlock(&al->popLock);
-    return p;
+    return UNTAG(p);
 }
 
-TWS_PRIVATE void *ail_popn(AList* al, size_t minn, size_t maxn)
+TWS_PRIVATE AilPopnResult ail_popn(AList* al, size_t minn, size_t maxn)
 {
     TWS_ASSERT(minn && maxn, "should pop at least 1 elem");
-    --maxn;
-    --minn;
+    TWS_ASSERT(minn <= maxn, "<");
+    const AIdx tag = al->tag;
+    size_t i = 0;
+    void* hd;
     _atomicLock(&al->popLock);
-    void *hd = al->head;
-    void *next;
-    void *last = NULL;
-    size_t i;
-    for(;;)
+retry:
+    hd = al->head; /* Tagged or NULL */
+    while (TWS_LIKELY(hd))
     {
-        next = hd;
-        for(i = 0; next && i < maxn; ++i) /* Excluding last elem */
-            next = *(void**)next;
+        TWS_ASSERT(CHECKTAG(hd, tag), "improperly tagged");
+
+        void* next = hd; /* Tagged or NULL */
+        for (i = 0; i < maxn; ++i) /* Excluding last elem */
+        {
+            next = *(void**)UNTAG(next); /* Tagged before, tagged or NULL after */
+            if (!next)
+                break;
+            if (!CHECKTAG(next, tag)) /* Wrong tag? Element was inserted into another AIL in the meantime */
+            {
+                _Mfence(); /* Someone has likely modified al->head, make sure we see the changed value */
+                goto retry;
+            }
+        }
         if(i < minn)
         {
             hd = NULL; /* Not enough elements available */
             break;
         }
 
-        /* Last iteration, remember last elem */
-        last = next;
-        if(next)
-            next = *(void**)next;
+        TWS_ASSERT(next != hd, "eh");
 
         /* If this fails, someone else managed to steal elems */
-        if(_AtomicPtrCAS_Weak(&al->head, &hd, next))
+        if (_AtomicPtrCAS_Weak(&al->head, &hd, next))
             break;
 
         /* else hd is updated, try again */
     }
     _atomicUnlock(&al->popLock);
-    if(last)
-        *(void**)last = NULL;
-    return hd;
+    AilPopnResult res;
+    res.first = UNTAG(hd);
+    res.n = i;
+    return res;
 }
 
 TWS_PRIVATE void ail_push(AList *al, void *p)
 {
-    void *cur = al->head;
+    TWS_ASSERT(p, "not allowed");
+    const AIdx tag = al->tag;
+    _atomicLock(&al->popLock);
+    void *cur = al->head; /* Tagged or NULL */
+    TWS_ASSERT(!cur || CHECKTAG(cur, tag), "improperly tagged");
     for(;;)
     {
         *(void**)p = cur; // We still own p; make it so that once the CAS succeeds everything is proper.
-        if(_AtomicPtrCAS_Weak(&al->head, &cur, p))
+        if(_AtomicPtrCAS_Weak(&al->head, &cur, TAG(p, tag)))
             break;
     }
+    _atomicUnlock(&al->popLock);
 }
 
