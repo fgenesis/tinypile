@@ -8,6 +8,9 @@ enum
 
 static inline void* _addtag(void* p, AIdx tag)
 {
+    TWS_STATIC_ASSERT(sizeof(void*) <= sizeof(uintptr_t));
+
+
     TWS_ASSERT(p, "no");
     return (void*)(((AIdx)(p)) | tag);
 }

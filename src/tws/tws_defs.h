@@ -1,5 +1,7 @@
 #pragma once
 
+#include "tws.h"
+
 #ifndef TWS_PRIVATE
 #define TWS_PRIVATE
 #endif
