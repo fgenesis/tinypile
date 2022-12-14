@@ -10,6 +10,8 @@ set(src
     tws_job.h
     tws_ail.c
     tws_ail.h
+    tws_aca.c
+    tws_aca.h
 )
 
 add_library(tws ${src})

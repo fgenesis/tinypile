@@ -39,7 +39,7 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     for(unsigned i = 0; i < numChannels; ++i)
     {
         tws_ChannelHead *ch = (tws_ChannelHead*)p;
-        ail_init(&ch->list, 2, NULL);
+        ail_init(&ch->list, NULL);
         p += channelHeadSize;
     }
 
@@ -47,13 +47,33 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
 
     pool->jobsArrayOffset = p - (uintptr_t)pool;
 
+    const size_t extraslots = 1; /* This is the one extra slot that the Aca needs to be larger than the number of jobs */
+
     size_t jobspace = end - p;
-    size_t numjobs = jobspace / sizeof(tws_Job);
+    if(jobspace < (sizeof(tws_Job) + sizeof(unsigned) + (extraslots * sizeof(unsigned))))
+        return NULL;
+
+    jobspace -= extraslots * sizeof(unsigned);
+
+
+    const size_t numjobs = jobspace / (sizeof(tws_Job) + sizeof(unsigned));
     if(!numjobs)
         return NULL;
 
-    ail_format(1, (char*)p, (char*)end, sizeof(tws_Job), TWS_MIN_ALIGN);
-    ail_init(&pool->freelist, 1, (void*)p);
+    const size_t jobsArraySizeBytes = numjobs * sizeof(tws_Job);
+    ail_format((char*)p, (char*)p + jobsArraySizeBytes, sizeof(tws_Job), TWS_MIN_ALIGN);
+    p += jobsArraySizeBytes;
+
+    aca_init(&pool->freeslots, numjobs); /* This knows that there is 1 extra slot */
+    pool->slotsOffset =  p - (uintptr_t)pool;
+
+    /* Park all jobs */
+    unsigned *base = (unsigned*)p;
+    for(size_t i = 0; i < numjobs; ++i)
+        base[i] = i+1; /* Job index of 0 is invalid */
+    base[numjobs] = (unsigned)(-1);
+
+    TWS_ASSERT(p + (numjobs + extraslots) * sizeof(unsigned) <= end, "stomped memory");
 
     pool->info.maxjobs = numjobs;
     pool->cb = cb;

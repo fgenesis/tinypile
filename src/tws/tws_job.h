@@ -1,6 +1,7 @@
 #pragma once
 #include "tws_priv.h"
 #include "tws_ail.h"
+#include "tws_aca.h"
 
 typedef struct tws_Job tws_Job;
 struct tws_Job
@@ -14,8 +15,7 @@ struct tws_Job
     unsigned followupIdx;
     unsigned channel;
     volatile tws_Func func; // TEMP
-    uintptr_t p0;
-    uintptr_t p1;
+    tws_JobData data;
 }
 ;
 struct tws_ChannelHead
@@ -38,7 +38,8 @@ typedef enum SubmitFlags SubmitFlags;
    That's why we do the internal allocation at runtime and just save the offsets. */
 struct tws_Pool
 {
-    AList freelist;
+    Aca freeslots;
+    unsigned slotsOffset;
     unsigned channelHeadOffset;
     unsigned channelHeadSize; /* Incl. padding to cache line */
     unsigned jobsArrayOffset;
@@ -47,10 +48,12 @@ struct tws_Pool
     const tws_PoolCallbacks *cb;
     void *callbackUD;
 
-    /* padding...
+    /*
+    ... padding...
     tws_ChannelHead[0..numchannels], each with enough padding to be on a separate cache line
     ...
-    tws_Job[...]
+    tws_Job[N]
+    unsigned[N+1]  <-- slots array used as base for freeslots
     */
 };
 

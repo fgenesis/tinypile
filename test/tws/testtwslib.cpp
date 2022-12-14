@@ -36,7 +36,7 @@ static void work(tws_Pool *pool, const tws_JobData *data)
     {
         enum { N = 20 };
         tws_JobDesc d[N];
-        for(unsigned i = 0; i < N; ++i)
+        for(size_t i = 0; i < N; ++i)
         {
             d[i].func = work;
             d[i].data.a.ptr = data->a.ptr;

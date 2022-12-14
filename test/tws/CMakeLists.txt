@@ -1,6 +1,9 @@
 add_executable(testtws0 testtws0.c)
 target_link_libraries(testtws0 testdep tws)
 
+add_executable(testtwslib testtwslib.cpp)
+target_link_libraries(testtwslib testdep tws)
+
 #add_executable(testtws1 testtws1.c)
 #target_link_libraries(testtws1 testdep)
 

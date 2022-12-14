@@ -22,43 +22,44 @@ inline static TWS_NOTNULL tws_Job *jobByIndex(tws_Pool *pool, unsigned idx)
     return (tws_Job*)((((char*)pool) + pool->jobsArrayOffset) + (idx * sizeof(tws_Job)));
 }
 
+inline static TWS_NOTNULL unsigned *jobSlotsBase(tws_Pool *pool)
+{
+    return (unsigned*)(((char*)pool) + pool->slotsOffset);
+}
+
 static size_t allocJobs(tws_WorkTmp *dst, tws_Pool *pool, size_t minn, size_t maxn)
 {
-    AilPopnResult pn = ail_popn(&pool->freelist, minn, maxn);
-    if(TWS_LIKELY(pn.first))
+    unsigned *base = jobSlotsBase(pool);
+    size_t pn = aca_pop(&pool->freeslots, dst, base , minn, maxn);
+    if(TWS_LIKELY(pn))
     {
-        tws_Job* job = (tws_Job*)pn.first;
-        const size_t n = pn.n;
-        for(size_t i = 0; i < n; ++i)
+        for(size_t i = 0; i < pn; ++i)
         {
-            tws_Job *next = ail_next(job);
-            //job->u.nextInList = 0;
+            tws_Job *job = jobByIndex(pool, (unsigned)dst[i].x);
             dst[i].x = (uintptr_t)job;
 
             job->a_remain.val = 0;
             job->followupIdx = 0;
 
             job->func = NULL; // DEBUG
-
-            job = next;
         }
-        return n;
     }
-    return 0;
+    return pn;
 }
 
 static void initJob(tws_Job *job, const tws_JobDesc *desc)
 {
     job->func = desc->func;
-    job->p0 = desc->p0;
-    job->p1 = desc->p1;
+    job->data = desc->data;
     job->channel = desc->channel;
 }
 
 static void recycleJob(tws_Pool *pool, tws_Job *job)
 {
     job->func = (tws_Func)(uintptr_t)2; // DEBUG
-    ail_push(&pool->freelist, job);
+    unsigned *base = jobSlotsBase(pool);
+    unsigned idx = jobToIndex(pool, job);
+    aca_push(&pool->freeslots, base, idx);
 }
 
 static void enqueue(tws_Pool *pool, tws_Job *job)
@@ -67,7 +68,7 @@ static void enqueue(tws_Pool *pool, tws_Job *job)
     TWS_ASSERT(channel != (unsigned)-1, "eh");
     job->channel = -1; // DEBUG
     const tws_Func func = job->func;
-    TWS_ASSERT(func, "eh");
+    TWS_ASSERT((uintptr_t)func > 10, "he");
     tws_ChannelHead *ch = channelHead(pool, channel);
     ail_push(&ch->list, job); /* this trashes job->u */
     /* don't touch job below here */
@@ -84,7 +85,7 @@ TWS_PRIVATE tws_Job *dequeue(tws_Pool *pool, unsigned channel)
 static void tryToReady(tws_Pool *pool, tws_Job *job)
 {
     const tws_Func func = job->func;
-    TWS_ASSERT(func, "eh");
+    TWS_ASSERT((uintptr_t)func > 10, "he");
     int remain = _AtomicDec_Rel(&job->a_remain);
     TWS_ASSERT(remain >= 0, "should never < 0");
     if(!remain)
@@ -97,13 +98,12 @@ TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job)
     const tws_Func func = job->func;
     TWS_ASSERT((uintptr_t)func > 10, "he");
     job->func = (tws_Func)(uintptr_t)1; // DEBUG
-    const uintptr_t p0 = job->p0;
-    const uintptr_t p1 = job->p1;
+    const tws_JobData data = job->data;
     const unsigned followupIdx = job->followupIdx;
     /* At this point we have everything we need -- recycle the job early to reduce pressure */
     recycleJob(pool, job);
 
-    func(pool, p0, p1); /* Do actual work */
+    func(pool, &data); /* Do actual work */
     if(followupIdx)
         tryToReady(pool, jobByIndex(pool, followupIdx));
 }
@@ -121,7 +121,7 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
 
         /* No pool? It's actually that simple */
         for(size_t i = 0; i < n; ++i)
-            jobs[i].func(NULL, jobs[i].p0, jobs[i].p1);
+            jobs[i].func(NULL, &jobs[i].data);
         return n;
     }
 
@@ -151,7 +151,7 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
                    We know, since we started at i=0, that no other job could have been already submitted
                    that has this job as followup, so once we're here either all deps have been executed in-line
                    or there were no deps in the first place. */
-                jobs[w].func(pool, jobs[w].p0, jobs[w].p1);
+                jobs[w].func(pool, &jobs[w].data);
 
                 if(w < k) /* Are there actually any reserved jobs? */
                 {

@@ -50,8 +50,26 @@ extern "C" {
 
 typedef struct tws_Pool tws_Pool; /* opaque */
 
-/* Generic worker and callback function type. Two user params, eg. pointer + size. */
-typedef void (*tws_Func)(tws_Pool *pool, uintptr_t p0, uintptr_t p1);
+/* Two params is all you get, eg. pointer + size.
+   You may adapt this to your own needs, but keep this as small as possible.
+   Note that tws_JobData is used internally, so make sure the library uses the same definition! */
+union tws_JobData
+{
+    uintptr_t p[2];
+    struct
+    {
+        void *ptr;
+        size_t size;
+    } a;
+};
+typedef union tws_JobData tws_JobData;
+
+/* Change these if necessary. Used by extensions. */
+inline static size_t tws_jobDataSize(const tws_JobData *d) { return d->a.size; }
+inline static void *tws_jobDataPtr(const tws_JobData *d) { return d->a.ptr; }
+
+/* Generic worker and callback function type. */
+typedef void (*tws_Func)(tws_Pool *pool, const tws_JobData *data);
 
 /* Fallback callback. Called when tws_submit() is unable to queue jobs because the pool is full.
    You probably want to call tws_run() in the fallback.
@@ -66,13 +84,15 @@ typedef int (*tws_Fallback)(tws_Pool *pool, void *ud);
 
 typedef struct tws_Event tws_Event;
 
+
+
+
 /* Describes a to-be-submitted job. */
 struct tws_JobDesc
 {
     /* Job to run. */
     tws_Func func;
-    uintptr_t p0; /* Two params is all you get, eg. pointer + size */
-    uintptr_t p1;
+    tws_JobData data;
 
     /* "Channel" aka category this job goes into.
        Can be used to denote different job types (I/O, render, compute, etc).
@@ -98,7 +118,7 @@ struct tws_PoolCallbacks
     void (*readyBatch)(void *ud, size_t num);
 
     // TODO should be consolidated into:
-    //void (*ready)(void *ud, unsigned channel size_t num);
+    //void (*ready)(void *ud, unsigned channel, size_t num);
 };
 
 
