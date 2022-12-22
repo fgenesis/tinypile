@@ -10,10 +10,13 @@ struct tws_Job
     union Unstable
     {
          AIdx nextInList; /* id of next elem in AIL */
+         struct
+         {
+            NativeAtomic a_remain;
+            unsigned channel;
+         } waiting; /* used before readied and put in AIL */
     } u;
-    NativeAtomic a_remain; // this can also be moved
     unsigned followupIdx;
-    unsigned channel; // TODO: can be moved into u (needed only when job is not enqueued)
     tws_Func func;
     tws_JobData data;
 }

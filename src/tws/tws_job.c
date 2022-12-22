@@ -21,10 +21,8 @@ static void recycleJob(tws_Pool *pool, tws_Job *job)
 /* Enqueue job to its channel's ready head, making it possible to exec any time */
 static void enqueueWithoutCallback(tws_Pool *pool, tws_Job *job, unsigned channel)
 {
-    TWS_ASSERT(job->a_remain.val == 0, "too early to enqueue");
-    TWS_ASSERT(channel != (unsigned)-1, "eh");
-    TWS_ASSERT(job->channel == channel, "channel mismatch");
-    job->channel = -1; // DEBUG
+    TWS_ASSERT(job->u.waiting.a_remain.val == 0, "too early to enqueue");
+    TWS_ASSERT(job->u.waiting.channel == channel, "channel mismatch");
     const tws_Func func = job->func;
     TWS_ASSERT((uintptr_t)func > 10, "he");
     tws_ChannelHead *ch = channelHead(pool, channel);
@@ -34,7 +32,7 @@ static void enqueueWithoutCallback(tws_Pool *pool, tws_Job *job, unsigned channe
 /* Enqueue job as ready & notify ready callback */
 static void enqueue(tws_Pool *pool, tws_Job *job)
 {
-    const unsigned channel = job->channel;
+    const unsigned channel = job->u.waiting.channel;
     enqueueWithoutCallback(pool, job, channel);
     if(pool->cb && pool->cb->ready)
         pool->cb->ready(pool->callbackUD, channel, 1);
@@ -50,14 +48,14 @@ TWS_PRIVATE tws_Job *dequeue(tws_Pool *pool, unsigned channel)
 /* Called by other jobs as they finish, to ready their followup if they have one */
 static void tryToReady(tws_Pool *pool, tws_Job *job, unsigned mychannel)
 {
-    TWS_ASSERT(job->a_remain.val > 0, "huh");
+    TWS_ASSERT(job->u.waiting.a_remain.val > 0, "huh");
     const tws_Func func = job->func;
     TWS_ASSERT((uintptr_t)func > 10, "he");
-    int remain = _AtomicDec_Rel(&job->a_remain);
+    int remain = _AtomicDec_Rel(&job->u.waiting.a_remain);
     TWS_ASSERT(remain >= 0, "should never < 0");
     if(!remain)
     {
-        if(job->channel == mychannel)
+        if(job->u.waiting.channel == mychannel)
             execAndFinish(pool, job, mychannel); /* No need to push if same channel */
         else
             enqueue(pool, job);
@@ -163,7 +161,7 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
         TWS_ASSERT(jobidx, "must be > 0");
         tws_Job *job = &jobbase[jobidx];
         TWS_ASSERT(!job->func, "dirty job"); // DEBUG
-        job->a_remain.val = 0;
+        job->u.waiting.a_remain.val = 0;
     }
 
     size_t nready = 0;
@@ -179,7 +177,7 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
 
         job->func = desc->func;
         job->data = desc->data;
-        job->channel = desc->channel;
+        job->u.waiting.channel = desc->channel;
 
         unsigned next = desc->next;
         if(next)
@@ -190,12 +188,12 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
             TWS_ASSERT(next, "must be > 0");
             TWS_ASSERT(next <= pool->info.maxjobs, "job idx out of range");
             tws_Job *followup = &jobbase[next];
-            TWS_ASSERT(followup->a_remain.val >= 0, "tmp");
-            ++followup->a_remain.val;
+            TWS_ASSERT(followup->u.waiting.a_remain.val >= 0, "tmp");
+            ++followup->u.waiting.a_remain.val;
         }
         job->followupIdx = next;
 
-        if(!job->a_remain.val) /* Do we have any prereqs that must run first? */
+        if(!job->u.waiting.a_remain.val) /* Do we have any prereqs that must run first? */
         {
             /* Not a followup of any other job. */
 
@@ -220,7 +218,7 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
     for(size_t i = 0; i < nready; ++i)
     {
         tws_Job *job = &jobbase[tmp[i]];
-        unsigned channel = job->channel;
+        unsigned channel = job->u.waiting.channel;
         ++toReady[channel];
         enqueueWithoutCallback(pool, job, channel);
     }
