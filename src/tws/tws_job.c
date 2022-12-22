@@ -161,22 +161,26 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
     /* Index can't be 0, so to use job idx as an offset into the array, offset the array. */
     tws_Job * const jobbase = (tws_Job*)(((char*)pool) + pool->jobsArrayOffset) - 1;
 
+    for(size_t i = w; i < k; ++i)
+    {
+        const unsigned jobidx = tmp[i];
+        TWS_ASSERT(jobidx, "must be > 0");
+        tws_Job *job = &jobbase[jobidx];
+        TWS_ASSERT(job->marker == 0xff00eeea, "broken job");
+        TWS_ASSERT(!job->func, "dirty job"); // DEBUG
+        job->a_remain.val = 0;
+    }
+
     size_t nready = 0;
     for(size_t i = w; i < k; ++i)
     {
         const tws_JobDesc *desc = &jobs[i];
-
         const unsigned jobidx = tmp[i];
-        TWS_ASSERT(jobidx, "must be > 0");
         tws_Job *job = &jobbase[jobidx];
+
         tmp[i] = 0; // DEBUG
 
-        TWS_ASSERT(job->marker == 0xff00eeea, "broken job");
-        TWS_ASSERT(!job->func, "dirty job"); // DEBUG
-
         TWS_ASSERT(desc->channel < pool->info.maxchannels, "channel out of range");
-
-        job->a_remain.val = 0;
 
         job->func = desc->func;
         job->data = desc->data;

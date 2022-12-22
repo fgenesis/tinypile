@@ -44,7 +44,7 @@ static void work(tws_Pool *pool, const tws_JobData *data)
             d[i].data.ext.ptr = data->ext.ptr;
             d[i].data.ext.size = i+1;
             d[i].channel = i & 1;
-            d[i].next = 0;
+            d[i].next = 1;
         }
         d[N-1].next = 0;
         d[N-1].channel = 1;
