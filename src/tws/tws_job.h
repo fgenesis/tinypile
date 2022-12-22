@@ -11,7 +11,6 @@ struct tws_Job
     {
          AIdx nextInList; /* id of next elem in AIL */
     } u;
-    unsigned marker; // TEMP
     NativeAtomic a_remain; // this can also be moved
     unsigned followupIdx;
     unsigned channel; // TODO: can be moved into u (needed only when job is not enqueued)
@@ -58,7 +57,6 @@ struct tws_Pool
     */
 };
 
-
 TWS_PRIVATE size_t submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Fallback fallback, void *fallbackUD, SubmitFlags flags);
 TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job, unsigned channel);
 TWS_PRIVATE tws_Job *dequeue(tws_Pool *pool, unsigned channel);
@@ -91,3 +89,9 @@ inline static TWS_NOTNULL unsigned *jobSlotsBase(tws_Pool *pool)
 {
     return (unsigned*)((char*)pool + pool->slotsOffset);
 }
+
+inline static TWS_NOTNULL tws_Job *jobArrayBase(tws_Pool *pool)
+{
+    return (tws_Job*)((char*)pool + pool->jobsArrayOffset);
+}
+

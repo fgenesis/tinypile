@@ -39,7 +39,7 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     for(unsigned i = 0; i < numChannels; ++i)
     {
         tws_ChannelHead *ch = (tws_ChannelHead*)p;
-        ail_init(&ch->list, NULL);
+        ail_init(&ch->list);
         p += channelHeadSize;
     }
 
@@ -64,7 +64,6 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     for(size_t i = 0; i < numjobs; ++i)
     {
         ((tws_Job*)p)[i].func = NULL; // DEBUG
-        ((tws_Job*)p)[i].marker = 0xff00eeea; // DEBUG
     }
     p += jobsArraySizeBytes;
 

@@ -10,7 +10,6 @@ static size_t allocJobs(tws_WorkTmp *dst, tws_Pool *pool, size_t minn, size_t ma
 /* Move done job back into storage */
 static void recycleJob(tws_Pool *pool, tws_Job *job)
 {
-    TWS_ASSERT(job->marker == 0xff00eeea, "broken job");
     unsigned *base = jobSlotsBase(pool);
     unsigned idx = jobToIndex(pool, job);
     VALGRIND_HG_CLEAN_MEMORY(job, sizeof(*job));
@@ -22,7 +21,6 @@ static void recycleJob(tws_Pool *pool, tws_Job *job)
 /* Enqueue job to its channel's ready head, making it possible to exec any time */
 static void enqueueWithoutCallback(tws_Pool *pool, tws_Job *job, unsigned channel)
 {
-    TWS_ASSERT(job->marker == 0xff00eeea, "broken job");
     TWS_ASSERT(job->a_remain.val == 0, "too early to enqueue");
     TWS_ASSERT(channel != (unsigned)-1, "eh");
     TWS_ASSERT(job->channel == channel, "channel mismatch");
@@ -30,7 +28,7 @@ static void enqueueWithoutCallback(tws_Pool *pool, tws_Job *job, unsigned channe
     const tws_Func func = job->func;
     TWS_ASSERT((uintptr_t)func > 10, "he");
     tws_ChannelHead *ch = channelHead(pool, channel);
-    ail_push(&ch->list, job); /* this trashes job->u */
+    ail_push(&ch->list, jobArrayBase(pool), job); /* this trashes job->u */
 }
 
 /* Enqueue job as ready & notify ready callback */
@@ -46,13 +44,12 @@ static void enqueue(tws_Pool *pool, tws_Job *job)
 TWS_PRIVATE tws_Job *dequeue(tws_Pool *pool, unsigned channel)
 {
     tws_ChannelHead *ch = channelHead(pool, channel);
-    return (tws_Job*)ail_pop(&ch->list);
+    return (tws_Job*)ail_pop(&ch->list, jobArrayBase(pool));
 }
 
 /* Called by other jobs as they finish, to ready their followup if they have one */
 static void tryToReady(tws_Pool *pool, tws_Job *job, unsigned mychannel)
 {
-    TWS_ASSERT(job->marker == 0xff00eeea, "broken job");
     TWS_ASSERT(job->a_remain.val > 0, "huh");
     const tws_Func func = job->func;
     TWS_ASSERT((uintptr_t)func > 10, "he");
@@ -69,7 +66,6 @@ static void tryToReady(tws_Pool *pool, tws_Job *job, unsigned mychannel)
 
 TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job, unsigned mychannel)
 {
-    TWS_ASSERT(job->marker == 0xff00eeea, "broken job");
     /* save some things. Note that job->u has been trashed. */
     const tws_Func func = job->func;
     TWS_ASSERT((uintptr_t)func > 10, "he");
@@ -166,7 +162,6 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
         const unsigned jobidx = tmp[i];
         TWS_ASSERT(jobidx, "must be > 0");
         tws_Job *job = &jobbase[jobidx];
-        TWS_ASSERT(job->marker == 0xff00eeea, "broken job");
         TWS_ASSERT(!job->func, "dirty job"); // DEBUG
         job->a_remain.val = 0;
     }
