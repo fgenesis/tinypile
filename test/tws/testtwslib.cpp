@@ -15,10 +15,11 @@ static tws_Pool *gpool;
 static tws_Sem *sem;
 static volatile int quit;
 
-static void ready(void *ud, unsigned channel)
+static void ready(void *ud, unsigned channel, unsigned num)
 {
     //puts("ready");
-    tws_sem_leave(sem);
+    for(unsigned i = 0; i < num; ++i) // FIXME: shiiit
+        tws_sem_release(sem);
 }
 
 static int fallback0(tws_Pool *pool, void *ud)
@@ -32,15 +33,15 @@ static void work(tws_Pool *pool, const tws_JobData *data)
 {
     //printf("work (%u, %u) th %d\n", (unsigned)p0, (unsigned)p1, GetCurrentThreadId());
 
-    if(!data->a.size)
+    if(!data->ext.size)
     {
         enum { N = 20 };
         tws_JobDesc d[N];
         for(size_t i = 0; i < N; ++i)
         {
             d[i].func = work;
-            d[i].data.a.ptr = data->a.ptr;
-            d[i].data.a.size = i+1;
+            d[i].data.ext.ptr = data->ext.ptr;
+            d[i].data.ext.size = i+1;
             d[i].channel = 0;
             d[i].next = 1;
         }
@@ -63,7 +64,7 @@ static void thrun(void *ud)
     {
         while(tws_run(gpool, 1) || tws_run(gpool, 0)) {}
         //printf("sleep th %d\n", GetCurrentThreadId());
-        tws_sem_enter(sem);
+        tws_sem_acquire(sem);
         //printf("wakeup th %d\n", GetCurrentThreadId());
     }
     printf("exiting th\n");
@@ -94,8 +95,8 @@ int main(int argc, char **argv)
         while(tws_run(gpool, 0)) {};
 
         quit = 1;
-        tws_sem_leave(sem);
-        tws_sem_leave(sem);
+        tws_sem_release(sem);
+        tws_sem_release(sem);
         tws_thread_join(th0);
         tws_thread_join(th1);
 

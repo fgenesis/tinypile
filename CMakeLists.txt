@@ -89,6 +89,11 @@ if(NO_LIBC)
   message(STATUS "")
 endif()
 
+option(VALGRIND "Enable extra valgrind support in the code" FALSE)
+if(VALGRIND)
+    add_definitions(-DENABLE_VALGRIND=1)
+endif()
+
 # Bigger libs have their own subdirs; to be amalgamated
 add_subdirectory(src)
 

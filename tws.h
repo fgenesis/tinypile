@@ -2,7 +2,7 @@
 
 Design goals:
 - Plain C API, KISS.
-- Bring your own threading. The scheduler is thread-safe but does not know the concept of threads or locks.
+- Bring your own threading. The scheduler is thread-safe but does not know the concept of threads.
 - Fixed memory. No memory allocations whatsoever.
 - Safe operation even if grossly overloaded
 
@@ -11,7 +11,7 @@ Public domain, WTFPL, CC0 or your favorite permissive license; whatever is avail
 
 Dependencies:
 - Compiles as C99 or oldschool C++ code, but can benefit from C11 or if compiled as C++11
-- Does NOT require libc
+- Does NOT require libc or TLS
 - Requires compiler/library support for:
   - atomic pointer compare-and-swap (CAS)
   - Optional: wide CAS (ie. 2x ptr-sized CAS)
@@ -32,11 +32,22 @@ Inspired by / reading material:
 
 #pragma once
 
-#include <stddef.h> // size_t, uintptr_t on MSVC
+#include <stddef.h> /* size_t, uintptr_t on MSVC */
 
-#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L)
+//#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L)
 #  include <stdint.h> /* uintptr_t on gcc/clang/posix */
+//#endif
+
+/* --- Compile config for library internals ---
+   Define either in your build system or change the defaults here */
+
+/* Max. channels accepted by tws_init() & tws_size(). Used to bound a stack array. */
+#ifndef TWS_MAX_CHANNELS
+#  define TWS_MAX_CHANNELS 32
 #endif
+
+/* --- End compile config --- */
+
 
 /* All public library functions are marked with this */
 #ifndef TWS_EXPORT
@@ -50,23 +61,22 @@ extern "C" {
 
 typedef struct tws_Pool tws_Pool; /* opaque */
 
-/* Two params is all you get, eg. pointer + size.
+/* By default, this is all you get, eg. pointer + size + something else.
    You may adapt this to your own needs, but keep this as small as possible.
    Note that tws_JobData is used internally, so make sure the library uses the same definition! */
 union tws_JobData
 {
-    uintptr_t p[2];
+    uintptr_t p[3];
+    char opaque[sizeof(uintptr_t) * 3];
+
     struct
     {
         void *ptr;
         size_t size;
-    } a;
+        size_t begin;
+    } ext;
 };
 typedef union tws_JobData tws_JobData;
-
-/* Change these if necessary. Used by extensions. */
-inline static size_t tws_jobDataSize(const tws_JobData *d) { return d->a.size; }
-inline static void *tws_jobDataPtr(const tws_JobData *d) { return d->a.ptr; }
 
 /* Generic worker and callback function type. */
 typedef void (*tws_Func)(tws_Pool *pool, const tws_JobData *data);
@@ -111,25 +121,15 @@ typedef struct tws_JobDesc tws_JobDesc;
 typedef struct tws_PoolCallbacks tws_PoolCallbacks;
 struct tws_PoolCallbacks
 {
-    /* Called when one job is ready to execute */
-    void (*readyOne)(void *ud, unsigned channel);
-
-    /* Called when a batch of jobs has been submitted */
-    void (*readyBatch)(void *ud, size_t num);
-
-    // TODO should be consolidated into:
-    //void (*ready)(void *ud, unsigned channel, size_t num);
+    void (*ready)(void *ud, unsigned channel, unsigned num);
 };
 
 
 /* Used as temporary buffer for tws_submit(). Don't touch anything here; this struct is only public to get the correct size. */
-struct tws_WorkTmp
-{
-    uintptr_t x;
-};
-typedef struct tws_WorkTmp tws_WorkTmp;
+typedef unsigned tws_WorkTmp;
 
-/* Calculate memory required to create a pool with these parameters. numChannels must be > 0. Returns 0 for bogus params. */
+/* Calculate memory required to create a pool with these parameters.
+   numChannels must be > 0 and < TWS_MAX_CHANNELS. Returns 0 for bogus params. */
 TWS_EXPORT size_t tws_size(size_t concurrentJobs, unsigned numChannels, size_t cacheLineSize);
 
 
@@ -144,7 +144,7 @@ typedef struct tws_PoolInfo tws_PoolInfo;
 TWS_EXPORT const tws_PoolInfo *tws_info(const tws_Pool *pool);
 
 /* Create a pool in mem. Returns mem casted to tws_Pool*. Returns NULL on failure.
-   numChannels must be at least 1.
+   numChannels must be > 0 and < TWS_MAX_CHANNELS.
    As cacheLineSize, pass the L1 cache line size of your system (or whatever padding is needed to avoid false sharing).
    Should be a power of 2. If in doubt, 64 should be fine.
    There is no function to free a pool. If you don't need it anymore, dispose the underlying mem and you're good;
@@ -175,13 +175,9 @@ TWS_EXPORT size_t tws_trysubmit(tws_Pool *pool, const tws_JobDesc * jobs, tws_Wo
 TWS_EXPORT int tws_run(tws_Pool *pool, unsigned channel);
 
 
+/* NOT needed to be called. This is mainly for correctness checking with valgrind */
+TWS_EXPORT void tws_deinit_DEBUG(tws_Pool *pool, size_t memsize);
+
 #ifdef __cplusplus
 } /* end extern C */
 #endif
-
-
-/* TODO:
-- limit channel to uint8?
-- pass counts array to multi-ready callback
-
-*/

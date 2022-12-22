@@ -15,7 +15,7 @@ TWS_EXPORT const tws_PoolInfo* tws_info(const tws_Pool* pool)
 
 TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, size_t cacheLineSize, const tws_PoolCallbacks *cb, void *callbackUD)
 {
-    if(!numChannels)
+    if(!numChannels || numChannels >= TWS_MAX_CHANNELS)
         return NULL;
 
     const uintptr_t end = (uintptr_t)mem + memsz;
@@ -61,7 +61,11 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
         return NULL;
 
     const size_t jobsArraySizeBytes = numjobs * sizeof(tws_Job);
-    ail_format((char*)p, (char*)p + jobsArraySizeBytes, sizeof(tws_Job), TWS_MIN_ALIGN);
+    for(size_t i = 0; i < numjobs; ++i)
+    {
+        ((tws_Job*)p)[i].func = NULL; // DEBUG
+        ((tws_Job*)p)[i].marker = 0xff00eeea; // DEBUG
+    }
     p += jobsArraySizeBytes;
 
     aca_init(&pool->freeslots, numjobs); /* This knows that there is 1 extra slot */
@@ -71,7 +75,7 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     unsigned *base = (unsigned*)p;
     for(size_t i = 0; i < numjobs; ++i)
         base[i] = i+1; /* Job index of 0 is invalid */
-    base[numjobs] = (unsigned)(-1);
+    base[numjobs] = (unsigned)(-2);
 
     TWS_ASSERT(p + (numjobs + extraslots) * sizeof(unsigned) <= end, "stomped memory");
 
@@ -98,8 +102,17 @@ TWS_EXPORT int tws_run(tws_Pool* pool, unsigned channel)
     tws_Job *job = dequeue(pool, channel);
     if(job)
     {
-        execAndFinish(pool, job);
+        execAndFinish(pool, job, channel);
         return 1;
     }
     return 0;
+}
+
+TWS_EXPORT void tws_deinit_DEBUG(tws_Pool *pool, size_t memsize)
+{
+    for(unsigned i = 0; i < pool->info.maxchannels; ++i)
+        ail_deinit(&channelHead(pool, i)->list);
+    aca_deinit(&pool->freeslots);
+
+    VALGRIND_MAKE_MEM_UNDEFINED(pool, memsize);
 }

@@ -4,7 +4,7 @@
 TWS_PRIVATE void ail_init(AList* al, void *head)
 {
     al->head = head;
-    al->popLock.val = 0;
+    _initSpinlock(&al->popLock);
 }
 
 TWS_PRIVATE void *ail_format(char *p, char *end, size_t stride, size_t alignment)
@@ -74,5 +74,10 @@ TWS_PRIVATE void ail_push(AList *al, void *p)
             break;
     }
     _atomicUnlock(&al->popLock);
+}
+
+TWS_PRIVATE void ail_deinit(AList* al)
+{
+    _destroySpinlock(&al->popLock);
 }
 

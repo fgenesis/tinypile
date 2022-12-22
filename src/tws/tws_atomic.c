@@ -18,7 +18,7 @@ TWS_PRIVATE void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval) { atomic_sto
 TWS_PRIVATE tws_Atomic _AtomicExchange_Acq(NativeAtomic *x, tws_Atomic newval) { return atomic_exchange_explicit(&x->val, newval, memory_order_acquire); } // return previous
 TWS_PRIVATE tws_Atomic _AtomicGet_Seq(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_seq_cst); }
 TWS_PRIVATE tws_Atomic _AtomicGet_Acq(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_acquire); }
-TWS_PRIVATE tws_Atomic _AtomicGet_Rel(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_release); }
+//TWS_PRIVATE tws_Atomic _AtomicGet_Rel(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_release); }
 TWS_PRIVATE tws_Atomic _RelaxedGet(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_relaxed); }
 
 /*

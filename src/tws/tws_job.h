@@ -11,17 +11,18 @@ struct tws_Job
     {
          AIdx nextInList; /* id of next elem in AIL */
     } u;
-    NativeAtomic a_remain;
+    unsigned marker; // TEMP
+    NativeAtomic a_remain; // this can also be moved
     unsigned followupIdx;
-    unsigned channel;
-    volatile tws_Func func; // TEMP
+    unsigned channel; // TODO: can be moved into u (needed only when job is not enqueued)
+    tws_Func func;
     tws_JobData data;
 }
 ;
 struct tws_ChannelHead
 {
     AList list;
-    /* + Some extra padding to fill a cache line as imposed by the pool */
+    /* + Some extra padding to fill a cache line as imposed by the pool. Calculated at runtime. */
 };
 typedef struct tws_ChannelHead tws_ChannelHead;
 
@@ -59,5 +60,34 @@ struct tws_Pool
 
 
 TWS_PRIVATE size_t submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Fallback fallback, void *fallbackUD, SubmitFlags flags);
-TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job);
+TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job, unsigned channel);
 TWS_PRIVATE tws_Job *dequeue(tws_Pool *pool, unsigned channel);
+
+
+inline static TWS_NOTNULL tws_ChannelHead *channelHead(tws_Pool *pool, unsigned channel)
+{
+    TWS_ASSERT(channel < pool->info.maxchannels, "channel out of bounds");
+    /* tws_ChannelHead is dynamically sized */
+    return (tws_ChannelHead*)((((char*)pool) + pool->channelHeadOffset) + (channel * (size_t)pool->channelHeadSize));
+}
+
+inline static unsigned jobToIndex(tws_Pool *pool, tws_Job *job)
+{
+    TWS_ASSERT(job, "why is this NULL here");
+    ptrdiff_t diff = job - (tws_Job*)(((char*)pool) + pool->jobsArrayOffset);
+    TWS_ASSERT((unsigned)diff < pool->info.maxjobs, "job ended up as bad index");
+    return (unsigned)(diff + 1);
+}
+
+inline static TWS_NOTNULL tws_Job *jobByIndex(tws_Pool *pool, unsigned idx)
+{
+    TWS_ASSERT(idx, "should not be called with idx==0");
+    --idx;
+    TWS_ASSERT(idx < pool->info.maxjobs, "job idx out of bounds");
+    return ((tws_Job*)((char*)pool + pool->jobsArrayOffset)) + idx;
+}
+
+inline static TWS_NOTNULL unsigned *jobSlotsBase(tws_Pool *pool)
+{
+    return (unsigned*)((char*)pool + pool->slotsOffset);
+}

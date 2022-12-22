@@ -1,19 +1,31 @@
 #include "tws_aca.h"
 #include "tws_priv.h"
 
+#include <stdio.h>
+
 
 TWS_PRIVATE void aca_init(Aca* a, unsigned slots)
 {
     a->size = slots+1;
     a->ins = slots;
     a->rd = 0;
-    a->lock.val = 0;
     a->avail = slots;
+    _initSpinlock(&a->lock);
 }
 
 TWS_PRIVATE void aca_push(Aca* a, unsigned *base, unsigned x)
 {
     _atomicLock(&a->lock);
+
+    unsigned idx = a->ins;
+    TWS_ASSERT(base[idx] == (unsigned)-1, "stomp");
+    base[idx] = x;
+    a->ins = idx + 1;
+
+    _atomicUnlock(&a->lock);
+
+    /*_atomicLock(&a->lock);
+    //printf("return %u\n", x);
     unsigned idx = a->ins;
     //TWS_ASSERT(a->rd != idx, "invariant");
     TWS_ASSERT(base[idx] == (unsigned)-1, "stomp");
@@ -24,7 +36,7 @@ TWS_PRIVATE void aca_push(Aca* a, unsigned *base, unsigned x)
     a->ins = idx;
     ++a->avail;
     TWS_ASSERT(a->avail < a->size, "oops");
-    _atomicUnlock(&a->lock);
+    _atomicUnlock(&a->lock);*/
 
     /*
     unsigned idx = _RelaxedGet(&a->Rwrite);
@@ -43,6 +55,26 @@ TWS_PRIVATE void aca_push(Aca* a, unsigned *base, unsigned x)
 TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned minn, unsigned maxn)
 {
     size_t done = 0;
+    _atomicLock(&a->lock);
+
+    unsigned idx = a->ins;
+    if(idx >= minn)
+    {
+        do
+        {
+            --idx;
+            TWS_ASSERT(base[idx] != (unsigned)-1, "already used");
+            dst[done++] = base[idx];
+            base[idx] = (unsigned)-1;
+        }
+        while(idx && done < maxn);
+        a->ins = idx;
+    }
+
+    _atomicUnlock(&a->lock);
+    return done;
+
+    /*size_t done = 0;
     _atomicLock(&a->lock);
     unsigned rd = a->rd;
     unsigned end = a->ins;
@@ -66,19 +98,23 @@ TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned mi
 
         if(avail >= minn)
         {
+            if(avail > maxn)
+                avail = maxn;
             size_t w = 0;
-            for( ; w < maxn && rd < end; ++rd)
+            for( ; w < avail && rd < end; ++rd)
             {
                 TWS_ASSERT(base[rd] != (unsigned)-1, "read");
                 dst[w++].x = base[rd];
+                //printf("alloc  %u\n", base[rd]);
                 base[rd] = -1;
             }
 
-            if(w < maxn)
-                for(rd = 0; w < maxn && rd < end2; ++rd)
+            if(w < avail)
+                for(rd = 0; w < avail && rd < end2; ++rd)
                 {
                     TWS_ASSERT(base[rd] != (unsigned)-1, "read");
                     dst[w++].x = base[rd];
+                    //printf("alloc  %u\n", base[rd]);
                     base[rd] = -1;
                 }
 
@@ -88,5 +124,10 @@ TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned mi
     }
     a->avail -= done;
     _atomicUnlock(&a->lock);
-    return done;
+    return done;*/
+}
+
+TWS_PRIVATE void aca_deinit(Aca* a)
+{
+    _destroySpinlock(&a->lock);
 }

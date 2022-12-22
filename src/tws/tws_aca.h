@@ -10,10 +10,11 @@ Extra properties:
 
 #pragma once
 #include "tws_atomic.h"
+#include "tws_priv.h"
 
 typedef struct Aca
 {
-    NativeAtomic lock;
+    Spinlock lock;
     unsigned size;
     unsigned ins; /* next position to insert into */
     unsigned rd; /* next element to pop */
@@ -32,3 +33,5 @@ TWS_PRIVATE void aca_push(Aca *a, unsigned *base, unsigned x);
 
 /* Remove n elems, write them to dst. Returns 0 if failed; dst is undefined in that case */
 TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned minn, unsigned maxn);
+
+TWS_PRIVATE void aca_deinit(Aca *a);

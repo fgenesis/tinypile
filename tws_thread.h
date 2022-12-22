@@ -11,7 +11,7 @@ before you include this file in *one* C or C++ file to create the implementation
 #define TWS_THREAD_IMPLEMENTATION
 #include "tws_thread.h"
 
-The implementation will detect which of the below threading libs is available
+The implementation will detect which of the below threading backends is available
 at compile time based on whether certain macros exist, and pick one.
 
 Recognized thread libs:
@@ -19,6 +19,7 @@ Recognized thread libs:
   * SDL2      (#include <SDL_thread.h>) (http://libsdl.org/)
   * SDL 1.2   (#include <SDL_thread.h>)
   * pthread   (#include <pthread.h>)
+  * C++20     (autodetected, pulls in STL headers <thread> <semaphore> <new>)
   * <If you want to see your library of choice here, send me a patch/PR>
 
 Origin:
@@ -48,8 +49,8 @@ TWS_THREAD_EXPORT void tws_thread_join(tws_Thread *th);
 typedef struct tws_Sem tws_Sem;
 TWS_THREAD_EXPORT tws_Sem *tws_sem_create(void);
 TWS_THREAD_EXPORT void tws_sem_destroy(tws_Sem* sem);
-TWS_THREAD_EXPORT void tws_sem_enter(tws_Sem *sem); /* Lock semaphore, may block */
-TWS_THREAD_EXPORT void tws_sem_leave(tws_Sem *sem); /* Unlock semaphore */
+TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem); /* Lock semaphore, may block */
+TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem); /* Unlock semaphore */
 
 /* Get # of CPU cores, 0 on failure. */
 TWS_THREAD_EXPORT unsigned tws_getNumCPUs(void);
@@ -137,7 +138,7 @@ static void w32_namethread(const char *name)
     if (pSetThreadDescription && pSetThreadDescription != (pfnSetThreadDescription)INVALID_HANDLE_VALUE)
     {
         WCHAR wbuf[32];
-        for(unsigned i = 0; (wbuf[i] = name[i]) && i < 32; ++i) {}
+        for(unsigned i = 0; i < 32 && ((wbuf[i] = name[i])); ++i) {}
         wbuf[31] = 0;
         pSetThreadDescription(GetCurrentThread(), wbuf);
     }
@@ -213,12 +214,12 @@ TWS_THREAD_EXPORT void tws_sem_destroy(tws_Sem *sem)
     CloseHandle(sem);
 }
 
-TWS_THREAD_EXPORT void tws_sem_enter(tws_Sem *sem)
+TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem)
 {
     WaitForSingleObject(sem, INFINITE);
 }
 
-TWS_THREAD_EXPORT void tws_sem_leave(tws_Sem *sem)
+TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem)
 {
     ReleaseSemaphore(sem, 1, NULL);
 }
@@ -312,12 +313,12 @@ TWS_THREAD_EXPORT void tws_sem_destroy(tws_Sem *sem)
     SDL_DestroySemaphore((SDL_sem*)sem);
 }
 
-TWS_THREAD_EXPORT void tws_sem_enter(tws_Sem *sem)
+TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem)
 {
     SDL_SemWait((SDL_sem*)sem);
 }
 
-TWS_THREAD_EXPORT void tws_sem_leave(tws_Sem *sem)
+TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem)
 {
     SDL_SemPost((SDL_sem*)sem);
 }
@@ -382,12 +383,12 @@ TWS_THREAD_EXPORT void tws_sem_destroy(tws_Sem *sem)
     tws__free(sem);
 }
 
-TWS_THREAD_EXPORT void tws_sem_enter(tws_Sem *sem)
+TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem)
 {
     sem_wait((sem_t*)sem);
 }
 
-TWS_THREAD_EXPORT void tws_sem_leave(tws_Sem *sem)
+TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem)
 {
     sem_post((sem_t*)sem);
 }
@@ -433,12 +434,12 @@ TWS_THREAD_EXPORT void tws_sem_destroy(tws_Sem *sem)
     semaphore_destroy(mach_task_self(), (semaphore_t)sem);
 }
 
-TWS_THREAD_EXPORT void tws_sem_enter(tws_Sem *sem)
+TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem)
 {
     semaphore_wait((semaphore_t)sem);
 }
 
-TWS_THREAD_EXPORT void tws_sem_leave(tws_Sem *sem)
+TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem)
 {
     semaphore_signal((semaphore_t)sem);
 }
@@ -458,6 +459,58 @@ TWS_THREAD_EXPORT unsigned tws_getCPUCacheLineSize(void)
 
 
 // --------------------------------------------------------
+#elif defined(__cplusplus) && ((__cplusplus+0L) > 20202L)
+// C++11 threads, C++17 std::hardware_destructive_interference_size, C++20 semaphores
+// -> unfortunately C++20 and up only
+
+#include <thread>
+#include <semaphore>
+#include <new> // for std::hardware_destructive_interference_size
+
+TWS_THREAD_EXPORT tws_Thread *tws_thread_create(tws_ThreadEntry run, const char *name, void *ud)
+{
+    (void)name; // not supported by STL :<
+    return reinterpret_cast<tws_Thread*>(new std::thread(run, ud));
+}
+
+TWS_THREAD_EXPORT void tws_thread_join(tws_Thread *th)
+{
+    std::thread *t = reinterpret_cast<std::thread*>(th);
+    t->join();
+    delete t;
+}
+
+TWS_THREAD_EXPORT tws_Sem* tws_sem_create(void)
+{
+    return reinterpret_cast<tws_Sem*>(new std::counting_semaphore(0));
+}
+
+TWS_THREAD_EXPORT void tws_sem_destroy(tws_Sem *sem)
+{
+    delete reinterpret_cast<std::counting_semaphore*>(sem);
+}
+
+TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem)
+{
+    reinterpret_cast<std::counting_semaphore*>(sem)->acquire();
+}
+
+TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem)
+{
+    reinterpret_cast<std::counting_semaphore*>(sem)->release();
+}
+
+TWS_THREAD_EXPORT unsigned tws_getNumCPUs(void)
+{
+    return std::thread::hardware_concurrency();
+}
+
+TWS_THREAD_EXPORT unsigned tws_getCPUCacheLineSize(void)
+{
+    return std::hardware_destructive_interference_size; // Bad, this is a compile-time constant, not a run-time one
+}
+
+// --------------------------------------------------------
 #else
 #error No threading backend recognized
 #endif
@@ -468,10 +521,9 @@ TWS_THREAD_EXPORT unsigned tws_getCPUCacheLineSize(void)
 
 /* TODO:
 - respect TWS_NO_LIBC and then use CreateThread() instead of _beginthreadex() ?
-- detect C++20 and use this?
-#if defined(__cpp_lib_semaphore)
-#  include <semaphore>
-#endif
+- See also: https://github.com/NickStrupat/CacheLineSize
+- Linux: unistd.h + sysconf(_SC_LEVEL1_DCACHE_LINESIZE)
+- C11 threads.h
 
 - allow user to select a backend manually via a #define
 

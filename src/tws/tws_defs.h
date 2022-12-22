@@ -60,7 +60,11 @@ typedef __int64 s64;
 #ifndef TWS_ASSERT
 #  ifdef TWS_DEBUG
 #    include <assert.h>
+#ifdef _MSC_VER
+#define TWS_ASSERT(x, desc) do { if(!(x)) __debugbreak(); assert((x) && desc); } while(0)
+#else
 #    define TWS_ASSERT(x, desc) assert((x) && desc)
+#endif
 #  endif
 #endif
 
@@ -102,4 +106,20 @@ typedef __int64 s64;
 
 #ifndef TWS_STATIC_ASSERT
 #  define TWS_STATIC_ASSERT(cond) switch((int)!!(cond)){case 0:;case(!!(cond)):;}
+#endif
+
+#if ENABLE_VALGRIND+0
+#include <valgrind/helgrind.h>
+#include <valgrind/memcheck.h>
+#else
+#define VALGRIND_HG_CLEAN_MEMORY(begin, size)
+#define VALGRIND_HG_MUTEX_INIT_POST(mutex, rec)
+#define VALGRIND_HG_MUTEX_LOCK_PRE(mutex, istry)
+#define VALGRIND_HG_MUTEX_LOCK_POST(mutex)
+#define VALGRIND_HG_MUTEX_UNLOCK_PRE(mutex)
+#define VALGRIND_HG_MUTEX_UNLOCK_POST(mutex)
+#define VALGRIND_HG_MUTEX_DESTROY_PRE(mutex)
+#define VALGRIND_HG_DISABLE_CHECKING(begin, size)
+#define VALGRIND_HG_ENABLE_CHECKING(begin, size)
+#define VALGRIND_MAKE_MEM_UNDEFINED(addr, len)
 #endif
