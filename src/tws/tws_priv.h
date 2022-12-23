@@ -1,7 +1,7 @@
 #pragma once
 #include "tws_atomic.h"
 
-
+/*
 #if _MSC_VER+0 > 1900
 typedef struct _Mtx_internal_imp_t* mtx_t;
 //#include <xthreads.h>
@@ -20,7 +20,7 @@ _CRTIMP2_PURE int __cdecl _Mtx_unlock(mtx_t);
 #else
     #include <threads.h>
 #endif
-
+*/
 
 // Minimal memory alignment to guarantee atomic access and pointer load/store
 enum
@@ -35,30 +35,30 @@ enum
 
 typedef struct Spinlock
 {
-    //NativeAtomic a;
-    mtx_t mtx;
+    NativeAtomic a;
+    //mtx_t mtx;
 } Spinlock;
 
 inline static void _initSpinlock(Spinlock *sp)
 {
-    mtx_init(&sp->mtx, mtx_plain);
-    /*sp->a.val = 0;
+    //mtx_init(&sp->mtx, mtx_plain);
+    sp->a.val = 0;
     VALGRIND_HG_MUTEX_INIT_POST(sp, 0);
-    VALGRIND_HG_DISABLE_CHECKING(sp, sizeof(*sp));*/
+    //VALGRIND_HG_DISABLE_CHECKING(sp, sizeof(*sp));
 }
 
 inline static void _destroySpinlock(Spinlock *sp)
 {
-    mtx_destroy(&sp->mtx);
-    /*VALGRIND_HG_MUTEX_DESTROY_PRE(sp);
-    VALGRIND_HG_ENABLE_CHECKING(sp, sizeof(*sp));*/
+    //mtx_destroy(&sp->mtx);
+    VALGRIND_HG_MUTEX_DESTROY_PRE(sp);
+    //VALGRIND_HG_ENABLE_CHECKING(sp, sizeof(*sp));
 }
 
 // via https://rigtorp.se/spinlock/
 inline static void _atomicLock(Spinlock *sp)
 {
-    mtx_lock(&sp->mtx);
-    /*VALGRIND_HG_MUTEX_LOCK_PRE(sp, 0);
+    //mtx_lock(&sp->mtx);
+    VALGRIND_HG_MUTEX_LOCK_PRE(sp, 0);
     for(;;)
     {
         if(!_AtomicExchange_Acq(&sp->a, 1)) // try to grab the lock: if it was 0, we got it
@@ -67,7 +67,7 @@ inline static void _atomicLock(Spinlock *sp)
         while(_RelaxedGet(&sp->a)) // spin and yield until someone releases the lock
             _Yield();
     }
-    VALGRIND_HG_MUTEX_LOCK_POST(sp);*/
+    VALGRIND_HG_MUTEX_LOCK_POST(sp);
 }
 
 /*inline static int _atomicTryLock(Spinlock *a)
@@ -77,10 +77,10 @@ return !_RelaxedGet(a) && !_AtomicExchange_Acq(a, 1);
 
 inline static void _atomicUnlock(Spinlock *sp)
 {
-    mtx_unlock(&sp->mtx);
-    /*VALGRIND_HG_MUTEX_UNLOCK_PRE(sp);
+    //mtx_unlock(&sp->mtx);
+    VALGRIND_HG_MUTEX_UNLOCK_PRE(sp);
     _AtomicSet_Rel(&sp->a, 0);
-    VALGRIND_HG_MUTEX_UNLOCK_POST(sp);*/
+    VALGRIND_HG_MUTEX_UNLOCK_POST(sp);
 }
 
 // ---- Alignment ----
