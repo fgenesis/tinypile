@@ -27,7 +27,6 @@ inline static void* ail_toptr(void *base, unsigned idx)
 TWS_PRIVATE void ail_init(AList* al)
 {
     al->whead.val = 0;
-    _initSpinlock(&al->popLock);
 }
 
 TWS_PRIVATE void ail_deinit(AList* al)
@@ -102,9 +101,14 @@ TWS_PRIVATE void *ail_pop(AList *al, void *base)
 
     _atomicLock(&al->popLock);
     tws_Atomic idx = _RelaxedGet(&al->head);
-    void *p = NULL;
-    while(TWS_LIKELY(idx))
+    void *p;
+    for(;;)
     {
+        if(TWS_UNLIKELY(!idx))
+        {
+            p = NULL;
+            break;
+        }
         p = ail_toptr(base, idx);
         tws_Atomic next = *(unsigned*)p;
 
@@ -124,7 +128,7 @@ TWS_PRIVATE void *ail_pop(AList *al, void *base)
 TWS_PRIVATE void ail_push(AList *al, void *base, void *p)
 {
     const tws_Atomic idx = ail_toidx(base, p);
-    _atomicLock(&al->popLock);
+    //_atomicLock(&al->popLock);
     tws_Atomic cur = _RelaxedGet(&al->head);
     for(;;)
     {
@@ -134,7 +138,7 @@ TWS_PRIVATE void ail_push(AList *al, void *base, void *p)
         if(_AtomicCAS_Weak_Rel(&al->head, &cur, idx))
             break;
     }
-    _atomicUnlock(&al->popLock);
+    //_atomicUnlock(&al->popLock);
 }
 
 #endif /* TWS_HAS_WIDE_ATOMICS */

@@ -13,9 +13,8 @@ typedef struct AList
     WideAtomic whead;
 #else
     NativeAtomic head;
-
-#endif
     Spinlock popLock;
+#endif
 } AList;
 
 TWS_PRIVATE void ail_init(AList *al);
