@@ -21,13 +21,18 @@ TWS_PRIVATE tws_Atomic _AtomicGet_Acq(const NativeAtomic *x) { return atomic_loa
 //TWS_PRIVATE tws_Atomic _AtomicGet_Rel(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_release); }
 TWS_PRIVATE tws_Atomic _RelaxedGet(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_relaxed); }
 
+TWS_PRIVATE int _AtomicWideCAS_Weak_Acq(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return atomic_compare_exchange_weak_explicit(&x->val, expected, newval, memory_order_acquire, memory_order_acquire); }
+TWS_PRIVATE int _AtomicWideCAS_Weak_Rel(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return atomic_compare_exchange_weak_explicit(&x->val, expected, newval, memory_order_release, memory_order_consume); }
+TWS_PRIVATE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x) { return atomic_load_explicit((volatile _Atomic(tws_Atomic64)*)&x->val, memory_order_relaxed); }
+
+
 /*
 TWS_PRIVATE int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return atomic_compare_exchange_strong(&x->val, expected, newval); }
 TWS_PRIVATE void _Atomic64Set_Seq(NativeAtomic64 *x, tws_Atomic64 newval) { atomic_store(&x->val, newval); }
 TWS_PRIVATE tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x) { COMPILER_BARRIER(); return atomic_load_explicit((volatile atomic_int_least64_t*)&x->val, memory_order_relaxed); }
 */
 
-TWS_PRIVATE int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void **expected, void *newval) { return atomic_compare_exchange_weak(x, expected, newval); }
+//TWS_PRIVATE int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void **expected, void *newval) { return atomic_compare_exchange_weak(x, expected, newval); }
 
 TWS_PRIVATE void _Mfence() { COMPILER_BARRIER(); atomic_thread_fence(memory_order_seq_cst); }
 
@@ -41,6 +46,7 @@ TWS_PRIVATE void _Mfence() { COMPILER_BARRIER(); atomic_thread_fence(memory_orde
 #pragma intrinsic(_InterlockedCompareExchange)
 #pragma intrinsic(_InterlockedCompareExchange64)
 
+/*
 #ifdef _M_IX86
 // No _InterlockedExchange64() on x86_32 apparently
 // Clang and gcc have their own way of doing a 64bit store, but with MSVC it's back to a good old CAS loop.
@@ -62,6 +68,7 @@ static inline s64 _InterlockedExchange64(volatile s64 *Target, s64 Value)
 #else
 #  pragma intrinsic(_InterlockedExchange64)
 #endif
+*/
 
 TWS_PRIVATE tws_Atomic _AtomicInc_Acq(NativeAtomic *x) { return _InterlockedIncrement(&x->val); }
 TWS_PRIVATE tws_Atomic _AtomicInc_Rel(NativeAtomic *x) { return _InterlockedIncrement(&x->val); }
@@ -78,8 +85,8 @@ static inline int _msvc_cas32_x86(NativeAtomic *x, tws_Atomic *expected, tws_Ato
     *expected = prevVal;
     return 0;
 }
-/*
-static inline int _msvc_cas64_x86(NativeAtomic64 *x, tws_Atomic64 *expected, tws_Atomic64 newval)
+
+static inline int _msvc_cas64_x86(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval)
 {
     const tws_Atomic64 expectedVal = *expected;
     tws_Atomic64 prevVal = _InterlockedCompareExchange64(&x->val, newval, expectedVal);
@@ -89,8 +96,8 @@ static inline int _msvc_cas64_x86(NativeAtomic64 *x, tws_Atomic64 *expected, tws
     *expected = prevVal;
     return 0;
 }
-*/
-static inline int _msvc_casptr_x86(void * volatile *x, void **expected, void *newval)
+
+/*static inline int _msvc_casptr_x86(void * volatile *x, void **expected, void *newval)
 {
     void *expectedVal = *expected;
     void *prevVal = _InterlockedCompareExchangePointer(x, newval, expectedVal);
@@ -99,7 +106,7 @@ static inline int _msvc_casptr_x86(void * volatile *x, void **expected, void *ne
 
     *expected = prevVal;
     return 0;
-}
+}*/
 TWS_PRIVATE int _AtomicCAS_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval) { return _msvc_cas32_x86(x, expected, newval); }
 TWS_PRIVATE int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval) { return _msvc_cas32_x86(x, expected, newval); }
 TWS_PRIVATE int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval) { return _msvc_cas32_x86(x, expected, newval); }
@@ -110,12 +117,15 @@ TWS_PRIVATE tws_Atomic _AtomicGet_Seq(const NativeAtomic *x) { COMPILER_BARRIER(
 TWS_PRIVATE tws_Atomic _AtomicGet_Acq(const NativeAtomic *x) { COMPILER_BARRIER(); return x->val; }
 TWS_PRIVATE tws_Atomic _AtomicGet_Rel(const NativeAtomic *x) { COMPILER_BARRIER(); return x->val; }
 TWS_PRIVATE tws_Atomic _RelaxedGet(const NativeAtomic *x) { return x->val; }
-/*
-static inline int _Atomic64CAS_Seq(NativeAtomic64 *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return _msvc_cas64_x86(x, expected, newval); }
-static inline void _Atomic64Set_Seq(NativeAtomic64 *x, tws_Atomic64 newval) { _InterlockedExchange64(&x->val, newval); }
-static inline tws_Atomic64 _Relaxed64Get(const NativeAtomic64 *x) { COMPILER_BARRIER(); return x->val; }
-*/
-TWS_PRIVATE int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void **expected, void *newval) { return _msvc_casptr_x86(x, expected, newval); }
+
+TWS_PRIVATE int _AtomicWideCAS_Weak_Acq(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return _msvc_cas64_x86(x, expected, newval); }
+TWS_PRIVATE int _AtomicWideCAS_Weak_Rel(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return _msvc_cas64_x86(x, expected, newval); }
+TWS_PRIVATE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x) { COMPILER_BARRIER(); return x->val; }
+
+//static inline void _AtomicWideSet_Seq(NativeAtomic64 *x, tws_Atomic64 newval) { _InterlockedExchange64(&x->val, newval); }
+
+
+//TWS_PRIVATE int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void **expected, void *newval) { return _msvc_casptr_x86(x, expected, newval); }
 
 TWS_PRIVATE void _Mfence(void) { COMPILER_BARRIER(); _mm_mfence(); }
 

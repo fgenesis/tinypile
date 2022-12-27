@@ -9,7 +9,12 @@ typedef unsigned AIdx;
 
 typedef struct AList
 {
+#ifdef TWS_HAS_WIDE_ATOMICS
+    WideAtomic whead;
+#else
     NativeAtomic head;
+
+#endif
     Spinlock popLock;
 } AList;
 

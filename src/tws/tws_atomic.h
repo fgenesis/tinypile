@@ -1,11 +1,22 @@
 #pragma once
 #include "tws_defs.h"
 
+typedef int tws_Atomic;
+
+#define TWS_HAS_WIDE_ATOMICS
+
+#ifdef _MSC_VER
+    typedef __int64 tws_Atomic64;
+#else
+#  include <stdint.h> /* uint64_t */
+    typedef int64_t tws_Atomic64;
+#endif
 
 // Ordered by preference. First one that's available is taken.
 // Defines *one* TWS_ATOMIC_USE_XXX macro for the chosen TWS_HAS_XXX that can be checked order-independently from now on.
 #if defined(TWS_HAS_C11) // intrinsics
 #  include <stdatomic.h>
+
 #  define TWS_ATOMIC_USE_C11
 #  define TWS_DECL_ATOMIC(x) _Atomic x
 #  define COMPILER_BARRIER() atomic_signal_fence(memory_order_seq_cst)
@@ -35,17 +46,31 @@
 #endif
 
 
-typedef int tws_Atomic;
+/* Native atomic type, wrapped in a struct to prevent accidental non-atomic access */
 
-// Native atomic type, wrapped in a struct to prevent accidental non-atomic access
-typedef struct NativeAtomic
+struct NativeAtomic
 {
     TWS_DECL_ATOMIC(tws_Atomic) val;
-} NativeAtomic;
+};
+typedef struct NativeAtomic NativeAtomic;
 
-typedef void* _VoidPtr;
+/* Wide atomic type to CAS two 32-bit values at the same time */
+union WideAtomic
+{
+    TWS_DECL_ATOMIC(tws_Atomic64) val;
+    tws_Atomic64 both; /* Non-volatile to avoid breaking compiler optimization */
+    struct
+    {
+        /* We don't care about endianness here.
+           This is intended as 2 atomics that can be CAS'd together, nothing more. */
+        tws_Atomic first, second;
+    } half;
+};
+typedef union WideAtomic WideAtomic;
+
+/*typedef void* _VoidPtr;
 typedef TWS_DECL_ATOMIC(_VoidPtr) AtomicPtrType;
-typedef TWS_DECL_ATOMIC(_VoidPtr) * AtomicPtrPtr;
+typedef TWS_DECL_ATOMIC(_VoidPtr) * AtomicPtrPtr;*/
 
 
 // --- Atomic access ---
@@ -63,16 +88,20 @@ TWS_PRIVATE tws_Atomic _AtomicInc_Acq(NativeAtomic *x);
 //TWS_PRIVATE tws_Atomic _AtomicInc_Rel(NativeAtomic *x);
 //TWS_PRIVATE tws_Atomic _AtomicDec_Acq(NativeAtomic *x);
 TWS_PRIVATE tws_Atomic _AtomicDec_Rel(NativeAtomic *x);
-TWS_PRIVATE int _AtomicCAS_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval);
+//TWS_PRIVATE int _AtomicCAS_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval);
 TWS_PRIVATE int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval);
 TWS_PRIVATE int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval);
 TWS_PRIVATE void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval);
 TWS_PRIVATE void _AtomicSet_Seq(NativeAtomic *x, tws_Atomic newval);
 TWS_PRIVATE tws_Atomic _AtomicExchange_Acq(NativeAtomic *x, tws_Atomic newval); // return previous
-TWS_PRIVATE tws_Atomic _AtomicGet_Seq(const NativeAtomic *x);
+//TWS_PRIVATE tws_Atomic _AtomicGet_Seq(const NativeAtomic *x);
 TWS_PRIVATE tws_Atomic _RelaxedGet(const NativeAtomic *x); // load with no synchronization or guarantees
-TWS_PRIVATE
-TWS_PRIVATE int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void **expected, void *newval);
+
+TWS_PRIVATE int _AtomicWideCAS_Weak_Acq(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval);
+TWS_PRIVATE int _AtomicWideCAS_Weak_Rel(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval);
+TWS_PRIVATE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x); // load with no synchronization or guarantees
+
+//TWS_PRIVATE int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void **expected, void *newval);
 
 // explicit memory fence
 TWS_PRIVATE void _Mfence(void);

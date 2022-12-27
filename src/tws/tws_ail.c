@@ -8,8 +8,7 @@ otherwise (idx-1) is used as offset into base to get the user ptr
 
 inline static unsigned ail_toidx(void *base, void *p)
 {
-    if(!p)
-        return 0;
+    TWS_ASSERT(base && p, "can't be NULL");
     TWS_ASSERT((char*)base <= (char*)p, "ptr must be ahead of base");
     /* can't happen since everything lives in a small, contiguous memory block */
     TWS_ASSERT((char*)p - (char*)base < (unsigned)(-2), "ptrdiff too large"); 
@@ -18,13 +17,71 @@ inline static unsigned ail_toidx(void *base, void *p)
 
 inline static void* ail_toptr(void *base, unsigned idx)
 {
-    return (void*)(idx ? (char*)base + (idx - 1) : NULL);
+    TWS_ASSERT(idx, "idx == 0 is invalid");
+    return (void*)((char*)base + (idx - 1));
 }
+
+#ifdef TWS_HAS_WIDE_ATOMICS
+
+
+TWS_PRIVATE void ail_init(AList* al)
+{
+    al->whead.val = 0;
+    _initSpinlock(&al->popLock);
+}
+
+TWS_PRIVATE void ail_deinit(AList* al)
+{
+}
+
+// returns NULL if list has no more elements
+TWS_PRIVATE void *ail_pop(AList *al, void *base)
+{
+    WideAtomic cur;
+    cur.both = _RelaxedWideGet(&al->whead);
+    for(;;)
+    {
+        if(TWS_UNLIKELY(!cur.half.first))
+            return NULL;
+        void *p = ail_toptr(base, cur.half.first);
+        WideAtomic next;
+        next.half.first = *(unsigned*)p;
+        next.half.second = (unsigned)cur.half.second;
+
+        /* There is no ABA problem because cur.both.second is incremented on every push(). */
+        if(_AtomicWideCAS_Weak_Acq(&al->whead, &cur.both, next.both))
+            return p;
+    }
+}
+
+TWS_PRIVATE void ail_push(AList *al, void *base, void *p)
+{
+    WideAtomic cur, next;
+    next.half.first = ail_toidx(base, p);
+    cur.both = _RelaxedWideGet(&al->whead);
+    for(;;)
+    {
+        /* Store current head */
+        *(unsigned*)p = cur.half.first; // We still own p; make it so that once the CAS succeeds everything is proper.
+        /* Prevent ABA problem */
+        next.half.second = (unsigned)cur.half.second + 1u; /* signed int overflow is UB, so make it unsigned */
+        /* Update new head to be current idx */
+        if(_AtomicWideCAS_Weak_Rel(&al->whead, &cur.both, next.both))
+            break;
+    }
+}
+
+#else
 
 TWS_PRIVATE void ail_init(AList* al)
 {
     al->head.val = 0;
     _initSpinlock(&al->popLock);
+}
+
+TWS_PRIVATE void ail_deinit(AList* al)
+{
+    _destroySpinlock(&al->popLock);
 }
 
 // returns NULL if list has no more elements
@@ -42,7 +99,6 @@ TWS_PRIVATE void *ail_pop(AList *al, void *base)
     // - Thread A finishes working on p, puts it back to head
     // - Thread B does the CAS, setting head to the corrupted next
     // So the CAS alone can't save us and we do need the lock to make the entire pop operation atomic.
-    // Fortunately popLock is only required right here, the other functions can stay lock-free.
 
     _atomicLock(&al->popLock);
     tws_Atomic idx = _RelaxedGet(&al->head);
@@ -67,9 +123,9 @@ TWS_PRIVATE void *ail_pop(AList *al, void *base)
 
 TWS_PRIVATE void ail_push(AList *al, void *base, void *p)
 {
+    const tws_Atomic idx = ail_toidx(base, p);
     _atomicLock(&al->popLock);
     tws_Atomic cur = _RelaxedGet(&al->head);
-    const tws_Atomic idx = ail_toidx(base, p);
     for(;;)
     {
         /* Store current head */
@@ -81,8 +137,6 @@ TWS_PRIVATE void ail_push(AList *al, void *base, void *p)
     _atomicUnlock(&al->popLock);
 }
 
-TWS_PRIVATE void ail_deinit(AList* al)
-{
-    _destroySpinlock(&al->popLock);
-}
+#endif /* TWS_HAS_WIDE_ATOMICS */
+
 
