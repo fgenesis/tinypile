@@ -12,18 +12,23 @@ Extra properties:
 #include "tws_atomic.h"
 #include "tws_priv.h"
 
+enum { ACA_EXTRA_ELEMS = 1 };
+
 typedef struct Aca
 {
-    Spinlock lock;
-    unsigned size;
-    unsigned ins; /* next position to insert into */
-    unsigned rd; /* next element to pop */
-    unsigned avail;
+#ifdef TWS_HAS_WIDE_ATOMICSx
+    WideAtomic rd; /* next element to pop */
+    WideAtomic ins; /* next position to insert into */
     /* Invariants:
       - ins == rd when empty
       - ins < size
       - rd < size
     */
+#else
+    Spinlock lock;
+    unsigned pos;
+#endif
+    unsigned size;
 } Aca;
 
 TWS_PRIVATE void aca_init(Aca *a, unsigned slots);

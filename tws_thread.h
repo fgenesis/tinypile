@@ -516,6 +516,198 @@ TWS_THREAD_EXPORT unsigned tws_getCPUCacheLineSize(void)
 #endif
 // --------------------------------------------------------
 
+
+// ========================================================
+
+// TODO: SDL atomics
+
+
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && !defined(__STDC_NO_ATOMICS__)
+#  include <stdatomic.h>
+#  define TWS_ATOMIC_USE_C11
+typedef atomic_int _tws_AtomicIntType;
+typedef int _tws_IntType;
+#elif defined(_MSC_VER) // intrinsics
+#  include <intrin.h>
+#  define TWS_ATOMIC_USE_MSVC
+typedef volatile long _tws_AtomicIntType;
+typedef long _tws_IntType;
+#elif defined(__cplusplus) && ((__cplusplus+0) >= 201103L)
+#  include <atomic>
+#  define TWS_ATOMIC_USE_CPP11
+typedef std::atomic_int _tws_AtomicIntType;
+typedef int _tws_IntType;
+#elif defined(SDL_VERSION_ATLEAST) && SDL_VERSION_ATLEAST(2,0,0)
+/* SDL atomics aren't all that great, use those only as a last resort */
+#  include <SDL_atomic.h>
+#  define TWS_ATOMIC_USE_SDL2
+typedef SDL_atomic_t _tws_AtomicIntType;
+typedef int _tws_IntType;
+#endif
+
+struct tws_AtomicInt
+{
+    _tws_AtomicIntType a_val;
+};
+typedef struct tws_AtomicInt tws_AtomicInt;
+
+#ifdef TWS_ATOMIC_USE_C11
+inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval) { return atomic_compare_exchange_weak_explicit(&x->a_val, expected, newval, memory_order_acquire, memory_order_acquire); }
+inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval) { return atomic_compare_exchange_weak_explicit(&x->a_val, expected, newval, memory_order_release, memory_order_consume); }
+inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x) { return atomic_load_explicit(&x->a_val, memory_order_relaxed); }
+inline static _tws_IntType tws_atomicAdd_Acq(tws_AtomicInt *x, _tws_IntType v)
+{
+    return atomic_fetch_add_explicit(&x->a_val, v, memory_order_acquire);
+}
+inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
+{
+    return x->a_val.fetch_add(&x->a_val, v, memory_order_release);
+}
+#endif
+
+#ifdef TWS_ATOMIC_USE_MSVC
+#pragma intrinsic(_InterlockedCompareExchange)
+#pragma intrinsic(_InterlockedExchangeAdd)
+//#pragma intrinsic(_InterlockedCompareExchange_acq) // TODO
+//#pragma intrinsic(_InterlockedCompareExchange_rel)
+inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+{
+    const _tws_IntType expectedVal = *expected;
+    _tws_IntType prevVal = _InterlockedCompareExchange(&x->a_val, newval, expectedVal);
+    if(prevVal == expectedVal)
+        return 1;
+
+    *expected = prevVal;
+    return 0;
+}
+inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, int *expected, int newval)
+{
+    const int expectedVal = *expected;
+    int prevVal = _InterlockedCompareExchange(&x->a_val, newval, expectedVal);
+    if(prevVal == expectedVal)
+        return 1;
+
+    *expected = prevVal;
+    return 0;
+}
+inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x) { return x->a_val; }
+/* Add returns original value */
+inline static _tws_IntType tws_atomicAdd_Acq(tws_AtomicInt *x, _tws_IntType v)
+{
+    return _InterlockedExchangeAdd(&x->a_val, v);
+}
+inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
+{
+    return _InterlockedExchangeAdd(&x->a_val, v);
+}
+#endif
+
+#ifdef TWS_ATOMIC_USE_CPP11
+inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+{
+    return x->a_val.compare_exchange_weak(*expected, newval, std::memory_order_acquire, std::memory_order_acquire);
+}
+inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+{
+    return x->a_val.compare_exchange_weak(*expected, newval, std::memory_order_release, std::memory_order_consume);
+}
+inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x)
+{
+    return x->a_val.load(std::std::memory_order_relaxed);
+}
+inline static _tws_IntType tws_atomicAdd_Acq(tws_AtomicInt *x, _tws_IntType v)
+{
+    return x->a_val.fetch_add(v, std::memory_order_acquire);
+}
+inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
+{
+    return x->a_val.fetch_add(v, std::memory_order_release);
+}
+#endif
+
+#ifdef TWS_ATOMIC_USE_SDL2
+inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+{
+    int ok = SDL_AtomicCAS(&x->a_val, *expected, newval);
+    if(!ok)
+        *expected = SDL_AtomicGet(&x->a_val);
+    return ok;
+}
+inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+{
+    int ok = SDL_AtomicCAS(&x->a_val, *expected, newval);
+    if(!ok)
+        *expected = SDL_AtomicGet(&x->a_val);
+    return ok;
+}
+inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x)
+{
+    SDL_CompilerBarrier();
+    _tws_IntType ret = x->a_val.value;
+    SDL_CompilerBarrier();
+    return ret;
+}
+inline static _tws_IntType tws_atomicAdd_Acq(tws_AtomicInt *x, _tws_IntType v)
+{
+    return SDL_atomicAdd(&x->a_val, v);
+}
+inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
+{
+    return SDL_atomicAdd(&x->a_val, v);
+}
+#endif
+
+
+
+/* Adapted from https://github.com/preshing/cpp11-on-multicore/blob/master/common/sema.h */
+struct tws_LWsem
+{
+    tws_AtomicInt a_count;
+    tws_Sem *sem;
+};
+typedef struct tws_LWsem tws_LWsem;
+
+
+static void *tws_lwsem_init(tws_LWsem *ws, int count)
+{
+    ws->a_count.a_val = count;
+    return ((ws->sem = tws_sem_create()));
+}
+
+static void tws_lwsem_destroy(tws_LWsem *ws)
+{
+    tws_sem_destroy(ws->sem);
+}
+
+static void tws_lwsem_acquire(tws_LWsem *ws)
+{
+    _tws_IntType old = tws_relaxedGet(&ws->a_count);
+
+    unsigned spin = 100;
+    do
+    {
+        if (old > 0 && tws_atomicWeakCAS_Acq(&ws->a_count, &old, old - 1))
+            return;
+        tws_yieldCPU(0);
+    }
+    while(--spin);
+    /* Failed to acquire after trying; wait via OS-semaphore */
+    old = tws_atomicAdd_Acq(&ws->a_count, -1) + 1;
+    if (old <= 0)
+        tws_sem_acquire(ws->sem);
+}
+
+static void tws_lwsem_release(tws_LWsem *ws, unsigned n)
+{
+    const _tws_IntType old = tws_atomicAdd_Rel(&ws->a_count, n) - n;
+    int toRelease = -old < 1 ? -old : 1;
+    while(toRelease > 0)
+    {
+        tws_sem_release(ws->sem);
+        --toRelease;
+    }
+}
+
 #endif /* TWS_BACKEND_IMPLEMENTATION */
 
 

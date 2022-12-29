@@ -10,18 +10,17 @@
 #define TWS_THREAD_IMPLEMENTATION
 #include "tws_thread.h"
 
-static char mem[4096];
+static char mem[409600];
 static tws_Pool *gpool;
 
-static tws_Sem *sem;
+static tws_LWsem sem;
 static volatile int quit;
 
 
 static void ready(void *ud, unsigned channel, unsigned num)
 {
     //puts("ready");
-    for(unsigned i = 0; i < num; ++i) // FIXME: shiiit
-        tws_sem_release(sem);
+    tws_lwsem_release(&sem, num);
 }
 
 static int fallback0(tws_Pool *pool, void *ud)
@@ -36,7 +35,7 @@ static void work(tws_Pool *pool, const tws_JobData *data)
 
     if(!data->ext.size)
     {
-        enum { N = 10 };
+        enum { N = 100 };
         tws_JobDesc d[N];
         for(unsigned i = 0; i < N; ++i)
         {
@@ -44,7 +43,7 @@ static void work(tws_Pool *pool, const tws_JobData *data)
             d[i].data.ext.ptr = data->ext.ptr;
             d[i].data.ext.size = i+1;
             d[i].channel = i & 1;
-            d[i].next = 1;
+            d[i].next = (i >> 2) & 1;
         }
         d[N-1].next = 0;
         d[N-1].channel = 1;
@@ -63,9 +62,11 @@ static void thrun(void *ud)
     //printf("spawned th\n");
     while(!quit)
     {
-        while(tws_run(gpool, 1) || tws_run(gpool, 0)) {}
+        //while(tws_run(gpool, 1) || tws_run(gpool, 0)) {}
+        tws_run(gpool, 1);
+        tws_run(gpool, 0);
         //printf("sleep th %d\n", GetCurrentThreadId());
-        tws_sem_acquire(sem);
+        tws_lwsem_acquire(&sem);
         //printf("wakeup th %d\n", GetCurrentThreadId());
     }
     //printf("exiting th\n");
@@ -75,41 +76,49 @@ int main(int argc, char **argv)
 {
     //printf("main th %d\n", GetCurrentThreadId());
 
-    enum { NTH = 1 };
+    enum { NTH = 8 };
     tws_Thread *th[NTH];
+
+    tws_lwsem_init(&sem, 0);
 
     for(unsigned r = 0; ; ++r)
     {
+        quit = 0;
         gpool = tws_init(mem, sizeof(mem), 2, 64, &cb, NULL);
         const tws_PoolInfo *info = tws_info(gpool);
         printf("[%u] space for %u jobs\n", r, info->maxjobs);
 
-        sem = tws_sem_create();
+        
         for(size_t i = 0; i < NTH; ++i)
         {
             char name[3] = { 'w', '0' + i, 0 };
             th[i] = tws_thread_create(thrun, name, NULL);
         }
 
-        const unsigned N = 100000;
-        for(unsigned i = 0; i < N; ++i)
+        for(;;)
         {
-            tws_JobDesc d = { work, i, 0, 0, 0 };
-            tws_WorkTmp tmp[1];
-            tws_submit(gpool, &d, tmp, 1, fallback0, NULL);
+            printf("[%u] ...\n", r);
+            const unsigned N = 10000;
+            for(unsigned i = 0; i < N; ++i)
+            {
+                tws_JobDesc d = { work, i, 0, 0, 0 };
+                tws_WorkTmp tmp[1];
+                tws_submit(gpool, &d, tmp, 1, fallback0, NULL);
+            }
+            while(tws_run(gpool, 0) || tws_run(gpool, 1)) {};
+            ++r;
         }
-        while(tws_run(gpool, 0) || tws_run(gpool, 1)) {};
 
         quit = 1;
 
-        for(size_t i = 0; i < NTH; ++i)
-            tws_sem_release(sem);
+        tws_lwsem_release(&sem, NTH);
         for(size_t i = 0; i < NTH; ++i)
             tws_thread_join(th[i]);
 
-        tws_sem_destroy(sem);
         tws_deinit_DEBUG(gpool, sizeof(mem));
     }
+
+    tws_lwsem_destroy(&sem);
 
     return 0;
 }

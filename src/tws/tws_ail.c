@@ -1,26 +1,22 @@
 #include "tws_ail.h"
 #include "tws_priv.h"
 
-/* Convention:
-idx == 0 is invalid / termination
-otherwise (idx-1) is used as offset into base to get the user ptr
-*/
-
 inline static unsigned ail_toidx(void *base, void *p)
 {
     TWS_ASSERT(base && p, "can't be NULL");
-    TWS_ASSERT((char*)base <= (char*)p, "ptr must be ahead of base");
+    TWS_ASSERT((char*)base < (char*)p, "ptr must be ahead of base");
     /* can't happen since everything lives in a small, contiguous memory block */
     TWS_ASSERT((char*)p - (char*)base < (unsigned)(-2), "ptrdiff too large"); 
-    return (unsigned)((char*)p - (char*)base) + 1;
+    return (unsigned)((char*)p - (char*)base);
 }
 
 inline static void* ail_toptr(void *base, unsigned idx)
 {
     TWS_ASSERT(idx, "idx == 0 is invalid");
-    return (void*)((char*)base + (idx - 1));
+    return (void*)((char*)base + idx);
 }
 
+/* --------------------------------------- */
 #ifdef TWS_HAS_WIDE_ATOMICS
 
 
@@ -53,15 +49,16 @@ TWS_PRIVATE void *ail_pop(AList *al, void *base)
     }
 }
 
-TWS_PRIVATE void ail_push(AList *al, void *base, void *p)
+/* caller owns p until the CAS succeeds */
+static void _ail_link(AList *al, unsigned idx, void *p)
 {
     WideAtomic cur, next;
-    next.half.first = ail_toidx(base, p);
+    next.half.first = idx;
     cur.both = _RelaxedWideGet(&al->whead);
     for(;;)
     {
         /* Store current head */
-        *(unsigned*)p = cur.half.first; // We still own p; make it so that once the CAS succeeds everything is proper.
+        *(unsigned*)p = cur.half.first;
         /* Prevent ABA problem */
         next.half.second = (unsigned)cur.half.second + 1u; /* signed int overflow is UB, so make it unsigned */
         /* Update new head to be current idx */
@@ -70,6 +67,24 @@ TWS_PRIVATE void ail_push(AList *al, void *base, void *p)
     }
 }
 
+TWS_PRIVATE void ail_push(AList *al, void *base, void *p)
+{
+    _ail_link(al, ail_toidx(base, p), p);
+}
+
+TWS_PRIVATE void ail_pushNonAtomic(AList *al, void *base, void *p)
+{
+    unsigned newidx = ail_toidx(base, p);
+    *(unsigned*)p = al->whead.half.first;
+    al->whead.half.first = newidx;
+}
+
+TWS_PRIVATE void ail_merge(AList *al, AList *other, void *tail)
+{
+    _ail_link(al, other->whead.half.first, tail);
+}
+
+/* --------------------------------------- */
 #else
 
 TWS_PRIVATE void ail_init(AList* al)

@@ -43,7 +43,7 @@ Inspired by / reading material:
 
 /* Max. channels accepted by tws_init() & tws_size(). Used to bound a stack array. */
 #ifndef TWS_MAX_CHANNELS
-#  define TWS_MAX_CHANNELS 32
+#  define TWS_MAX_CHANNELS 16
 #endif
 
 /* --- End compile config --- */
@@ -177,6 +177,9 @@ TWS_EXPORT int tws_run(tws_Pool *pool, unsigned channel);
 
 /* NOT needed to be called. This is mainly for correctness checking with valgrind */
 TWS_EXPORT void tws_deinit_DEBUG(tws_Pool *pool, size_t memsize);
+
+
+TWS_EXPORT void tws_yieldCPU(unsigned n);
 
 #ifdef __cplusplus
 } /* end extern C */

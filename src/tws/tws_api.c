@@ -47,7 +47,7 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
 
     pool->jobsArrayOffset = p - (uintptr_t)pool;
 
-    const size_t extraslots = 1; /* This is the one extra slot that the Aca needs to be larger than the number of jobs */
+    const size_t extraslots = ACA_EXTRA_ELEMS; /* This is the one extra slot that the Aca needs to be larger than the number of jobs */
 
     size_t jobspace = end - p;
     if(jobspace < (sizeof(tws_Job) + sizeof(unsigned) + (extraslots * sizeof(unsigned))))
@@ -114,4 +114,12 @@ TWS_EXPORT void tws_deinit_DEBUG(tws_Pool *pool, size_t memsize)
     aca_deinit(&pool->freeslots);
 
     VALGRIND_MAKE_MEM_UNDEFINED(pool, memsize);
+}
+
+TWS_EXPORT void tws_yieldCPU(unsigned n)
+{
+    ++n;
+    do
+        _Yield();
+    while(--n);
 }

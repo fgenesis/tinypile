@@ -6,6 +6,10 @@
 #define TWS_PRIVATE
 #endif
 
+#ifndef TWS_PRIVATE_INLINE
+#define TWS_PRIVATE_INLINE
+#endif
+
 // --- Compiler feature detection ---
 
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L)

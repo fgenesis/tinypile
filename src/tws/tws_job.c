@@ -1,5 +1,10 @@
 #include "tws_job.h"
 
+/* Since everything is contained in one block, the pool ptr is a good a base to pick as any.
+   With this we don't even have to calculate a proper offset.
+   The AIL doesn't care what base is, as long as it's consistent and all pointers are > base */
+#define AILBASE ((void*)pool)
+
 
 static size_t allocJobs(tws_WorkTmp *dst, tws_Pool *pool, size_t minn, size_t maxn)
 {
@@ -26,7 +31,7 @@ static void enqueueWithoutCallback(tws_Pool *pool, tws_Job *job, unsigned channe
     const tws_Func func = job->func;
     TWS_ASSERT((uintptr_t)func > 10, "he");
     tws_ChannelHead *ch = channelHead(pool, channel);
-    ail_push(&ch->list, jobArrayBase(pool), job); /* this trashes job->u */
+    ail_push(&ch->list, AILBASE, job); /* this trashes job->u */
 }
 
 /* Enqueue job as ready & notify ready callback */
@@ -42,7 +47,7 @@ static void enqueue(tws_Pool *pool, tws_Job *job)
 TWS_PRIVATE tws_Job *dequeue(tws_Pool *pool, unsigned channel)
 {
     tws_ChannelHead *ch = channelHead(pool, channel);
-    return (tws_Job*)ail_pop(&ch->list, jobArrayBase(pool));
+    return (tws_Job*)ail_pop(&ch->list, AILBASE);
 }
 
 /* Called by other jobs as they finish, to ready their followup if they have one */
@@ -210,9 +215,27 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
 
     TWS_ASSERT(nready, "must ready at least 1 job per submit() call");
 
+    /* Only a single job to ready? Speed things up a little. */
+    if(nready == 1)
+    {
+        tws_Job *job = &jobbase[tmp[0]];
+        const unsigned channel = job->u.waiting.channel;
+        enqueueWithoutCallback(pool, job, channel);
+        if(pool->cb && pool->cb->ready)
+            pool->cb->ready(pool->callbackUD, channel, 1);
+        return k;
+    }
+
     unsigned toReady[TWS_MAX_CHANNELS];
-    for(unsigned i = 0; i < pool->info.maxchannels; ++i)
-        toReady[i] = 0;
+    AList accu[TWS_MAX_CHANNELS];
+    tws_Job *first[TWS_MAX_CHANNELS];
+    const unsigned maxch = pool->info.maxchannels;
+    for(unsigned c = 0; c < maxch; ++c)
+    {
+        toReady[c] = 0;
+        first[c] = NULL;
+        ail_init(&accu[c]);
+    }
 
     /* At this point, all jobs are fully inited. Can finally launch those without deps */
     for(size_t i = 0; i < nready; ++i)
@@ -220,13 +243,19 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
         tws_Job *job = &jobbase[tmp[i]];
         unsigned channel = job->u.waiting.channel;
         ++toReady[channel];
-        enqueueWithoutCallback(pool, job, channel);
+        if(!first[channel])
+            first[channel] = job;
+        ail_pushNonAtomic(&accu[channel], AILBASE, job);
     }
 
+    for(unsigned c = 0; c < maxch; ++c)
+        if(first[c])
+            ail_merge(&channelHead(pool, c)->list, &accu[c], first[c]);
+
     if(pool->cb && pool->cb->ready)
-        for(unsigned i = 0; i < pool->info.maxchannels; ++i)
-            if(toReady[i])
-                pool->cb->ready(pool->callbackUD, i, toReady[i]);
+        for(unsigned c = 0; c < maxch; ++c)
+            if(toReady[c])
+                pool->cb->ready(pool->callbackUD, c, toReady[c]);
 
     // TODO/IDEA: return only as many jobs as directly started
     // that could allow to add a flag to not ready jobs right away
