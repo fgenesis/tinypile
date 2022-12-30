@@ -1,7 +1,7 @@
 #include "tws_job.h"
 
 /* Since everything is contained in one block, the pool ptr is a good a base to pick as any.
-   With this we don't even have to calculate a proper offset.
+   With this we don't even have to calculate a proper offset for the actual start of the jobs array.
    The AIL doesn't care what base is, as long as it's consistent and all pointers are > base */
 #define AILBASE ((void*)pool)
 
@@ -17,9 +17,7 @@ static void recycleJob(tws_Pool *pool, tws_Job *job)
 {
     unsigned *base = jobSlotsBase(pool);
     unsigned idx = jobToIndex(pool, job);
-    VALGRIND_HG_CLEAN_MEMORY(job, sizeof(*job));
-    //VALGRIND_MAKE_MEM_UNDEFINED(job, sizeof(*job));
-    job->func = NULL; // DEBUG
+    VALGRIND_MAKE_MEM_UNDEFINED(job, sizeof(*job));
     aca_push(&pool->freeslots, base, idx);
     if(pool->cb.recycled)
         pool->cb.recycled(pool->cb.ud, 1);
@@ -59,11 +57,10 @@ TWS_PRIVATE tws_Job *dequeue(tws_Pool *pool, unsigned channel)
 /* Called by other jobs as they finish, to ready their followup if they have one */
 static void tryToReady(tws_Pool *pool, tws_Job *job, unsigned mychannel)
 {
-    TWS_ASSERT(job->u.waiting.a_remain.val > 0, "huh");
     const tws_Func func = job->func;
-    TWS_ASSERT((uintptr_t)func > 10, "he");
+    TWS_ASSERT(func, "dead job");
     int remain = _AtomicDec_Rel(&job->u.waiting.a_remain);
-    TWS_ASSERT(remain >= 0, "should never < 0");
+    TWS_ASSERT(remain >= 0, "job readied more than once");
     if(!remain)
     {
         if(job->u.waiting.channel == mychannel)
@@ -77,8 +74,10 @@ TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job, unsigned mychannel)
 {
     /* save some things. Note that job->u has been trashed. */
     const tws_Func func = job->func;
-    TWS_ASSERT((uintptr_t)func > 10, "he");
-    job->func = (tws_Func)(uintptr_t)1; // DEBUG
+    TWS_ASSERT(func, "dead job");
+#ifndef NDEBUG
+    job->func = NULL;
+#endif
     const unsigned followupIdx = job->followupIdx;
     const tws_JobData data = job->data;
     /* At this point we have everything we need -- recycle the job early to reduce pressure */
@@ -172,7 +171,6 @@ TWS_PRIVATE size_t prepare(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp*
         const unsigned jobidx = tmp[i];
         TWS_ASSERT(jobidx, "must be > 0");
         tws_Job *job = &jobbase[jobidx];
-        TWS_ASSERT(!job->func, "dirty job"); // DEBUG
         job->u.waiting.a_remain.val = 0;
     }
 
@@ -183,8 +181,9 @@ TWS_PRIVATE size_t prepare(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp*
         const unsigned jobidx = tmp[i];
         tws_Job *job = &jobbase[jobidx];
 
-        tmp[i] = 0; // DEBUG
-
+#ifndef NDEBUG
+        tmp[i] = 0;
+#endif
         TWS_ASSERT(desc->channel < pool->info.maxchannels, "channel out of range");
 
         job->func = desc->func;

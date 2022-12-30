@@ -20,6 +20,7 @@ fi
 
 echo Using $lua
 
+$lua dep/amalg.lua src/tws
 $lua dep/amalg.lua src/tio
 $lua dep/amalg.lua src/tio_vfs
 $lua dep/amalg.lua src/tio_zip

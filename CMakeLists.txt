@@ -116,6 +116,14 @@ add_custom_target(amalgscript
     DEPENDS runlua dep/amalg.lua
 )
 
+set(TWS_C "${REPO_ROOT}/tws.c")
+add_custom_command(
+    OUTPUT "${TWS_C}"
+    DEPENDS amalgscript tws
+    COMMAND runlua ARGS dep/amalg.lua src/tws
+    WORKING_DIRECTORY "${REPO_ROOT}"
+)
+
 set(TIO_CPP "${REPO_ROOT}/tio.cpp")
 add_custom_command(
     OUTPUT "${TIO_CPP}"
@@ -144,10 +152,11 @@ add_custom_command(
 # All amalgamations under one common name
 # So we can do 'make amalg' and it will do the right thing
 add_custom_target(amalg
-    DEPENDS "${TIO_CPP}" "${TIO_VFS_CPP}" "${TIO_ZIP_CPP}"
+    DEPENDS "${TWS_C}" "${TIO_CPP}" "${TIO_VFS_CPP}" "${TIO_ZIP_CPP}"
 )
 
 add_library(amalg_build_test
+	"${TWS_C}" tws.h
 	"${TIO_CPP}" tio.h
 	"${TIO_VFS_CPP}" tio_vfs.h
 	"${TIO_ZIP_WITH_MINIZ_CPP}" tio_zip.h
@@ -159,6 +168,7 @@ if(AMALGAMATE_NOLIBC_TEST)
     # Build dynamic library with all libs to check for accidental imports and deps
     add_library(amalg_build_test_nolibc MODULE
         src/dummy.c
+        "${TWS_C}" tws.h
 		"${TIO_CPP}" tio.h
 		#"${TIO_VFS_CPP}" tio_vfs.h
 		"${TIO_ZIP_WITH_MINIZ_CPP}" tio_zip.h

@@ -20,24 +20,12 @@
 #  define TWS_HAS_C11
 #endif
 
-#if defined(__cplusplus) && (__cplusplus >= 201103L)
+#if defined(__cplusplus) && ((__cplusplus+0) >= 201103L)
 #  define TWS_HAS_CPP11
 #endif
 
-/*
-#if defined(TWS_HAS_C99)
-#  include <stdint.h>
-#  define TWS_HAS_S64_TYPE
-typedef int64_t s64;
-#endif
-*/
-
 #if defined(_MSC_VER)
 #  define TWS_HAS_MSVC
-/*#  ifndef TWS_HAS_S64_TYPE
-typedef __int64 s64;
-#    define TWS_HAS_S64_TYPE
-#  endif*/
 #  ifdef _Ret_notnull_
 #    define TWS_NOTNULL _Ret_notnull_
 #  endif
@@ -64,15 +52,13 @@ typedef __int64 s64;
 #ifndef TWS_ASSERT
 #  ifdef TWS_DEBUG
 #    include <assert.h>
-#ifdef _MSC_VER
-#define TWS_ASSERT(x, desc) do { if(!(x)) __debugbreak(); assert((x) && desc); } while(0)
-#else
-#    define TWS_ASSERT(x, desc) assert((x) && desc)
-#endif
+#    ifdef _MSC_VER
+#      define TWS_ASSERT(x, desc) do { if(!(x)) __debugbreak(); assert((x) && desc); } while(0)
+#    else
+#      define TWS_ASSERT(x, desc) assert((x) && desc)
+#    endif
 #  endif
 #endif
-
-
 
 #ifdef TWS_HAS_C11
 #  define TWS_STATIC_ASSERT(x) _Static_assert(x, #x)
@@ -113,17 +99,7 @@ typedef __int64 s64;
 #endif
 
 #if ENABLE_VALGRIND+0
-#include <valgrind/helgrind.h>
 #include <valgrind/memcheck.h>
 #else
-#define VALGRIND_HG_CLEAN_MEMORY(begin, size)
-#define VALGRIND_HG_MUTEX_INIT_POST(mutex, rec)
-#define VALGRIND_HG_MUTEX_LOCK_PRE(mutex, istry)
-#define VALGRIND_HG_MUTEX_LOCK_POST(mutex)
-#define VALGRIND_HG_MUTEX_UNLOCK_PRE(mutex)
-#define VALGRIND_HG_MUTEX_UNLOCK_POST(mutex)
-#define VALGRIND_HG_MUTEX_DESTROY_PRE(mutex)
-#define VALGRIND_HG_DISABLE_CHECKING(begin, size)
-#define VALGRIND_HG_ENABLE_CHECKING(begin, size)
 #define VALGRIND_MAKE_MEM_UNDEFINED(addr, len)
 #endif

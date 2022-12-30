@@ -125,7 +125,9 @@ TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned mi
             --idx;
             TWS_ASSERT(base[idx] != (unsigned)-1, "already used");
             dst[done++] = base[idx];
+#ifndef NDEBUG
             base[idx] = (unsigned)-1;
+#endif
         }
         while(idx && done < maxn);
         a->pos = idx;

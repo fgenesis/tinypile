@@ -13,6 +13,7 @@ TWS_EXPORT const tws_PoolInfo* tws_info(const tws_Pool* pool)
     return &pool->info;
 }
 
+/* Unfortunatly, manually layouting the pool is a bit ugly, but there's nothing to be done about that */
 TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, size_t cacheLineSize, const tws_PoolCallbacks *cb)
 {
     if(!numChannels || numChannels >= TWS_MAX_CHANNELS)
@@ -20,7 +21,10 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
 
     const uintptr_t end = (uintptr_t)mem + memsz;
 
+    /* User can pass 0 to get the most compact layout (at the cost of speed),
+       but anything that's not power-of-2 is probably very wrong */
     cacheLineSize = AlignUp(cacheLineSize, TWS_MIN_ALIGN);
+    TWS_ASSERT(IsPowerOfTwo(cacheLineSize), "Warning: Weird cache line size. You know what you're doing?");
 
     tws_Pool * const pool = (tws_Pool*)mem;
     pool->info.maxchannels = numChannels;
@@ -47,13 +51,11 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
 
     pool->jobsArrayOffset = p - (uintptr_t)pool;
 
-    const size_t extraslots = ACA_EXTRA_ELEMS; /* This is the one extra slot that the Aca needs to be larger than the number of jobs */
-
     size_t jobspace = end - p;
-    if(jobspace < (sizeof(tws_Job) + sizeof(unsigned) + (extraslots * sizeof(unsigned))))
+    if(jobspace < (sizeof(tws_Job) + sizeof(unsigned) + (ACA_EXTRA_ELEMS * sizeof(unsigned))))
         return NULL;
 
-    jobspace -= extraslots * sizeof(unsigned);
+    jobspace -= ACA_EXTRA_ELEMS * sizeof(unsigned);
 
 
     const size_t numjobs = jobspace / (sizeof(tws_Job) + sizeof(unsigned));
@@ -61,10 +63,6 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
         return NULL;
 
     const size_t jobsArraySizeBytes = numjobs * sizeof(tws_Job);
-    for(size_t i = 0; i < numjobs; ++i)
-    {
-        ((tws_Job*)p)[i].func = NULL; // DEBUG
-    }
     p += jobsArraySizeBytes;
 
     aca_init(&pool->freeslots, numjobs); /* This knows that there is 1 extra slot */
@@ -74,9 +72,11 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     unsigned *base = (unsigned*)p;
     for(size_t i = 0; i < numjobs; ++i)
         base[i] = i+1; /* Job index of 0 is invalid */
+#ifndef NDEBUG
     base[numjobs] = (unsigned)(-2);
+#endif
 
-    TWS_ASSERT(p + (numjobs + extraslots) * sizeof(unsigned) <= end, "stomped memory");
+    TWS_ASSERT(p + (numjobs + ACA_EXTRA_ELEMS) * sizeof(unsigned) <= end, "stomped memory");
 
     pool->info.maxjobs = numjobs;
 

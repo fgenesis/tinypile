@@ -1,0 +1,28 @@
+= tws.c
+- #include "tws_priv.h"
+- #include "tws_defs.h"
+- #include "tws_aca.h"
+- #include "tws_ail.h"
+- #include "tws_atomic.h"
+- #include "tws_job.h"
+- #include "tws.h"
+- #pragma once
+: /* !! This is an amalgamated file, don't modify directly! */
+: #include "tws.h"
+:
+: /* -- Begin amalg config -- added by amalg.lua -- */
+: #define TWS_PRIVATE static
+: #define TWS_PRIVATE_INLINE static inline
+: /* -- End amalg config -- */
+:
+< tws_defs.h
+< tws_atomic.h
+< tws_priv.h
+< tws_atomic.c
+< tws_ail.h
+< tws_ail.c
+< tws_aca.h
+< tws_aca.c
+< tws_job.h
+< tws_job.c
+< tws_api.c
