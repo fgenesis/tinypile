@@ -25,10 +25,6 @@ TWS_PRIVATE void ail_init(AList* al)
     al->whead.val = 0;
 }
 
-TWS_PRIVATE void ail_deinit(AList* al)
-{
-}
-
 // returns NULL if list has no more elements
 TWS_PRIVATE void *ail_pop(AList *al, void *base)
 {
@@ -91,11 +87,6 @@ TWS_PRIVATE void ail_init(AList* al)
 {
     al->head.val = 0;
     _initSpinlock(&al->popLock);
-}
-
-TWS_PRIVATE void ail_deinit(AList* al)
-{
-    _destroySpinlock(&al->popLock);
 }
 
 // returns NULL if list has no more elements

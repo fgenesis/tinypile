@@ -28,8 +28,7 @@ static void enqueueWithoutCallback(tws_Pool *pool, tws_Job *job, unsigned channe
 {
     TWS_ASSERT(job->u.waiting.a_remain.val == 0, "too early to enqueue");
     TWS_ASSERT(job->u.waiting.channel == channel, "channel mismatch");
-    const tws_Func func = job->func;
-    TWS_ASSERT((uintptr_t)func > 10, "he");
+    TWS_ASSERT((uintptr_t)(job->func) > 10, "he");
     tws_ChannelHead *ch = channelHead(pool, channel);
     ail_push(&ch->list, AILBASE, job); /* this trashes job->u */
 }
@@ -83,7 +82,8 @@ TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job, unsigned mychannel)
         tryToReady(pool, jobByIndex(pool, followupIdx), mychannel);
 }
 
-TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* tmp, size_t n, tws_Fallback fallback, void *fallbackUD, SubmitFlags flags)
+/* Returns how many job indices are waiting in tmp[0..] to be submitted */
+TWS_PRIVATE size_t prepare(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* tmp, size_t n, tws_Fallback fallback, void *fallbackUD, SubmitFlags flags)
 {
     /* Preconds:
        - jobs[a] may only start jobs[b] as followup if a < b
@@ -140,7 +140,7 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
                 ++w;
                 ++k;
                 if(w == n)
-                    return n; /* Everything exec'd locally. Done here. */
+                    return 0; /* Everything exec'd locally. Done here. */
                 if(k == n)
                     break;
 
@@ -200,32 +200,36 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
 
         if(!job->u.waiting.a_remain.val) /* Do we have any prereqs that must run first? */
         {
-            /* Not a followup of any other job. */
-
+            /* Not a followup of any other job. Mark as ready. */
             TWS_ASSERT(tmp[nready] == 0, "should be unused slot");
             tmp[nready++] = jobidx; /* Record as ready to launch */
-            /* Do NOT launch just yet! Need to init the other jobs first.
-               If we have a followup, that is not inited yet,
-               and it would be bad if this job went ahead and started accessing its followup */
-
-            /* TODO/PERF: Could build a chain of jobs and pre-link them,
-               then push the entire linked chain at once (per-channel) */
         }
     }
 
     TWS_ASSERT(nready, "must ready at least 1 job per submit() call");
+    return nready;
+}
+
+TWS_PRIVATE void submitPrepared(tws_Pool* pool, const tws_WorkTmp* tmp, size_t nready)
+{
+    TWS_ASSERT(nready, "should have ready jobs to submit");
+
+    /* Index can't be 0, so to use job idx as an offset into the array, offset the array. */
+    tws_Job * const jobbase = (tws_Job*)(((char*)pool) + pool->jobsArrayOffset) - 1;
 
     /* Only a single job to ready? Speed things up a little. */
     if(nready == 1)
     {
+        TWS_ASSERT(tmp[0], "jobidx must be > 0");
         tws_Job *job = &jobbase[tmp[0]];
         const unsigned channel = job->u.waiting.channel;
         enqueueWithoutCallback(pool, job, channel);
         if(pool->cb && pool->cb->ready)
             pool->cb->ready(pool->callbackUD, channel, 1);
-        return k;
+        return;
     }
 
+    /* Temporary storage to get things rolling */
     unsigned toReady[TWS_MAX_CHANNELS];
     AList accu[TWS_MAX_CHANNELS];
     tws_Job *first[TWS_MAX_CHANNELS];
@@ -237,9 +241,10 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
         ail_init(&accu[c]);
     }
 
-    /* At this point, all jobs are fully inited. Can finally launch those without deps */
+    /* Put all ready jobs into a local AIL. */
     for(size_t i = 0; i < nready; ++i)
     {
+        TWS_ASSERT(tmp[i], "jobidx must be > 0");
         tws_Job *job = &jobbase[tmp[i]];
         unsigned channel = job->u.waiting.channel;
         ++toReady[channel];
@@ -248,18 +253,15 @@ TWS_PRIVATE size_t submit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* 
         ail_pushNonAtomic(&accu[channel], AILBASE, job);
     }
 
+    /* Atomically link all used local AILs into the channel AILs.
+       This way, we need only as many atomic CAS as there are channels in use for this batch */
     for(unsigned c = 0; c < maxch; ++c)
         if(first[c])
             ail_merge(&channelHead(pool, c)->list, &accu[c], first[c]);
 
+    /* Now that everything is ready, run callbacks */
     if(pool->cb && pool->cb->ready)
         for(unsigned c = 0; c < maxch; ++c)
             if(toReady[c])
                 pool->cb->ready(pool->callbackUD, c, toReady[c]);
-
-    // TODO/IDEA: return only as many jobs as directly started
-    // that could allow to add a flag to not ready jobs right away
-    // and instead use the tmp[0..nready] array for a later launch?
-    // need to move toReady though
-    return k;
 }

@@ -86,14 +86,21 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
 
 TWS_EXPORT void tws_submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Fallback fallback, void *fallbackUD)
 {
-    size_t done = submit(pool, jobs, tmp, n, fallback, fallbackUD, SUBMIT_CAN_EXEC);
-    TWS_ASSERT(done == n, "must always submit as many jobs as requested");
+    size_t nready = prepare(pool, jobs, tmp, n, fallback, fallbackUD, SUBMIT_CAN_EXEC);
+    if(nready)
+        submitPrepared(pool, tmp, nready);
 }
 
 
-TWS_EXPORT size_t tws_trysubmit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* tmp, size_t n)
+TWS_EXPORT int tws_trysubmit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* tmp, size_t n)
 {
-    return submit(pool, jobs, tmp, n, NULL, NULL, SUBMIT_ALL_OR_NONE);
+    size_t nready = prepare(pool, jobs, tmp, n, NULL, NULL, SUBMIT_ALL_OR_NONE);
+    if(nready)
+    {
+        submitPrepared(pool, tmp, nready);
+        return 1;
+    }
+    return 0;
 }
 
 TWS_EXPORT int tws_run(tws_Pool* pool, unsigned channel)
@@ -107,13 +114,14 @@ TWS_EXPORT int tws_run(tws_Pool* pool, unsigned channel)
     return 0;
 }
 
-TWS_EXPORT void tws_deinit_DEBUG(tws_Pool *pool, size_t memsize)
+TWS_EXPORT size_t tws_prepare(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* tmp, size_t n)
 {
-    for(unsigned i = 0; i < pool->info.maxchannels; ++i)
-        ail_deinit(&channelHead(pool, i)->list);
-    aca_deinit(&pool->freeslots);
+    return prepare(pool, jobs, tmp, n, NULL, NULL, SUBMIT_ALL_OR_NONE);
+}
 
-    VALGRIND_MAKE_MEM_UNDEFINED(pool, memsize);
+TWS_EXPORT void tws_submitPrepared(tws_Pool* pool, const tws_WorkTmp* tmp, size_t nready)
+{
+    submitPrepared(pool, tmp, nready);
 }
 
 TWS_EXPORT void tws_yieldCPU(unsigned n)

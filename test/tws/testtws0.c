@@ -114,8 +114,6 @@ int main(int argc, char **argv)
         tws_lwsem_release(&sem, NTH);
         for(size_t i = 0; i < NTH; ++i)
             tws_thread_join(th[i]);
-
-        tws_deinit_DEBUG(gpool, sizeof(mem));
     }
 
     tws_lwsem_destroy(&sem);

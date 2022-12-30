@@ -47,13 +47,6 @@ inline static void _initSpinlock(Spinlock *sp)
     //VALGRIND_HG_DISABLE_CHECKING(sp, sizeof(*sp));
 }
 
-inline static void _destroySpinlock(Spinlock *sp)
-{
-    //mtx_destroy(&sp->mtx);
-    VALGRIND_HG_MUTEX_DESTROY_PRE(sp);
-    //VALGRIND_HG_ENABLE_CHECKING(sp, sizeof(*sp));
-}
-
 // via https://rigtorp.se/spinlock/
 inline static void _atomicLock(Spinlock *sp)
 {

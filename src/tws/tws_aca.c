@@ -14,10 +14,6 @@ TWS_PRIVATE void aca_init(Aca* a, unsigned slots)
     a->rd.both = 0;
 }
 
-TWS_PRIVATE void aca_deinit(Aca* a)
-{
-}
-
 TWS_PRIVATE void aca_push(Aca* a, unsigned *base, unsigned x)
 {
     /* Invariant: There is always enough space for one more element */#
@@ -137,11 +133,6 @@ TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned mi
 
     _atomicUnlock(&a->lock);
     return done;
-}
-
-TWS_PRIVATE void aca_deinit(Aca* a)
-{
-    _destroySpinlock(&a->lock);
 }
 
 

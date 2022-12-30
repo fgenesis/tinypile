@@ -34,9 +34,9 @@ Inspired by / reading material:
 
 #include <stddef.h> /* size_t, uintptr_t on MSVC */
 
-//#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L)
+#if (defined(__STDC_VERSION__) && ((__STDC_VERSION__+0) >= 199901L)) || (defined(__cplusplus) && ((__cplusplus+0) >= 201103L))
 #  include <stdint.h> /* uintptr_t on gcc/clang/posix */
-//#endif
+#endif
 
 /* --- Compile config for library internals ---
    Define either in your build system or change the defaults here */
@@ -62,7 +62,7 @@ extern "C" {
 typedef struct tws_Pool tws_Pool; /* opaque */
 
 /* By default, this is all you get, eg. pointer + size + something else.
-   You may adapt this to your own needs, but keep this as small as possible.
+   You may adapt this to your own needs, but keep this POD and as small as possible.
    Note that tws_JobData is used internally, so make sure the library uses the same definition! */
 union tws_JobData
 {
@@ -167,18 +167,46 @@ TWS_EXPORT void tws_submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp
    Returns the number of jobs submitted (either 0 or n).
    (Protip: This function is particularly interesting if the channel a job is run on must be respected
    at all costs, eg. if OpenGL or thread local storage is used and specific threads
-   are supposed to service only specific channels) */
-TWS_EXPORT size_t tws_trysubmit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n);
+   are supposed to service only specific channels)
+   Returns != 0 if everything was submitted or 0 if failed. */
+TWS_EXPORT int tws_trysubmit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n);
 
 /* Run one job waiting on the given channel.
    Returns 1 if a job was executed, 0 if not, ie. there was no waiting job on this channel. */
 TWS_EXPORT int tws_run(tws_Pool *pool, unsigned channel);
 
 
-/* NOT needed to be called. This is mainly for correctness checking with valgrind */
-TWS_EXPORT void tws_deinit_DEBUG(tws_Pool *pool, size_t memsize);
+/* ------------------------ */
+/* ---- Advanced usage ---- */
+/* ------------------------ */
+
+/* A tws_Pool is pure POD and position-independent, so it can be copied simply with memcpy().
+   To clone a pool, use tws_prepare() to submit as many jobs as you like (and the pool can hold),
+   then memcpy() the underlying memory somewhere else, cast the start to tws_Pool*,
+   and finally call tws_submitPrepared() on the new pool.
+   Ideally, the new memory region should have the same alignment as the original pool to make sure
+   that the new absolute addresses of internal atomic variables in the new pool are laid out properly
+   so that concurrect pool accesses don't needlessly touch the same cache lines and cause false sharing. */
+
+/* Same semantics as tws_trysubmit(), but does not actually begin executing jobs.
+   Use tws_submitPrepared() to submit jobs that were prepared with this function.
+   WARNING: Preparing but not submitting a job is a "resource leak" and will prevent job slots from being recycled.
+   Returns the number of jobs that are ready to start;
+   returns 0 when not enough job slots are free to enqueue everything (ie. on fail).
+   (Upon return, tmp[0 ... return value) contains internal IDs of jobs ready to start.
+    You can copy them somewhere else to manually prepare a single large batch via multiple calls to this function) */
+TWS_EXPORT size_t tws_prepare(tws_Pool *pool, const tws_JobDesc *jobs, tws_WorkTmp *tmp, size_t n);
+
+/* Begin executing previously prepared jobs.
+   tmp[] should be the exact same, unmodified array as previously written to by tws_prepare().
+   As ready, pass the return value of tws_prepare().
+   (For manual batching, you may build tmp[] yourself, and as ready pass the total number of elements in this array) */
+TWS_EXPORT void tws_submitPrepared(tws_Pool *pool, const tws_WorkTmp *tmp, size_t ready);
 
 
+/* For extensions. Gives hyperthreads a chance to run or gives the CPU a tiny bit of time to nap.
+   Used to make spinlocks less tight.
+   n is number of extra yields, ie. pass n=0 to yield once. */
 TWS_EXPORT void tws_yieldCPU(unsigned n);
 
 #ifdef __cplusplus
