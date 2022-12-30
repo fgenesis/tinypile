@@ -18,8 +18,7 @@ static volatile int quit;
 static void ready(void *ud, unsigned channel, unsigned num)
 {
     //puts("ready");
-    for(unsigned i = 0; i < num; ++i) // FIXME: shiiit
-        tws_sem_release(sem);
+    tws_sem_release(sem, num);
 }
 
 static int fallback0(tws_Pool *pool, void *ud)
@@ -53,7 +52,7 @@ static void work(tws_Pool *pool, const tws_JobData *data)
 }
 
 
-static const tws_PoolCallbacks cb = { ready };
+static const tws_PoolCallbacks cb = { NULL, ready, NULL };
 
 
 
@@ -76,7 +75,7 @@ int main(int argc, char **argv)
 
     for(;;)
     {
-        gpool = tws_init(mem, sizeof(mem), 2, 64, &cb, NULL);
+        gpool = tws_init(mem, sizeof(mem), 2, 64, &cb);
         const tws_PoolInfo *info = tws_info(gpool);
         printf("space for %u jobs\n", info->maxjobs);
 
@@ -95,8 +94,7 @@ int main(int argc, char **argv)
         while(tws_run(gpool, 0)) {};
 
         quit = 1;
-        tws_sem_release(sem);
-        tws_sem_release(sem);
+        tws_sem_release(sem, 2);
         tws_thread_join(th0);
         tws_thread_join(th1);
 

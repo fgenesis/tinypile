@@ -53,7 +53,7 @@ static void work(tws_Pool *pool, const tws_JobData *data)
 }
 
 
-static const tws_PoolCallbacks cb = { ready };
+static const tws_PoolCallbacks cb = { NULL, ready, NULL };
 
 
 
@@ -84,7 +84,7 @@ int main(int argc, char **argv)
     for(unsigned r = 0; ; ++r)
     {
         quit = 0;
-        gpool = tws_init(mem, sizeof(mem), 2, 64, &cb, NULL);
+        gpool = tws_init(mem, sizeof(mem), 2, 64, &cb);
         const tws_PoolInfo *info = tws_info(gpool);
         printf("[%u] space for %u jobs\n", r, info->maxjobs);
 

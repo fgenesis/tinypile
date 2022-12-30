@@ -13,7 +13,7 @@ TWS_EXPORT const tws_PoolInfo* tws_info(const tws_Pool* pool)
     return &pool->info;
 }
 
-TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, size_t cacheLineSize, const tws_PoolCallbacks *cb, void *callbackUD)
+TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, size_t cacheLineSize, const tws_PoolCallbacks *cb)
 {
     if(!numChannels || numChannels >= TWS_MAX_CHANNELS)
         return NULL;
@@ -79,7 +79,14 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     TWS_ASSERT(p + (numjobs + extraslots) * sizeof(unsigned) <= end, "stomped memory");
 
     pool->info.maxjobs = numjobs;
-    pool->cb = cb;
+
+    if(cb)
+        pool->cb = *cb;
+    else
+    {
+        pool->cb.ready = NULL;
+        pool->cb.recycled = NULL;
+    }
 
     return pool;
 }

@@ -48,8 +48,7 @@ struct tws_Pool
     unsigned jobsArrayOffset;
 
     tws_PoolInfo info;
-    const tws_PoolCallbacks *cb;
-    void *callbackUD;
+    tws_PoolCallbacks cb;
 
     /*
     ... padding...

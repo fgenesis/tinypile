@@ -50,7 +50,7 @@ typedef struct tws_Sem tws_Sem;
 TWS_THREAD_EXPORT tws_Sem *tws_sem_create(void);
 TWS_THREAD_EXPORT void tws_sem_destroy(tws_Sem* sem);
 TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem); /* Lock semaphore, may block */
-TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem); /* Unlock semaphore */
+TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem, unsigned n); /* Unlock semaphore, n times */
 
 /* Get # of CPU cores, 0 on failure. */
 TWS_THREAD_EXPORT unsigned tws_getNumCPUs(void);
@@ -219,9 +219,9 @@ TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem)
     WaitForSingleObject(sem, INFINITE);
 }
 
-TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem)
+TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem, unsigned n)
 {
-    ReleaseSemaphore(sem, 1, NULL);
+    ReleaseSemaphore(sem, n, NULL);
 }
 
 typedef BOOL (WINAPI *pfnGetLogicalProcessorInformation)(PSYSTEM_LOGICAL_PROCESSOR_INFORMATION, PDWORD);
@@ -318,9 +318,10 @@ TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem)
     SDL_SemWait((SDL_sem*)sem);
 }
 
-TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem)
+TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem, unsigned n)
 {
-    SDL_SemPost((SDL_sem*)sem);
+    while(n--)
+        SDL_SemPost((SDL_sem*)sem);
 }
 
 TWS_THREAD_EXPORT unsigned tws_getNumCPUs(void)
@@ -388,9 +389,10 @@ TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem)
     sem_wait((sem_t*)sem);
 }
 
-TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem)
+TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem, unsigned n)
 {
-    sem_post((sem_t*)sem);
+    while(n--)
+        sem_post((sem_t*)sem); // FIXME
 }
 
 TWS_THREAD_EXPORT unsigned tws_impl_getNumCPUs(void)
@@ -439,9 +441,10 @@ TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem)
     semaphore_wait((semaphore_t)sem);
 }
 
-TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem)
+TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem, unsigned n)
 {
-    semaphore_signal((semaphore_t)sem);
+    while(n--)
+        semaphore_signal((semaphore_t)sem);
 }
 
 TWS_THREAD_EXPORT unsigned tws_getNumCPUs(void)
@@ -495,9 +498,9 @@ TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem)
     reinterpret_cast<std::counting_semaphore*>(sem)->acquire();
 }
 
-TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem)
+TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem, unsigned n)
 {
-    reinterpret_cast<std::counting_semaphore*>(sem)->release();
+    reinterpret_cast<std::counting_semaphore*>(sem)->release(n);
 }
 
 TWS_THREAD_EXPORT unsigned tws_getNumCPUs(void)
@@ -664,6 +667,7 @@ struct tws_LWsem
 {
     tws_AtomicInt a_count;
     tws_Sem *sem;
+    char padding[60-4-sizeof(void*)]; // FIXME
 };
 typedef struct tws_LWsem tws_LWsem;
 
@@ -692,20 +696,17 @@ static void tws_lwsem_acquire(tws_LWsem *ws)
     }
     while(--spin);
     /* Failed to acquire after trying; wait via OS-semaphore */
-    old = tws_atomicAdd_Acq(&ws->a_count, -1) + 1;
+    old = tws_atomicAdd_Acq(&ws->a_count, -1);
     if (old <= 0)
         tws_sem_acquire(ws->sem);
 }
 
 static void tws_lwsem_release(tws_LWsem *ws, unsigned n)
 {
-    const _tws_IntType old = tws_atomicAdd_Rel(&ws->a_count, n) - n;
-    int toRelease = -old < 1 ? -old : 1;
-    while(toRelease > 0)
-    {
-        tws_sem_release(ws->sem);
-        --toRelease;
-    }
+    const _tws_IntType old = tws_atomicAdd_Rel(&ws->a_count, n);
+    int toRelease = -old < n ? -old : n;
+    if(toRelease > 0)
+        tws_sem_release(ws->sem, toRelease);
 }
 
 #endif /* TWS_BACKEND_IMPLEMENTATION */

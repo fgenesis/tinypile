@@ -21,6 +21,8 @@ static void recycleJob(tws_Pool *pool, tws_Job *job)
     //VALGRIND_MAKE_MEM_UNDEFINED(job, sizeof(*job));
     job->func = NULL; // DEBUG
     aca_push(&pool->freeslots, base, idx);
+    if(pool->cb.recycled)
+        pool->cb.recycled(pool->cb.ud, 1);
 }
 
 /* Enqueue job to its channel's ready head, making it possible to exec any time */
@@ -33,13 +35,18 @@ static void enqueueWithoutCallback(tws_Pool *pool, tws_Job *job, unsigned channe
     ail_push(&ch->list, AILBASE, job); /* this trashes job->u */
 }
 
+inline static void readyCB(tws_Pool *pool, unsigned channel, unsigned n)
+{
+    if(pool->cb.ready)
+        pool->cb.ready(pool->cb.ud, channel, n);
+}
+
 /* Enqueue job as ready & notify ready callback */
 static void enqueue(tws_Pool *pool, tws_Job *job)
 {
     const unsigned channel = job->u.waiting.channel;
     enqueueWithoutCallback(pool, job, channel);
-    if(pool->cb && pool->cb->ready)
-        pool->cb->ready(pool->callbackUD, channel, 1);
+    readyCB(pool, channel, 1);
 }
 
 /* Pop one ready job to exec it */
@@ -158,7 +165,7 @@ TWS_PRIVATE size_t prepare(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp*
     TWS_ASSERT(k == n, "eh");
 
     /* Index can't be 0, so to use job idx as an offset into the array, offset the array. */
-    tws_Job * const jobbase = (tws_Job*)(((char*)pool) + pool->jobsArrayOffset) - 1;
+    tws_Job * const jobbase = jobArrayBase(pool) - 1;
 
     for(size_t i = w; i < k; ++i)
     {
@@ -215,17 +222,14 @@ TWS_PRIVATE void submitPrepared(tws_Pool* pool, const tws_WorkTmp* tmp, size_t n
     TWS_ASSERT(nready, "should have ready jobs to submit");
 
     /* Index can't be 0, so to use job idx as an offset into the array, offset the array. */
-    tws_Job * const jobbase = (tws_Job*)(((char*)pool) + pool->jobsArrayOffset) - 1;
+    tws_Job * const jobbase = jobArrayBase(pool) - 1;
 
     /* Only a single job to ready? Speed things up a little. */
     if(nready == 1)
     {
         TWS_ASSERT(tmp[0], "jobidx must be > 0");
         tws_Job *job = &jobbase[tmp[0]];
-        const unsigned channel = job->u.waiting.channel;
-        enqueueWithoutCallback(pool, job, channel);
-        if(pool->cb && pool->cb->ready)
-            pool->cb->ready(pool->callbackUD, channel, 1);
+        enqueue(pool, job);
         return;
     }
 
@@ -260,8 +264,8 @@ TWS_PRIVATE void submitPrepared(tws_Pool* pool, const tws_WorkTmp* tmp, size_t n
             ail_merge(&channelHead(pool, c)->list, &accu[c], first[c]);
 
     /* Now that everything is ready, run callbacks */
-    if(pool->cb && pool->cb->ready)
+    if(pool->cb.ready)
         for(unsigned c = 0; c < maxch; ++c)
             if(toReady[c])
-                pool->cb->ready(pool->callbackUD, c, toReady[c]);
+                pool->cb.ready(pool->cb.ud, c, toReady[c]);
 }
