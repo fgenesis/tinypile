@@ -1,39 +1,58 @@
 #pragma once
 
-/* Single-header backend implementation for tws, for the lazy.
+/* Single-header platform-dependent companion for tws.
+   This is optional. If you have your own threads and semaphores, you don't need this.
 
 Do this:
     #define TWS_THREAD_IMPLEMENTATION
 before you include this file in *one* C or C++ file to create the implementation.
 
-// i.e. it should look like this:
+The implementation will detect which of the below threading backends is available
+at compile time based on whether certain macros exist, and pick one, ie.:
+
 #include <your threading lib of choice>
 #define TWS_THREAD_IMPLEMENTATION
 #include "tws_thread.h"
 
-The implementation will detect which of the below threading backends is available
-at compile time based on whether certain macros exist, and pick one.
-
-Recognized thread libs:
+-- Recognized thread libs: --
   * Win32 API (autodetected, needs no header. Warning: Includes Windows.h in the impl.)
+  * C11       (autodetected, pulls in <stdatomic.h> <threads.h>
+  * C++11     (autodetected, pulls in <thread> <mutex> <condition_variable>
+               and implements a semaphore wrapper based on mutex + condvar)
+  * C++20     (autodetected, pulls in STL headers <thread> <semaphore>)
+  * pthread   (#include <pthread.h>)
   * SDL2      (#include <SDL_thread.h>) (http://libsdl.org/)
   * SDL 1.2   (#include <SDL_thread.h>)
-  * pthread   (#include <pthread.h>)
-  * C++20     (autodetected, pulls in STL headers <thread> <semaphore> <new>)
+
   * <If you want to see your library of choice here, send me a patch/PR>
 
+Alternatively, you can #define TWS_BACKEND to one of the TWS_BACKEND_* constants
+to force using that library.
+
+See the tws examples how to use this, including the lightweight semaphore implemented
+at the bottom of this file (tws_LWsem).
+
 Origin:
-  https://github.com/fgenesis/tinypile/blob/master/tws_backend.h
+  https://github.com/fgenesis/tinypile
 
 License:
   Public domain, WTFPL, CC0 or your favorite permissive license; whatever is available in your country.
-
+  Pick whatever you like, I don't care.
 */
 
 /* All "public" functions in this file are marked with this */
 #ifndef TWS_THREAD_EXPORT
 #define TWS_THREAD_EXPORT
 #endif
+
+/* #define TWS_BACKEND to one of these to force this backend; otherwise autodetect */
+#define TWS_BACKEND_WIN32    1
+#define TWS_BACKEND_C11      2 /* Needs at least C11. Implements semaphores based on mutex+condvar */
+#define TWS_BACKEND_CPP11    3 /* Needs at least C++11. Uses C++20 semaphores if available, otherwise mutex+condvar */
+#define TWS_BACKEND_PTHREADS 4
+#define TWS_BACKEND_SDL      5
+#define TWS_BACKEND_OSX      6 /* NYI, do not use */
+
 
 #ifdef __cplusplus
 extern "C" {
@@ -45,7 +64,7 @@ typedef void (*tws_ThreadEntry)(void *ud);
 TWS_THREAD_EXPORT tws_Thread *tws_thread_create(tws_ThreadEntry run, const char *name, void *data);
 TWS_THREAD_EXPORT void tws_thread_join(tws_Thread *th);
 
-/* Semaphore */
+/* OS Semaphore */
 typedef struct tws_Sem tws_Sem;
 TWS_THREAD_EXPORT tws_Sem *tws_sem_create(void);
 TWS_THREAD_EXPORT void tws_sem_destroy(tws_Sem* sem);
@@ -53,23 +72,110 @@ TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem); /* Lock semaphore, may blo
 TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem, unsigned n); /* Unlock semaphore, n times */
 
 /* Get # of CPU cores, 0 on failure. */
-TWS_THREAD_EXPORT unsigned tws_getNumCPUs(void);
+TWS_THREAD_EXPORT unsigned tws_cpu_count(void);
 
 /* Get cache line size, or a sensible default when failed.
    Never 0. You can use the returned value directly. */
-TWS_THREAD_EXPORT unsigned tws_getCPUCacheLineSize(void);
+TWS_THREAD_EXPORT unsigned tws_cpu_cachelinesize(void);
+
+/* Lightweight semaphore. Consider using this instead of the (likely slower) OS semaphore */
+typedef struct tws_LWsem tws_LWsem;
+TWS_THREAD_EXPORT void *tws_lwsem_init(tws_LWsem *ws, int count); /* Returns NULL on failure */
+TWS_THREAD_EXPORT void tws_lwsem_destroy(tws_LWsem *ws);
+TWS_THREAD_EXPORT int tws_lwsem_tryacquire(tws_LWsem *ws);
+TWS_THREAD_EXPORT void tws_lwsem_acquire(tws_LWsem *ws);
+TWS_THREAD_EXPORT void tws_lwsem_release(tws_LWsem *ws, unsigned n);
 
 #ifdef __cplusplus
 }
 #endif
 
-
-
 /*--- 8< -----------------------------------------------------------*/
 #ifdef TWS_THREAD_IMPLEMENTATION
 
+/* Check which backends are potentially available */
+#if defined(_WIN32)
+#  define TWS_HAS_BACKEND_WIN32
+#endif
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+#  define TWS_HAS_BACKEND_C11
+#endif
+#if (defined(__cplusplus) && ((__cplusplus+0) >= 201103L)) || (defined(_MSC_VER) && (_MSC_VER+0 >= 1600))
+#  define TWS_HAS_BACKEND_CPP11
+#endif
+#if defined(SDLCALL) || defined(SDL_stdinc_h_) || defined(SDL_INIT_EVERYTHING) || defined(SDL_CreateThread) || defined(SDL_VERSION)
+#  define TWS_HAS_BACKEND_SDL
+#endif
+#if defined(_PTHREAD_H) || defined(PTHREAD_H) || defined(_POSIX_THREADS)
+#  define TWS_HAS_BACKEND_PTHREADS
+#endif
+
+/* System APIs */
+#if defined(__unix__) || defined(__unix) || defined(__linux__)
+#  include <unistd.h> /* sysconf */
+#  define TWS_OS_POSIX
+#endif
+
+/* Pick one. Ordered by preference. */
+#if !defined(TWS_BACKEND) || !(TWS_BACKEND+0)
+#  if defined(TWS_HAS_BACKEND_WIN32)
+#    define TWS_BACKEND TWS_BACKEND_WIN32
+#  elif defined(TWS_HAS_BACKEND_C11) && !defined(__STDC_NO_THREADS__)
+#    define TWS_BACKEND TWS_BACKEND_C11
+#  elif defined(TWS_HAS_BACKEND_CPP11)
+#    define TWS_BACKEND TWS_BACKEND_CPP11
+#  elif defined(TWS_HAS_BACKEND_SDL)
+#    define TWS_BACKEND TWS_BACKEND_SDL
+#  elif defined(TWS_HAS_BACKEND_PTHREADS)
+#    define TWS_BACKEND TWS_BACKEND_PTHREADS
+#  endif
+#endif
+
+#if !(TWS_BACKEND+0)
+#error No threading backend recognized
+#endif
+
+/* Ask the OS. If we know how to. */
+static unsigned tws_os_cachelinesize()
+{
+    int n = 0;
+
+#ifdef _SC_NPROCESSORS_CONF
+    n = sysconf(_SC_NPROCESSORS_CONF);
+#endif
+
+    return n < 0 ? 0 : n;
+}
+
+/* Default for arch. Never 0. */
+static unsigned tws_arch_cachelinesize()
+{
+    unsigned n;
+    /* via https://github.com/kprotty/pzero/blob/c-version/src/atomic.h */
+#if defined(__aarch64__)
+    n = 128;
+#elif defined(_M_ARM) || defined(__arm__) || defined(__thumb__)
+    n = sizeof(void*) * 8; /* usually 32, but just in case we end up here on arm64 */
+#else
+    n = 64;
+#endif
+    return n;
+}
+
+static unsigned tws_os_cpucount()
+{
+    int n = 0;
+#ifdef TWS_OS_POSIX
+#  ifdef _SC_LEVEL1_DCACHE_LINESIZE
+    return sysconf(_SC_LEVEL1_DCACHE_LINESIZE);
+#  endif
+#endif
+
+    return n < 0 ? 0 : n;
+}
+
 // --------------------------------------------------------
-#ifdef _WIN32
+#if TWS_BACKEND == TWS_BACKEND_WIN32
 // --------------------------------------------------------
 
 #define WIN32_LEAN_AND_MEAN
@@ -278,11 +384,14 @@ static inline unsigned tws_impl_getCPUCacheLineSize(void)
             return linesz;
     }
 
-    return 64; // old x86 is 32, but 64 should be safe for now.
+    unsigned sz = tws_os_cachelinesize();
+    return sz ? sz : tws_arch_cachelinesize();
 }
 
+#endif
+
 // --------------------------------------------------------
-#elif defined(SDLCALL) || defined(SDL_stdinc_h_) || defined(SDL_INIT_EVERYTHING) || defined(SDL_CreateThread) || defined(SDL_VERSION)
+#if TWS_BACKEND == TWS_BACKEND_SDL
 // --------------------------------------------------------
 #include <SDL_version.h>
 #include <SDL_thread.h>
@@ -324,20 +433,22 @@ TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem, unsigned n)
         SDL_SemPost((SDL_sem*)sem);
 }
 
-TWS_THREAD_EXPORT unsigned tws_getNumCPUs(void)
+TWS_THREAD_EXPORT unsigned tws_cpu_count(void)
 {
     int n = SDL_GetCPUCount();
     return n > 0 ? n : 0;
 }
 
-TWS_THREAD_EXPORT unsigned tws_getCPUCacheLineSize(void)
+TWS_THREAD_EXPORT unsigned tws_cpu_cachelinesize(void)
 {
     int sz = SDL_GetCPUCacheLineSize();
     return sz > 0 ? sz : 64;
 }
 
+#endif
+
 // --------------------------------------------------------
-#elif defined(_PTHREAD_H) || defined(PTHREAD_H) || defined(_POSIX_THREADS)
+#if TWS_BACKEND == TWS_BACKEND_PTHREADS
 // --------------------------------------------------------
 #include <semaphore.h>
 #include <unistd.h> // for sysconf()
@@ -391,28 +502,30 @@ TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem)
 
 TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem, unsigned n)
 {
-    while(n--)
-        sem_post((sem_t*)sem); // FIXME
+    sem_post_multiple((sem_t*)sem, n);
+    // If the above is not available:
+    //while(n--)
+    //    sem_post((sem_t*)sem);
 }
 
 TWS_THREAD_EXPORT unsigned tws_impl_getNumCPUs(void)
 {
-    // maybe pthread_num_processors_np() ?
-    int n = sysconf(_SC_NPROCESSORS_ONLN);
-    return n > 0 ? n : 0;
+    return tws_os_cpucount();
 }
 
 TWS_THREAD_EXPORT unsigned tws_impl_getCPUCacheLineSize(void)
 {
-    int sz = sysconf(_SC_LEVEL1_DCACHE_LINESIZE);
-    return sz > 0 ? sz : 64;
+    unsigned sz = tws_os_cachelinesize();
+    return sz ? sz : tws_arch_cachelinesize();
 }
 
+#endif
 
 // --------------------------------------------------------
-#elif defined(__MACH__) && 0
+#if TWS_BACKEND == TWS_BACKEND_OSX
 // --------------------------------------------------------
 #include <mach/mach.h>
+#include <sys/sysctl.h>
 
 TWS_THREAD_EXPORT tws_Thread *tws_thread_create(tws_ThreadEntry run, const char *name, void *ud)
 {
@@ -447,28 +560,63 @@ TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem, unsigned n)
         semaphore_signal((semaphore_t)sem);
 }
 
-TWS_THREAD_EXPORT unsigned tws_getNumCPUs(void)
+TWS_THREAD_EXPORT unsigned tws_cpu_count(void)
 {
     // TODO
-    return 0;
+    return tws_os_cpucount();
 }
 
-TWS_THREAD_EXPORT unsigned tws_getCPUCacheLineSize(void)
+TWS_THREAD_EXPORT unsigned tws_cpu_cachelinesize(void)
 {
-    // TODO
-    return 64;
+    size_t lineSize = 0;
+    size_t sizeOfLineSize = sizeof(lineSize);
+    sysctlbyname("hw.cachelinesize", &lineSize, &sizeOfLineSize, 0, 0);
+
+    unsigned sz = (unsigned)lineSize;
+    if(!sz)
+        sz = tws_os_cachelinesize();
+    return sz ? sz : tws_arch_cachelinesize();
 }
 
-
+#endif
 
 // --------------------------------------------------------
-#elif defined(__cplusplus) && ((__cplusplus+0L) > 20202L)
-// C++11 threads, C++17 std::hardware_destructive_interference_size, C++20 semaphores
-// -> unfortunately C++20 and up only
+#if TWS_BACKEND == TWS_BACKEND_CPP11
+// C++11 threads, C++20 semaphores if possible
 
 #include <thread>
-#include <semaphore>
-#include <new> // for std::hardware_destructive_interference_size
+
+#if __cplusplus >= 202002L
+#  include <semaphore>
+#  include <new> // std::hardware_destructive_interference_size
+typedef std::semaphore tws_Cpp11Semaphore;
+#else
+#  include <mutex>
+#  include <condition_variable>
+
+class tws_Cpp11Semaphore
+{
+    std::atomic<int> count;
+    std::mutex m;
+    std::condition_variable cv;
+
+public:
+    tws_Cpp11Semaphore(int n)
+        : count(0) {}
+    void release()
+    {
+        ++count;
+        cv.notify_one();
+    }
+    void acquire()
+    {
+        std::unique_lock<std::mutex> lock(m);
+        cv.wait(l, [this]{ return !!count; });
+        --count;
+    }
+};
+
+#endif
 
 TWS_THREAD_EXPORT tws_Thread *tws_thread_create(tws_ThreadEntry run, const char *name, void *ud)
 {
@@ -485,63 +633,168 @@ TWS_THREAD_EXPORT void tws_thread_join(tws_Thread *th)
 
 TWS_THREAD_EXPORT tws_Sem* tws_sem_create(void)
 {
-    return reinterpret_cast<tws_Sem*>(new std::counting_semaphore(0));
+    return reinterpret_cast<tws_Sem*>(new tws_Cpp11Semaphore(0));
 }
 
 TWS_THREAD_EXPORT void tws_sem_destroy(tws_Sem *sem)
 {
-    delete reinterpret_cast<std::counting_semaphore*>(sem);
+    delete reinterpret_cast<tws_Cpp11Semaphore*>(sem);
 }
 
 TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem)
 {
-    reinterpret_cast<std::counting_semaphore*>(sem)->acquire();
+    reinterpret_cast<tws_Cpp11Semaphore*>(sem)->acquire();
 }
 
 TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem, unsigned n)
 {
-    reinterpret_cast<std::counting_semaphore*>(sem)->release(n);
+    reinterpret_cast<tws_Cpp11Semaphore*>(sem)->release(n);
 }
 
-TWS_THREAD_EXPORT unsigned tws_getNumCPUs(void)
+TWS_THREAD_EXPORT unsigned tws_cpu_count(void)
 {
     return std::thread::hardware_concurrency();
 }
 
-TWS_THREAD_EXPORT unsigned tws_getCPUCacheLineSize(void)
+TWS_THREAD_EXPORT unsigned tws_cpu_cachelinesize(void)
 {
-    return std::hardware_destructive_interference_size; // Bad, this is a compile-time constant, not a run-time one
+    unsigned sz = tws_os_cachelinesize();
+#if __cplusplus >= 202002L
+    if(!sz)
+        sz = std::hardware_destructive_interference_size; // Bad, this is a compile-time constant, not a run-time one
+#endif
+    return sz ? sz : tws_arch_cachelinesize();
 }
 
-// --------------------------------------------------------
-#else
-#error No threading backend recognized
 #endif
-// --------------------------------------------------------
 
+// --------------------------------------------------------
+#if TWS_BACKEND == TWS_BACKEND_C11
+
+#include <stddef.h> /* NULL */
+#include <stdlib.h> /* malloc, free */
+#include <threads.h> /* thrd_t, cnd_t, mtx_t */
+#include <stdatomic.h>
+
+struct tws_C11Sem
+{
+    atomic_int count;
+    mtx_t mtx;
+    cnd_t cv;
+};
+typedef struct tws_C11Sem
+
+TWS_THREAD_EXPORT tws_Thread *tws_thread_create(tws_ThreadEntry run, const char *name, void *ud)
+{
+    (void)name; /* not supported by libc :< */
+    thrd_t *pt = (thrd_t*)malloc(sizeof(thrd_t));
+    if(pt)
+    {
+        if(thrd_start(pt, (thrd_start_t)run, ud) != thrd_success)
+        {
+            free(pt);
+            pt = NULL;
+        }
+    }
+    return pt;
+}
+
+TWS_THREAD_EXPORT void tws_thread_join(tws_Thread *th)
+{
+    thrd_t *pt = (thrd_t*)th;
+    thrd_join(pt);
+    free(pt);
+}
+
+TWS_THREAD_EXPORT tws_Sem* tws_sem_create(void)
+{
+    tws_C11Sem *cs = (tws_C11Sem*)malloc(sizeof(tws_C11Sem));
+    if(cs)
+    {
+        cs->count = 0;
+        if(mtx_init(&cs->mtx, mtx_plain) == thrd_success)
+        {
+            if(cnd_init(&cs->cv) == thrd_success)
+                return cs;
+            mtx_destroy(&cs->mtx);
+        }
+        free(cs);
+    }
+    return NULL;
+}
+
+TWS_THREAD_EXPORT void tws_sem_destroy(tws_Sem *sem)
+{
+    tws_C11Sem *cs = (tws_C11Sem*)sem;
+    cnd_destroy(&cs->mtx)
+    mtx_destroy(&cs->mtx);
+    free(sem);
+}
+
+TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem)
+{
+    tws_C11Sem *cs = (tws_C11Sem*)sem;
+    mtx_lock(&cs->mtx);
+
+    for(;;)
+    {
+        if(count)
+            break;
+        else
+            cnd_wait(&cs->cv, &cs->mtx);
+    }
+    --count;
+
+    mtx_unlock(&cs->mtx);
+}
+
+TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem, unsigned n)
+{
+    tws_C11Sem *cs = (tws_C11Sem*)sem;
+    ++cs->count;
+    cnd_signal(&cs->cv);
+}
+
+TWS_THREAD_EXPORT unsigned tws_cpu_count(void)
+{
+    /* Even C17 has no API for this :< */
+    return tws_os_cpucount();
+}
+
+TWS_THREAD_EXPORT unsigned tws_cpu_cachelinesize(void)
+{
+    unsigned sz = tws_os_cachelinesize();
+    return sz ? sz : tws_arch_cachelinesize();
+}
+
+#endif
 
 // ========================================================
 
-// TODO: SDL atomics
 
-
-#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && !defined(__STDC_NO_ATOMICS__)
+/* Prefer C11 if available */
+#if defined(TWS_HAS_BACKEND_C) && !defined(__STDC_NO_ATOMICS__)
 #  include <stdatomic.h>
 #  define TWS_ATOMIC_USE_C11
 typedef atomic_int _tws_AtomicIntType;
 typedef int _tws_IntType;
-#elif defined(_MSC_VER) // intrinsics
+
+/* MSVC instrinsics are fine for what is needed here */
+#elif defined(_MSC_VER)
 #  include <intrin.h>
 #  define TWS_ATOMIC_USE_MSVC
 typedef volatile long _tws_AtomicIntType;
 typedef long _tws_IntType;
-#elif defined(__cplusplus) && ((__cplusplus+0) >= 201103L)
+
+/* C++11 and up; avoid pulling in STL if possible */
+#elif defined(TWS_HAS_BACKEND_CPP)
 #  include <atomic>
 #  define TWS_ATOMIC_USE_CPP11
 typedef std::atomic_int _tws_AtomicIntType;
 typedef int _tws_IntType;
-#elif defined(SDL_VERSION_ATLEAST) && SDL_VERSION_ATLEAST(2,0,0)
+
 /* SDL atomics aren't all that great, use those only as a last resort */
+#elif defined(TWS_HAS_BACKEND_SDL) && defined(SDL_VERSION_ATLEAST) && SDL_VERSION_ATLEAST(2,0,0)
 #  include <SDL_atomic.h>
 #  define TWS_ATOMIC_USE_SDL2
 typedef SDL_atomic_t _tws_AtomicIntType;
@@ -555,16 +808,25 @@ struct tws_AtomicInt
 typedef struct tws_AtomicInt tws_AtomicInt;
 
 #ifdef TWS_ATOMIC_USE_C11
-inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval) { return atomic_compare_exchange_weak_explicit(&x->a_val, expected, newval, memory_order_acquire, memory_order_acquire); }
-inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval) { return atomic_compare_exchange_weak_explicit(&x->a_val, expected, newval, memory_order_release, memory_order_consume); }
-inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x) { return atomic_load_explicit(&x->a_val, memory_order_relaxed); }
+inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+{
+    return atomic_compare_exchange_weak_explicit(&x->a_val, expected, newval, memory_order_acquire, memory_order_acquire);
+}
+inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+{
+    return atomic_compare_exchange_weak_explicit(&x->a_val, expected, newval, memory_order_release, memory_order_consume);
+}
+inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x)
+{
+    return atomic_load_explicit(&x->a_val, memory_order_relaxed);
+}
 inline static _tws_IntType tws_atomicAdd_Acq(tws_AtomicInt *x, _tws_IntType v)
 {
     return atomic_fetch_add_explicit(&x->a_val, v, memory_order_acquire);
 }
 inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
 {
-    return x->a_val.fetch_add(&x->a_val, v, memory_order_release);
+    return atomic_fetch_add_explicit(&x->a_val, v, memory_order_release);
 }
 #endif
 
@@ -660,6 +922,7 @@ inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
 }
 #endif
 
+// ----------------------------------------------------------------------
 
 
 /* Adapted from https://github.com/preshing/cpp11-on-multicore/blob/master/common/sema.h */
@@ -667,23 +930,26 @@ struct tws_LWsem
 {
     tws_AtomicInt a_count;
     tws_Sem *sem;
-    char padding[60-4-sizeof(void*)]; // FIXME
 };
-typedef struct tws_LWsem tws_LWsem;
 
-
-static void *tws_lwsem_init(tws_LWsem *ws, int count)
+TWS_THREAD_EXPORT void *tws_lwsem_init(tws_LWsem *ws, int count)
 {
     ws->a_count.a_val = count;
     return ((ws->sem = tws_sem_create()));
 }
 
-static void tws_lwsem_destroy(tws_LWsem *ws)
+TWS_THREAD_EXPORT void tws_lwsem_destroy(tws_LWsem *ws)
 {
     tws_sem_destroy(ws->sem);
 }
 
-static void tws_lwsem_acquire(tws_LWsem *ws)
+TWS_THREAD_EXPORT int tws_lwsem_tryacquire(tws_LWsem *ws)
+{
+    _tws_IntType old = tws_relaxedGet(&ws->a_count);
+    return old > 0 && tws_atomicWeakCAS_Acq(&ws->a_count, &old, old - 1);
+}
+
+TWS_THREAD_EXPORT void tws_lwsem_acquire(tws_LWsem *ws)
 {
     _tws_IntType old = tws_relaxedGet(&ws->a_count);
 
@@ -701,7 +967,7 @@ static void tws_lwsem_acquire(tws_LWsem *ws)
         tws_sem_acquire(ws->sem);
 }
 
-static void tws_lwsem_release(tws_LWsem *ws, unsigned n)
+TWS_THREAD_EXPORT void tws_lwsem_release(tws_LWsem *ws, unsigned n)
 {
     const _tws_IntType old = tws_atomicAdd_Rel(&ws->a_count, n);
     int toRelease = -old < n ? -old : n;
@@ -715,9 +981,5 @@ static void tws_lwsem_release(tws_LWsem *ws, unsigned n)
 /* TODO:
 - respect TWS_NO_LIBC and then use CreateThread() instead of _beginthreadex() ?
 - See also: https://github.com/NickStrupat/CacheLineSize
-- Linux: unistd.h + sysconf(_SC_LEVEL1_DCACHE_LINESIZE)
-- C11 threads.h
-
-- allow user to select a backend manually via a #define
 
 */

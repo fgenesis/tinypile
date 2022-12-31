@@ -1,21 +1,21 @@
-/* Tiny, backend-agnostic lockless work/job scheduler
+/* Tiny, backend-agnostic work/job scheduler
 
 Design goals:
 - Plain C API, KISS.
 - Bring your own threading. The scheduler is thread-safe but does not know the concept of threads.
 - Fixed memory. No memory allocations whatsoever.
+- Lock-free whenever possible
+- Vulkan-style preparation up-front, then fire & forget
 - Safe operation even if grossly overloaded
 
 License:
-Public domain, WTFPL, CC0 or your favorite permissive license; whatever is available in your country.
+  Public domain, WTFPL, CC0 or your favorite permissive license; whatever is available in your country.
+  Pick whatever you like, I don't care.
 
 Dependencies:
 - Compiles as C99 or oldschool C++ code, but can benefit from C11 or if compiled as C++11
+- Requires compiler/library/CPU support for: atomic int compare-and-swap (CAS), add, exchange; optional: wide CAS, cpu-yield
 - Does NOT use the libc or TLS
-- Requires compiler/library/CPU support for:
-  - atomic int compare-and-swap (CAS), add, exchange
-  - Optional: wide CAS (ie. 2x int-sized CAS)
-  - Optional: a yield/pause opcode.
 
 Origin:
 https://github.com/fgenesis/tinypile
