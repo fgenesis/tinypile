@@ -1,16 +1,25 @@
 #include "tws_job.h"
 
-#undef tws_info
-
-
-TWS_EXPORT size_t tws_size(size_t concurrentJobs, unsigned numChannels, size_t cacheLineSize)
-{
-    return 0; // TODO
-}
-
 TWS_EXPORT const tws_PoolInfo* tws_info(const tws_Pool* pool)
 {
     return &pool->info;
+}
+
+TWS_EXPORT size_t tws_size(size_t concurrentJobs, unsigned numChannels, size_t cacheLineSize)
+{
+    if(!numChannels || numChannels >= TWS_MAX_CHANNELS || !concurrentJobs)
+        return 0;
+
+    cacheLineSize = AlignUp(cacheLineSize, TWS_MIN_ALIGN);
+    TWS_ASSERT(IsPowerOfTwo(cacheLineSize), "Warning: Weird cache line size. You know what you're doing?");
+
+    size_t channelHeadSize = AlignUp(sizeof(tws_ChannelHead), cacheLineSize);
+
+    return AlignUp(sizeof(tws_Pool), cacheLineSize)
+        + (numChannels * channelHeadSize)
+        + (concurrentJobs * sizeof(tws_Job)) /* jobs array */
+        + ((concurrentJobs + 1) * sizeof(unsigned)) /* index storage for aca */
+        + (cacheLineSize * 2); /* rough guess: compensate loss due to alignment adjustment */
 }
 
 /* Unfortunatly, manually layouting the pool is a bit ugly, but there's nothing to be done about that */

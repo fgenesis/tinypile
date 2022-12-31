@@ -11,10 +11,10 @@ Public domain, WTFPL, CC0 or your favorite permissive license; whatever is avail
 
 Dependencies:
 - Compiles as C99 or oldschool C++ code, but can benefit from C11 or if compiled as C++11
-- Does NOT require libc or TLS
-- Requires compiler/library support for:
-  - atomic pointer compare-and-swap (CAS)
-  - Optional: wide CAS (ie. 2x ptr-sized CAS)
+- Does NOT use the libc or TLS
+- Requires compiler/library/CPU support for:
+  - atomic int compare-and-swap (CAS), add, exchange
+  - Optional: wide CAS (ie. 2x int-sized CAS)
   - Optional: a yield/pause opcode.
 
 Origin:
@@ -139,7 +139,9 @@ typedef struct tws_PoolCallbacks tws_PoolCallbacks;
 typedef unsigned tws_WorkTmp;
 
 /* Calculate memory required to create a pool with these parameters.
-   numChannels must be > 0 and < TWS_MAX_CHANNELS. Returns 0 for bogus params. */
+   numChannels must be > 0 and < TWS_MAX_CHANNELS. Returns 0 for bogus params.
+   The returned size is an estimate. Depending on the alignment of the actual memory a tws_Pool
+   is created in, the number of job slots available may be off by a few. */
 TWS_EXPORT size_t tws_size(size_t concurrentJobs, unsigned numChannels, size_t cacheLineSize);
 
 
