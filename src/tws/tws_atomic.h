@@ -68,11 +68,6 @@ union WideAtomic
 };
 typedef union WideAtomic WideAtomic;
 
-/*typedef void* _VoidPtr;
-typedef TWS_DECL_ATOMIC(_VoidPtr) AtomicPtrType;
-typedef TWS_DECL_ATOMIC(_VoidPtr) * AtomicPtrPtr;*/
-
-
 // --- Atomic access ---
 
 // postfixes:
@@ -85,26 +80,17 @@ typedef TWS_DECL_ATOMIC(_VoidPtr) * AtomicPtrPtr;*/
 // CAS returns 0 on fail, anything else on success. On fail, *expected is updated to current value.
 
 TWS_PRIVATE_INLINE tws_Atomic _AtomicInc_Acq(NativeAtomic *x);
-//TWS_PRIVATE_INLINE tws_Atomic _AtomicInc_Rel(NativeAtomic *x);
-//TWS_PRIVATE_INLINE tws_Atomic _AtomicDec_Acq(NativeAtomic *x);
 TWS_PRIVATE_INLINE tws_Atomic _AtomicDec_Rel(NativeAtomic *x);
-//TWS_PRIVATE_INLINE int _AtomicCAS_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval);
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval);
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval);
 TWS_PRIVATE_INLINE void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval);
 TWS_PRIVATE_INLINE void _AtomicSet_Seq(NativeAtomic *x, tws_Atomic newval);
 TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Acq(NativeAtomic *x, tws_Atomic newval); // return previous
-//TWS_PRIVATE_INLINE tws_Atomic _AtomicGet_Seq(const NativeAtomic *x);
 TWS_PRIVATE_INLINE tws_Atomic _RelaxedGet(const NativeAtomic *x); // load with no synchronization or guarantees
 
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Acq(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval);
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Rel(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval);
 TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x); // load with no synchronization or guarantees
-
-//TWS_PRIVATE_INLINE int _AtomicPtrCAS_Weak(AtomicPtrPtr x, void **expected, void *newval);
-
-// explicit memory fence
-TWS_PRIVATE_INLINE void _Mfence(void);
 
 // CPU/hyperthread yield
 TWS_PRIVATE_INLINE void _Yield(void);
