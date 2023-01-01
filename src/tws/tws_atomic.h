@@ -13,13 +13,6 @@
 
 typedef int tws_Atomic;
 
-#ifdef _MSC_VER
-    typedef __int64 tws_Atomic64;
-#else
-#  include <stdint.h> /* uint64_t */
-    typedef int64_t tws_Atomic64;
-#endif
-
 /* Ordered by preference. First one that's available is taken.
  Defines *one* TWS_ATOMIC_USE_XXX macro for the chosen TWS_HAS_XXX that can be checked order-independently from now on. */
 #if defined(TWS_HAS_C11) /* the most sane standard */
@@ -50,7 +43,7 @@ typedef int tws_Atomic;
      /* Old gcc atomics with __sync prefix -- warning: Less efficient. Should be used only as a last resort. */
 #    define TWS_ATOMIC_USE_OLDGCC_SYNC
 #    define TWS_DECL_ATOMIC(x) volatile x
-#    define COMPILER_BARRIER() asm volatile("" ::: "memory")
+#    define COMPILER_BARRIER() __asm volatile("" ::: "memory")
 #  endif
 #else
 #  error Unsupported compiler; missing support for atomic instrinsics
@@ -82,20 +75,27 @@ TWS_PRIVATE_INLINE tws_Atomic _AtomicDec_Rel(NativeAtomic *x);
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval);
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval);
 TWS_PRIVATE_INLINE void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval);
-TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Acq(NativeAtomic *x, tws_Atomic newval); // return previous
+TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Acq(NativeAtomic *x, tws_Atomic newval); /* return previous */
 TWS_PRIVATE_INLINE tws_Atomic _RelaxedGet(const NativeAtomic *x); /* load with no synchronization or guarantees */
 
 #if TWS_HAS_WIDE_ATOMICS
 
+#ifdef _MSC_VER
+typedef __int64 tws_Atomic64;
+#else
+#  include <stdint.h> /* uint64_t */
+typedef int64_t tws_Atomic64;
+#endif
+
 /* Wide atomic type to CAS two 32-bit values at the same time */
-TWS_ALIGN(8) union WideAtomic
+union WideAtomic
 {
-    TWS_DECL_ATOMIC(tws_Atomic64) val;
+    TWS_ALIGN(8) TWS_DECL_ATOMIC(tws_Atomic64) val;
     tws_Atomic64 both; /* Non-volatile to avoid breaking compiler optimization */
     struct
     {
         /* We don't care about endianness here.
-           This is intended as 2 atomics that can be CAS'd together, nothing more. */
+           This is intended as 2 atomic ints that can be CAS'd together, nothing more. */
         tws_Atomic first, second;
     } half;
 };
@@ -110,5 +110,5 @@ TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x);
 
 /* CPU/hyperthread yield */
 TWS_PRIVATE_INLINE void _Yield(void);
-TWS_PRIVATE_INLINE void _YieldLong(void);
+TWS_PRIVATE_INLINE void _YieldLong(void); /* Possibly interruptible by other cores. Inteded to be paired with _UnyieldLong() */
 TWS_PRIVATE_INLINE void _UnyieldLong(void); /* Optionally break other cores out of a long yield */

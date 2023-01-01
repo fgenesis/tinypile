@@ -2,11 +2,6 @@
 #include <string.h>
 #include "tws.h"
 
-#ifndef _WIN32
-#include <pthread.h>
-#define GetCurrentThreadId() 0
-#endif
-
 #define TWS_THREAD_IMPLEMENTATION
 #include "tws_thread.h"
 
@@ -43,7 +38,7 @@ static void work(tws_Pool *pool, const tws_JobData *data)
             d[i].data.ext.ptr = data->ext.ptr;
             d[i].data.ext.size = i+1;
             d[i].channel = i & 1;
-            d[i].next = (i >> 2) & 1;
+            d[i].next = TWS_RELATIVE((i >> 2) & 1);
         }
         d[N-1].next = 0;
         d[N-1].channel = 1;
@@ -59,17 +54,18 @@ static const tws_PoolCallbacks cb = { NULL, ready, NULL };
 
 static void thrun(void *ud)
 {
-    //printf("spawned th\n");
+    int tid = tws_thread_id();
+    printf("spawned th %d\n", tid);
     while(!quit)
     {
         //while(tws_run(gpool, 1) || tws_run(gpool, 0)) {}
         tws_run(gpool, 1);
         tws_run(gpool, 0);
-        //printf("sleep th %d\n", GetCurrentThreadId());
-        tws_lwsem_acquire(&sem);
-        //printf("wakeup th %d\n", GetCurrentThreadId());
+        //printf("sleep th %d\n", tid);
+        tws_lwsem_acquire(&sem, 100);
+        //printf("wakeup th %d\n", tid);
     }
-    //printf("exiting th\n");
+    printf("exiting th %d\n", tid);
 }
 
 int main(int argc, char **argv)

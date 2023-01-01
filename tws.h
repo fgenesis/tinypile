@@ -15,7 +15,7 @@ License:
 Dependencies:
 - Compiles as C99 or oldschool C++ code, but can benefit from C11 or if compiled as C++11
 - Requires compiler/library/CPU support for: atomic int compare-and-swap (CAS), add, exchange; optional: wide CAS, cpu-yield
-- Does NOT use the libc or TLS
+- Does NOT require the libc or TLS (thread-local storage)
 
 Origin:
 https://github.com/fgenesis/tinypile
@@ -93,10 +93,7 @@ typedef void (*tws_Func)(tws_Pool *pool, const tws_JobData *data);
 typedef int (*tws_Fallback)(tws_Pool *pool, void *ud);
 
 
-typedef struct tws_Event tws_Event;
-
-
-
+#define TWS_RELATIVE(x) (-(int)(x))
 
 /* Describes a to-be-submitted job. */
 struct tws_JobDesc
@@ -111,11 +108,13 @@ struct tws_JobDesc
     unsigned channel;
 
     /* If this job does not start other jobs, this must be 0.
-       Otherwise set this to *one* followup job's relative index that will be started when this job is complete.
+       Otherwise set this to *one* followup job's index that will be started when this job is complete.
        In case multiple other jobs specify the same followup job, they all must be finished before the followup is started.
-       Note that next is relative -- multiple tws_JobDesc are submitted as an array, and next is added to the current job's index.
-       (This is intentionally not signed or an absolute index, so that simply doing jobs in order correctly handles dependencies!) */
-    unsigned next;
+       Next can be either relative or absolute:
+        - If next < 0, use abs(next) as relative index, eg. specify jobs[i].next = TWS_RELATIVE(k) to refer to jobs[i+k].
+        - If next > 0, x is used as absolute index. jobs[i].next = k then refers to jobs[k]. Asserts that k > i.
+       (This can intentionally only refer to jobs further ahead, so that simply doing jobs in order correctly handles dependencies!) */
+    int next;
 };
 typedef struct tws_JobDesc tws_JobDesc;
 

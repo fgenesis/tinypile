@@ -85,7 +85,14 @@ TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x)
 /* -------------------------------------------------------- */
 #ifdef TWS_ATOMIC_USE_GCC
 
-
+TWS_PRIVATE_INLINE tws_Atomic _AtomicInc_Acq(NativeAtomic *x)
+{
+    return __atomic_add_fetch(&x->val, 1, __ATOMIC_ACQUIRE);
+}
+TWS_PRIVATE_INLINE tws_Atomic _AtomicDec_Rel(NativeAtomic *x)
+{
+    return __atomic_sub_fetch(&x->val, 1, __ATOMIC_RELEASE);
+}
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval)
 {
     return __atomic_compare_exchange_4(&x->val, expected, newval, true, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE);

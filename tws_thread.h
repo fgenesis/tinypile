@@ -63,6 +63,7 @@ typedef struct tws_Thread tws_Thread;
 typedef void (*tws_ThreadEntry)(void *ud);
 TWS_THREAD_EXPORT tws_Thread *tws_thread_create(tws_ThreadEntry run, const char *name, void *data);
 TWS_THREAD_EXPORT void tws_thread_join(tws_Thread *th);
+TWS_THREAD_EXPORT int tws_thread_id(void); /* returns ID of current thread */
 
 /* OS Semaphore */
 typedef struct tws_Sem tws_Sem;
@@ -83,7 +84,7 @@ typedef struct tws_LWsem tws_LWsem;
 TWS_THREAD_EXPORT void *tws_lwsem_init(tws_LWsem *ws, int count); /* Returns NULL on failure */
 TWS_THREAD_EXPORT void tws_lwsem_destroy(tws_LWsem *ws);
 TWS_THREAD_EXPORT int tws_lwsem_tryacquire(tws_LWsem *ws);
-TWS_THREAD_EXPORT void tws_lwsem_acquire(tws_LWsem *ws);
+TWS_THREAD_EXPORT void tws_lwsem_acquire(tws_LWsem *ws, unsigned spincount);
 TWS_THREAD_EXPORT void tws_lwsem_release(tws_LWsem *ws, unsigned n);
 
 #ifdef __cplusplus
@@ -111,8 +112,9 @@ TWS_THREAD_EXPORT void tws_lwsem_release(tws_LWsem *ws, unsigned n);
 #endif
 
 /* System APIs */
-#if defined(__unix__) || defined(__unix) || defined(__linux__)
+#if defined(__unix__) || defined(__unix) || defined(__linux__) || (defined (__APPLE__) && defined (__MACH__))
 #  include <unistd.h> /* sysconf */
+#  include <sys/syscall.h>
 #  define TWS_OS_POSIX
 #endif
 
@@ -165,6 +167,7 @@ static unsigned tws_arch_cachelinesize()
 static unsigned tws_os_cpucount()
 {
     int n = 0;
+
 #ifdef TWS_OS_POSIX
 #  ifdef _SC_LEVEL1_DCACHE_LINESIZE
     return sysconf(_SC_LEVEL1_DCACHE_LINESIZE);
@@ -172,6 +175,29 @@ static unsigned tws_os_cpucount()
 #endif
 
     return n < 0 ? 0 : n;
+}
+
+/* via https://stackoverflow.com/questions/21091000/how-to-get-thread-id-of-a-pthread-in-linux-c-program
+Yeah sure, POSIX is a standard... riiight */
+static int tws_os_tid()
+{
+#ifdef TWS_OS_POSIX
+#  if defined(SYS_gettid)
+    return syscall(SYS_gettid);
+#  elif defined(__FreeBSD__)
+    long tid;
+    thr_self(&tid);
+    return (int)tid;
+#  elif defined(__NetBSD__)
+    return _lwp_self();
+#  elif defined(__OpenBSD__)
+    return getthrid();
+#  else
+    return getpid();
+#  endif
+#endif
+
+    return -1;
 }
 
 // --------------------------------------------------------
@@ -306,8 +332,14 @@ TWS_THREAD_EXPORT tws_Thread *tws_thread_create(tws_ThreadEntry run, const char 
 
 TWS_THREAD_EXPORT void tws_thread_join(tws_Thread *th)
 {
-    WaitForSingleObject(th, INFINITE);
-    CloseHandle(th);
+    HANDLE h = (HANDLE)th;
+    WaitForSingleObject(h, INFINITE);
+    CloseHandle(h);
+}
+
+TWS_THREAD_EXPORT int tws_thread_id(void)
+{
+    return GetCurrentThreadId();
 }
 
 TWS_THREAD_EXPORT tws_Sem* tws_sem_create(void)
@@ -342,7 +374,7 @@ static pfnGetLogicalProcessorInformation GetLogicalProcessorInformationFunc()
     return f;
 }
 
-static inline unsigned tws_impl_getNumCPUs(void)
+TWS_THREAD_EXPORT unsigned tws_cpu_count(void)
 {
     // TODO: Use GetLogicalProcessorInformation() if present?
 
@@ -353,7 +385,7 @@ static inline unsigned tws_impl_getNumCPUs(void)
     return n > 0 ? n : 0;
 }
 
-static inline unsigned tws_impl_getCPUCacheLineSize(void)
+TWS_THREAD_EXPORT unsigned tws_cpu_cachelinesize(void)
 {
     pfnGetLogicalProcessorInformation glpi = GetLogicalProcessorInformationFunc();
     if(glpi)
@@ -410,6 +442,11 @@ TWS_THREAD_EXPORT tws_Thread *tws_thread_create(tws_ThreadEntry run, const char 
 TWS_THREAD_EXPORT void tws_thread_join(tws_Thread *th)
 {
     SDL_WaitThread((SDL_Thread*)th, NULL);
+}
+
+TWS_THREAD_EXPORT int tws_thread_id(void)
+{
+    return SDL_ThreadID();
 }
 
 TWS_THREAD_EXPORT tws_Sem* tws_sem_create()
@@ -480,6 +517,12 @@ TWS_THREAD_EXPORT void tws_thread_join(tws_Thread *th)
     tws__free(th);
 }
 
+TWS_THREAD_EXPORT int tws_thread_id(void)
+{
+    int tid = tws_os_tid();
+    return tid < 0 ? pthread_self() : tid;
+}
+
 TWS_THREAD_EXPORT tws_Sem* tws_sem_create(void)
 {
     sem_t *s = (sem_t*)tws__malloc(sizeof(sem_t));
@@ -508,12 +551,12 @@ TWS_THREAD_EXPORT void tws_sem_release(tws_Sem *sem, unsigned n)
     //    sem_post((sem_t*)sem);
 }
 
-TWS_THREAD_EXPORT unsigned tws_impl_getNumCPUs(void)
+TWS_THREAD_EXPORT unsigned tws_cpu_count(void)
 {
     return tws_os_cpucount();
 }
 
-TWS_THREAD_EXPORT unsigned tws_impl_getCPUCacheLineSize(void)
+TWS_THREAD_EXPORT unsigned tws_cpu_cachelinesize(void)
 {
     unsigned sz = tws_os_cachelinesize();
     return sz ? sz : tws_arch_cachelinesize();
@@ -535,6 +578,11 @@ TWS_THREAD_EXPORT tws_Thread *tws_thread_create(tws_ThreadEntry run, const char 
 TWS_THREAD_EXPORT void tws_thread_join(tws_Thread *th)
 {
     // TODO
+}
+
+TWS_THREAD_EXPORT int tws_thread_id(void)
+{
+    return tws_os_tid(); // TODO
 }
 
 TWS_THREAD_EXPORT tws_Sem* tws_sem_create(void)
@@ -631,6 +679,12 @@ TWS_THREAD_EXPORT void tws_thread_join(tws_Thread *th)
     delete t;
 }
 
+TWS_THREAD_EXPORT int tws_thread_id(void)
+{
+    int tid = tws_os_tid();
+    return tid < 0 ? (int)(std::this_thread::get_id()) : tid;
+}
+
 TWS_THREAD_EXPORT tws_Sem* tws_sem_create(void)
 {
     return reinterpret_cast<tws_Sem*>(new tws_Cpp11Semaphore(0));
@@ -706,6 +760,12 @@ TWS_THREAD_EXPORT void tws_thread_join(tws_Thread *th)
     free(pt);
 }
 
+TWS_THREAD_EXPORT int tws_thread_id(void)
+{
+    int tid = tws_os_tid();
+    return tid < 0 ? (int)(thrd_current()) : tid;
+}
+
 TWS_THREAD_EXPORT tws_Sem* tws_sem_create(void)
 {
     tws_C11Sem *cs = (tws_C11Sem*)malloc(sizeof(tws_C11Sem));
@@ -769,7 +829,23 @@ TWS_THREAD_EXPORT unsigned tws_cpu_cachelinesize(void)
 
 #endif
 
-// ========================================================
+/* ======================================================== */
+/* Atomics support. Choice of backend is independent from the rest since they usually get inlined anyway */
+
+/* Check if GCC __sync or __atomic is available */
+#if defined(__GNUC__) && !defined(__clang__)
+#  if (__GNUC__ > 4) || ((__GNUC__ == 4) && (__GNUC_MINOR__ >= 7)) /* gcc 4.6.0 docs do not mention __atomic; appeared in 4.7.0 */
+#    define TWS_HAS_GCC_ATOMIC
+#  endif
+#  if (__GNUC__ > 4) || ((__GNUC__ == 4) && (__GNUC_MINOR__ >= 1)) /* gcc 4.0.0 docs do not mention __sync; appeared in 4.1.0 */
+#    define TWS_HAS_GCC_SYNC
+#  endif
+#elif defined(__clang__)
+#  define TWS_HAS_GCC_SYNC /* clang 3.0.0 has this, not sure about older versions */
+#  if (__clang_major__ > 3) || ((__clang_major__ == 3) && (__clang_minor__ >= 1)) /* tested via godbolt.org */
+#    define TWS_HAS_GCC_ATOMIC
+#  endif
+#endif
 
 
 /* Prefer C11 if available */
@@ -779,6 +855,12 @@ TWS_THREAD_EXPORT unsigned tws_cpu_cachelinesize(void)
 typedef atomic_int _tws_AtomicIntType;
 typedef int _tws_IntType;
 
+/* This does everything that C11 does, but has a different syntax */
+#elif defined(TWS_HAS_GCC_ATOMIC)
+#  define TWS_ATOMIC_USE_GCC_ATOMIC
+typedef volatile int _tws_AtomicIntType;
+typedef int _tws_IntType;
+
 /* MSVC instrinsics are fine for what is needed here */
 #elif defined(_MSC_VER)
 #  include <intrin.h>
@@ -786,11 +868,17 @@ typedef int _tws_IntType;
 typedef volatile long _tws_AtomicIntType;
 typedef long _tws_IntType;
 
-/* C++11 and up; avoid pulling in STL if possible */
+/* C++11 and up; late to avoid pulling in STL if possible */
 #elif defined(TWS_HAS_BACKEND_CPP)
 #  include <atomic>
 #  define TWS_ATOMIC_USE_CPP11
 typedef std::atomic_int _tws_AtomicIntType;
+typedef int _tws_IntType;
+
+/* __sync is fine but maybe a bit less efficient on ARM */
+#elif defined(TWS_HAS_GCC_SYNC)
+#  define TWS_ATOMIC_USE_GCC_SYNC
+typedef volatile int _tws_AtomicIntType;
 typedef int _tws_IntType;
 
 /* SDL atomics aren't all that great, use those only as a last resort */
@@ -833,22 +921,31 @@ inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
 #ifdef TWS_ATOMIC_USE_MSVC
 #pragma intrinsic(_InterlockedCompareExchange)
 #pragma intrinsic(_InterlockedExchangeAdd)
-//#pragma intrinsic(_InterlockedCompareExchange_acq) // TODO
-//#pragma intrinsic(_InterlockedCompareExchange_rel)
+#if defined(TWS_ARCH_ARM) || defined(TWS_ARCH_ARM64)
+#  pragma intrinsic(_InterlockedCompareExchange_acq)
+#  pragma intrinsic(_InterlockedCompareExchange_rel)
+#  pragma intrinsic(_InterlockedExchangeAdd_acq)
+#  pragma intrinsic(_InterlockedExchangeAdd_rel)
+#else
+#  define _InterlockedCompareExchange_acq _InterlockedCompareExchange
+#  define _InterlockedCompareExchange_rel _InterlockedCompareExchange
+#  define _InterlockedExchangeAdd_acq _InterlockedExchangeAdd
+#  define _InterlockedExchangeAdd_rel _InterlockedExchangeAdd
+#endif
 inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
 {
     const _tws_IntType expectedVal = *expected;
-    _tws_IntType prevVal = _InterlockedCompareExchange(&x->a_val, newval, expectedVal);
+    _tws_IntType prevVal = _InterlockedCompareExchange_acq(&x->a_val, newval, expectedVal);
     if(prevVal == expectedVal)
         return 1;
 
     *expected = prevVal;
     return 0;
 }
-inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, int *expected, int newval)
+inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
 {
-    const int expectedVal = *expected;
-    int prevVal = _InterlockedCompareExchange(&x->a_val, newval, expectedVal);
+    const _tws_IntType expectedVal = *expected;
+    _tws_IntType prevVal = _InterlockedCompareExchange_rel(&x->a_val, newval, expectedVal);
     if(prevVal == expectedVal)
         return 1;
 
@@ -859,11 +956,11 @@ inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x) { return x->a_
 /* Add returns original value */
 inline static _tws_IntType tws_atomicAdd_Acq(tws_AtomicInt *x, _tws_IntType v)
 {
-    return _InterlockedExchangeAdd(&x->a_val, v);
+    return _InterlockedExchangeAdd_acq(&x->a_val, v);
 }
 inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
 {
-    return _InterlockedExchangeAdd(&x->a_val, v);
+    return _InterlockedExchangeAdd_rel(&x->a_val, v);
 }
 #endif
 
@@ -922,6 +1019,65 @@ inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
 }
 #endif
 
+#ifdef TWS_ATOMIC_USE_GCC_ATOMIC
+inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+{
+    return __atomic_compare_exchange_4(&x->a_val, expected, newval, true, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE);
+}
+inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+{
+    return __atomic_compare_exchange_4(&x->a_val, expected, newval, true, __ATOMIC_RELEASE, __ATOMIC_CONSUME);
+}
+inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x)
+{
+    return __atomic_load_4(&x->a_val, __ATOMIC_RELAXED);
+}
+inline static _tws_IntType tws_atomicAdd_Acq(tws_AtomicInt *x, _tws_IntType v)
+{
+    return __atomic_fetch_add(&x->a_val, v, __ATOMIC_ACQUIRE);
+}
+inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
+{
+    return __atomic_fetch_add(&x->a_val, v, __ATOMIC_RELEASE);
+}
+#endif
+
+#ifdef TWS_ATOMIC_USE_GCC_SYNC
+static inline int _tws_sync_cas32(tws_Atomic *x, tws_Atomic *expected, tws_Atomic newval)
+{
+    int expectedVal = *expected;
+    int prev = __sync_val_compare_and_swap(x, expectedVal, newval);
+    if (prev == expectedVal)
+        return 1;
+    *expected = prev;
+    return 0;
+}
+inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+{
+    return _tws_sync_cas32(&x->a_val, expected, newval);
+}
+inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+{
+    return _tws_sync_cas32(&x->a_val, expected, newval);
+}
+inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x)
+{
+    __asm volatile("" ::: "memory"); /* compiler barrier */
+    _tws_IntType ret = x->val;
+    __asm volatile("" ::: "memory");
+    return ret;
+}
+inline static _tws_IntType tws_atomicAdd_Acq(tws_AtomicInt *x, _tws_IntType v)
+{
+    return __sync_fetch_and_add(&x->a_val, v);
+}
+inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
+{
+    return __sync_fetch_and_add(&x->a_val, v);
+}
+#endif
+
+
 // ----------------------------------------------------------------------
 
 
@@ -949,18 +1105,20 @@ TWS_THREAD_EXPORT int tws_lwsem_tryacquire(tws_LWsem *ws)
     return old > 0 && tws_atomicWeakCAS_Acq(&ws->a_count, &old, old - 1);
 }
 
-TWS_THREAD_EXPORT void tws_lwsem_acquire(tws_LWsem *ws)
+TWS_THREAD_EXPORT void tws_lwsem_acquire(tws_LWsem *ws, unsigned spin)
 {
-    _tws_IntType old = tws_relaxedGet(&ws->a_count);
-
-    unsigned spin = 100;
-    do
+    _tws_IntType old;
+    if(spin)
     {
-        if (old > 0 && tws_atomicWeakCAS_Acq(&ws->a_count, &old, old - 1))
-            return;
-        tws_yieldCPU(0);
+        old = tws_relaxedGet(&ws->a_count);
+        do
+        {
+            if (old > 0 && tws_atomicWeakCAS_Acq(&ws->a_count, &old, old - 1))
+                return;
+            tws_yieldCPU(0);
+        }
+        while(--spin);
     }
-    while(--spin);
     /* Failed to acquire after trying; wait via OS-semaphore */
     old = tws_atomicAdd_Acq(&ws->a_count, -1);
     if (old <= 0)

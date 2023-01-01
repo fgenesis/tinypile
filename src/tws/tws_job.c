@@ -190,12 +190,14 @@ TWS_PRIVATE size_t prepare(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp*
         job->data = desc->data;
         job->u.waiting.channel = desc->channel;
 
-        unsigned next = desc->next;
+        unsigned next = (unsigned)(desc->next < 0
+            ? (-desc->next + i) /* Relative to absolute index */
+            : desc->next        /* keep absolute index or 0 */
+        );
         if(next)
         {
-            next += i; /* Relative to absolute index */
-            TWS_ASSERT(next < k && next > i, "followup relative index out of bounds");
-            next = tmp[next]; /* Array index to job index */
+            TWS_ASSERT(next < k && next > i, "followup index out of bounds");
+            next = tmp[next]; /* Array index to job index. Remember that job idx 0 is invalid so this never ends up 0 here */
             TWS_ASSERT(next, "must be > 0");
             TWS_ASSERT(next <= pool->info.maxjobs, "job idx out of range");
             tws_Job *followup = &jobbase[next];

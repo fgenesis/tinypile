@@ -96,7 +96,9 @@
 #endif
 
 #ifndef TWS_ALIGN
-#  ifdef _MSC_VER
+#  if defined(TWS_HAS_C11)
+#    define TWS_ALIGN(x) _Alignas(x)
+#  elif defined(_MSC_VER)
 #    define TWS_ALIGN(x) __declspec(align(x))
 #  else
 #    define TWS_ALIGN(x) __attribute__((aligned(x)))
