@@ -16,8 +16,8 @@ enum { ACA_EXTRA_ELEMS = 1 };
 
 typedef struct Aca
 {
-    unsigned pos; /* TODO: make actual lock-free impl that uses wide atomics instead of a spinlock */
     Spinlock lock;
+    unsigned pos; /* TODO: make actual lock-free impl that uses wide atomics instead of a spinlock */
     unsigned size;
 } Aca;
 
