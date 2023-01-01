@@ -110,3 +110,5 @@ TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x);
 
 /* CPU/hyperthread yield */
 TWS_PRIVATE_INLINE void _Yield(void);
+TWS_PRIVATE_INLINE void _YieldLong(void);
+TWS_PRIVATE_INLINE void _UnyieldLong(void); /* Optionally break other cores out of a long yield */

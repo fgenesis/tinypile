@@ -239,7 +239,16 @@ Refer to https://sourceforge.net/p/predef/wiki/Architectures/ for platform defin
 #if defined(TWS_ARCH_X86) || defined(TWS_ARCH_X64)
 # include <immintrin.h>
 TWS_PRIVATE_INLINE void _Yield(void) { _mm_pause(); }
-/* ARM has the 'yield' instruction... */
+TWS_PRIVATE_INLINE void _YieldLong(void) { _mm_pause(); }
+TWS_PRIVATE_INLINE void _UnyieldLong(void) { }
+
+/* wfe on ARM is pretty much exactly what we need, as long as it's paired with a sev instruction */
+#elif __has_builtin(__builtin_arm_wfe) && __has_builtin(__builtin_arm_sev) && __has_builtin(__builtin_arm_yield)
+TWS_PRIVATE_INLINE void _YieldLong(void) { __builtin_arm_wfe(); }
+TWS_PRIVATE_INLINE void _UnyieldLong(void) { __builtin_arm_sev(); }
+TWS_PRIVATE_INLINE void _Yield(void) { __builtin_arm_yield(); }
+
+/* If those above builtins are not known as such, fudge something */
 #elif defined(TWS_ARCH_ARM) || defined(TWS_ARCH_ARM64)
 # ifdef _MSC_VER
 #   include <intrin.h>
@@ -247,13 +256,21 @@ TWS_PRIVATE_INLINE void _Yield(void) { __yield(); } /* ... MSVC has an intrinsic
 # else
 TWS_PRIVATE_INLINE void _Yield(void) { asm volatile("yield"); } /*... gcc doesn't, apparently. clang? definitely not in older versions. */
 # endif
+TWS_PRIVATE_INLINE void _YieldLong(void) { _Yield(); }
+TWS_PRIVATE_INLINE void _UnyieldLong(void) {  }
+
 /* Windows has a macro that works. But we check this late to avoid including this gruesome header unless absolutely necessary. */
 #elif defined(_WIN32) || defined(_WIN64) || defined(_WINDOWS)
 # define WIN32_LEAN_AND_MEAN
 # define WIN32_NOMINMAX
 # include <Windows.h>
 TWS_PRIVATE_INLINE void _Yield(void) { YieldProcessor(); }
+TWS_PRIVATE_INLINE void _YieldLong(void) { YieldProcessor(); }
+TWS_PRIVATE_INLINE void _UnyieldLong(void) { }
+
 #else
 # error Need to implement yield opcode for your platform! It will work without but may be less efficient. Comment out this #error to continue anyway.
 TWS_PRIVATE_INLINE void _Yield(void) { /* Do nothing for a few cycles */ }
+TWS_PRIVATE_INLINE void _YieldLong(void) { _Yield(); }
+TWS_PRIVATE_INLINE void _UnyieldLong(void) { }
 #endif

@@ -131,3 +131,7 @@
 #else
 #define VALGRIND_MAKE_MEM_UNDEFINED(addr, len)
 #endif
+
+#ifndef __has_builtin
+# define __has_builtin(x) 0
+#endif

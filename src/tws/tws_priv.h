@@ -31,7 +31,7 @@ inline static void _atomicLock(Spinlock *sp)
             break;
 
         while(_RelaxedGet(&sp->a)) // spin and yield until someone releases the lock
-            _Yield();
+            _YieldLong();
     }
 }
 
@@ -43,6 +43,7 @@ return !_RelaxedGet(a) && !_AtomicExchange_Acq(a, 1);
 inline static void _atomicUnlock(Spinlock *sp)
 {
     _AtomicSet_Rel(&sp->a, 0);
+    _UnyieldLong();
 }
 
 // ---- Alignment ----
