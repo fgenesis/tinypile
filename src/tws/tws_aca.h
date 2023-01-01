@@ -16,18 +16,8 @@ enum { ACA_EXTRA_ELEMS = 1 };
 
 typedef struct Aca
 {
-#ifdef TWS_HAS_WIDE_ATOMICSx
-    WideAtomic rd; /* next element to pop */
-    WideAtomic ins; /* next position to insert into */
-    /* Invariants:
-      - ins == rd when empty
-      - ins < size
-      - rd < size
-    */
-#else
+    unsigned pos; /* TODO: make actual lock-free impl that uses wide atomics instead of a spinlock */
     Spinlock lock;
-    unsigned pos;
-#endif
     unsigned size;
 } Aca;
 
