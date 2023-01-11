@@ -13,6 +13,7 @@ Extra properties:
 #include "tws_priv.h"
 
 enum { ACA_EXTRA_ELEMS = 1 };
+enum { ACA_SENTINEL = (unsigned)(-1) }; /* Internally used, can't be pushed as normal value */
 
 typedef struct Aca
 {
@@ -26,7 +27,6 @@ TWS_PRIVATE void aca_init(Aca *a, unsigned slots);
 /* Add one elem */
 TWS_PRIVATE void aca_push(Aca *a, unsigned *base, unsigned x);
 
-/* Remove n elems, write them to dst. Returns 0 if failed; dst is undefined in that case */
+/* Remove at least minn elems, write them to dst. Up to maxn elems. Returns # elems removed,
+   0 if failed (dst is undefined in that case) */
 TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned minn, unsigned maxn);
-
-TWS_PRIVATE void aca_deinit(Aca *a);

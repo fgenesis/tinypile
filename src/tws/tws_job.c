@@ -75,7 +75,7 @@ TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job, unsigned mychannel)
     /* save some things. Note that job->u has been trashed. */
     const tws_Func func = job->func;
     TWS_ASSERT(func, "dead job");
-#ifndef NDEBUG
+#ifdef TWS_DEBUG
     job->func = NULL;
 #endif
     const unsigned followupIdx = job->followupIdx;
@@ -181,7 +181,7 @@ TWS_PRIVATE size_t prepare(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp*
         const unsigned jobidx = tmp[i];
         tws_Job *job = &jobbase[jobidx];
 
-#ifndef NDEBUG
+#ifdef TWS_DEBUG
         tmp[i] = 0;
 #endif
         TWS_ASSERT(desc->channel < pool->info.maxchannels, "channel out of range");

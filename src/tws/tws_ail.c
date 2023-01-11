@@ -6,7 +6,7 @@ inline static unsigned ail_toidx(void *base, void *p)
     TWS_ASSERT(base && p, "can't be NULL");
     TWS_ASSERT((char*)base < (char*)p, "ptr must be ahead of base");
     /* can't happen since everything lives in a small, contiguous memory block */
-    TWS_ASSERT((char*)p - (char*)base < (unsigned)(-2), "ptrdiff too large"); 
+    TWS_ASSERT((char*)p - (char*)base < (unsigned)(-2), "ptrdiff too large");
     return (unsigned)((char*)p - (char*)base);
 }
 
@@ -82,6 +82,8 @@ TWS_PRIVATE void ail_merge(AList *al, AList *other, void *tail)
 
 /* --------------------------------------- */
 #else
+
+// TODO: rewrite to use _ail_link() with spinlock
 
 TWS_PRIVATE void ail_init(AList* al)
 {

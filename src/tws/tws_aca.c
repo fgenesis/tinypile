@@ -8,12 +8,17 @@ TWS_PRIVATE void aca_init(Aca* a, unsigned slots)
     _initSpinlock(&a->lock);
 }
 
+// TODO:
+// make array actually circular
+// update wpos first (non-atomically)
+// cmpxchg_weak assuming base[wpos] is ACA_SENTINEL (this is a memory barrier),
+// if failed re-read wpos and try again
 TWS_PRIVATE void aca_push(Aca* a, unsigned *base, unsigned x)
 {
     _atomicLock(&a->lock);
 
     unsigned idx = a->pos;
-    TWS_ASSERT(base[idx] == (unsigned)-1, "stomp");
+    TWS_ASSERT(base[idx] == ACA_SENTINEL, "stomp");
     base[idx] = x;
     a->pos = idx + 1;
 
@@ -31,10 +36,10 @@ TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned mi
         do
         {
             --idx;
-            TWS_ASSERT(base[idx] != (unsigned)-1, "already used");
+            TWS_ASSERT(base[idx] != ACA_SENTINEL, "already used");
             dst[done++] = base[idx];
-#ifndef NDEBUG
-            base[idx] = (unsigned)-1;
+#ifdef TWS_DEBUG
+            base[idx] = ACA_SENTINEL;
 #endif
         }
         while(idx && done < maxn);

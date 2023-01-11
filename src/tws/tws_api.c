@@ -81,7 +81,7 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     unsigned *base = (unsigned*)p;
     for(size_t i = 0; i < numjobs; ++i)
         base[i] = i+1; /* Job index of 0 is invalid */
-#ifndef NDEBUG
+#ifdef TWS_DEBUG
     base[numjobs] = (unsigned)(-2);
 #endif
 
