@@ -134,7 +134,7 @@ struct tws_PoolCallbacks
 typedef struct tws_PoolCallbacks tws_PoolCallbacks;
 
 
-/* Used as temporary buffer for tws_submit(). Don't touch anything here; this struct is only public to get the correct size. */
+/* Used as temporary buffer for tws_submit() */
 typedef unsigned tws_WorkTmp;
 
 /* Calculate memory required to create a pool with these parameters.

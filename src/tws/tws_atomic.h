@@ -76,6 +76,7 @@ TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic *expected
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval);
 TWS_PRIVATE_INLINE void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval);
 TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Acq(NativeAtomic *x, tws_Atomic newval); /* return previous */
+TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Seq(NativeAtomic *x, tws_Atomic newval); /* return previous */
 TWS_PRIVATE_INLINE tws_Atomic _RelaxedGet(const NativeAtomic *x); /* load with no synchronization or guarantees */
 
 #if TWS_HAS_WIDE_ATOMICS
@@ -98,6 +99,10 @@ union WideAtomic
            This is intended as 2 atomic ints that can be CAS'd together, nothing more. */
         tws_Atomic first, second;
     } half;
+    struct
+    {
+        NativeAtomic first, second;
+    } a_half;
 };
 typedef union WideAtomic WideAtomic;
 
@@ -105,7 +110,7 @@ TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Acq(WideAtomic *x, tws_Atomic64 *expe
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Rel(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval);
 
 /* load with no synchronization or guarantees. Additionally, tearing into 2 partial loads on 32bit archs is not a problem */
-TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x); 
+TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x);
 #endif /* TWS_HAS_WIDE_ATOMICS */
 
 /* CPU/hyperthread yield */

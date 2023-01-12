@@ -142,8 +142,8 @@ static unsigned tws_os_cachelinesize()
 {
     int n = 0;
 
-#ifdef _SC_NPROCESSORS_CONF
-    n = sysconf(_SC_NPROCESSORS_CONF);
+#ifdef _SC_LEVEL1_DCACHE_LINESIZE
+    n =  sysconf(_SC_LEVEL1_DCACHE_LINESIZE);
 #endif
 
     return n < 0 ? 0 : n;
@@ -168,10 +168,8 @@ static unsigned tws_os_cpucount()
 {
     int n = 0;
 
-#ifdef TWS_OS_POSIX
-#  ifdef _SC_LEVEL1_DCACHE_LINESIZE
-    return sysconf(_SC_LEVEL1_DCACHE_LINESIZE);
-#  endif
+#ifdef _SC_NPROCESSORS_CONF
+    n = sysconf(_SC_NPROCESSORS_CONF);
 #endif
 
     return n < 0 ? 0 : n;

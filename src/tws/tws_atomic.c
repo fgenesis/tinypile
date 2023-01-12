@@ -11,6 +11,7 @@ TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic *expected
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval) { return atomic_compare_exchange_weak_explicit(&x->val, expected, newval, memory_order_release, memory_order_consume); }
 TWS_PRIVATE_INLINE void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval) { atomic_store_explicit(&x->val, newval, memory_order_release); }
 TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Acq(NativeAtomic *x, tws_Atomic newval) { return atomic_exchange_explicit(&x->val, newval, memory_order_acquire); } // return previous
+TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Seq(NativeAtomic *x, tws_Atomic newval) { return atomic_exchange_explicit(&x->val, newval, memory_order_seq_cst); } // return previous
 TWS_PRIVATE_INLINE tws_Atomic _RelaxedGet(const NativeAtomic *x) { return atomic_load_explicit((volatile atomic_int*)&x->val, memory_order_relaxed); }
 
 #if TWS_HAS_WIDE_ATOMICS
@@ -54,6 +55,7 @@ TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic *expected
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval) { return _msvc_cas32_x86(x, expected, newval); }
 TWS_PRIVATE_INLINE void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval) { _InterlockedExchange(&x->val, newval); }
 TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Acq(NativeAtomic *x, tws_Atomic newval) { return _InterlockedExchange(&x->val, newval); }
+TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Seq(NativeAtomic *x, tws_Atomic newval) { return _InterlockedExchange(&x->val, newval); }
 TWS_PRIVATE_INLINE tws_Atomic _RelaxedGet(const NativeAtomic *x) { return x->val; }
 
 #if TWS_HAS_WIDE_ATOMICS
@@ -108,6 +110,10 @@ TWS_PRIVATE_INLINE void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval)
 TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Acq(NativeAtomic *x, tws_Atomic newval)
 {
     __atomic_exchange_4(&x->val, newval, __ATOMIC_ACQUIRE);
+}
+TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Seq(NativeAtomic *x, tws_Atomic newval)
+{
+    __atomic_exchange_4(&x->val, newval, __ATOMIC_SEQ_CST);
 }
 TWS_PRIVATE_INLINE tws_Atomic _RelaxedGet(const NativeAtomic *x)
 {
@@ -164,7 +170,7 @@ TWS_PRIVATE_INLINE tws_Atomic _AtomicDec_Rel(NativeAtomic* x) { return __sync_su
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Acq(NativeAtomic* x, tws_Atomic* expected, tws_Atomic newval) { return _sync_cas32(&x->val, expected, newval); }
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Rel(NativeAtomic* x, tws_Atomic* expected, tws_Atomic newval) { return _sync_cas32(&x->val, expected, newval); }
 TWS_PRIVATE_INLINE void _AtomicSet_Rel(NativeAtomic* x, tws_Atomic newval) { x->val = newval; __sync_synchronize(); }
-TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Acq(NativeAtomic* x, tws_Atomic newval)
+TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Seq(NativeAtomic* x, tws_Atomic newval)
 {
     tws_Atomic prev = x->val;
     for (;;)
@@ -174,6 +180,10 @@ TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Acq(NativeAtomic* x, tws_Atomic ne
             return old;
         prev = old;
     }
+}
+TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Acq(NativeAtomic* x, tws_Atomic newval)
+{
+    return _AtomicExchange_Seq(x, newval);
 }
 TWS_PRIVATE_INLINE tws_Atomic _RelaxedGet(const NativeAtomic* x) { COMPILER_BARRIER(); tws_Atomic ret = x->val; COMPILER_BARRIER(); return ret; }
 
@@ -210,6 +220,10 @@ TWS_PRIVATE_INLINE void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval)
 TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Acq(NativeAtomic *x, tws_Atomic newval)
 {
     return x->val.exchange(newval, std::memory_order_acquire);
+}
+TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Seq(NativeAtomic *x, tws_Atomic newval)
+{
+    return x->val.exchange(newval, std::memory_order_seq_cst);
 }
 TWS_PRIVATE_INLINE tws_Atomic _RelaxedGet(const NativeAtomic *x)
 {

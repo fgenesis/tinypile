@@ -1,25 +1,32 @@
 /* --Atomic circular array--
-Purpose:
-- Pop 1 element
-- Pop N elements at once
+Used as storage for unused jobs indices ("index pool").
+Properties:
+- Pop [minn..maxn] elements at once (less than maxn allowed, but no less than minn)
 - Push 1 element at a time
-Used as storage for unused jobs.
-Extra properties:
 - The max. number of used slots is known. Caller must alloc 1 slot more.
+- Will never attempt to push() more elems than it can hold
+- No ordering guarantees
+- Caller must push() unique values in [1..size]
 */
 
 #pragma once
-#include "tws_atomic.h"
 #include "tws_priv.h"
 
 enum { ACA_EXTRA_ELEMS = 1 };
-enum { ACA_SENTINEL = (unsigned)(-1) }; /* Internally used, can't be pushed as normal value */
+enum { ACA_SENTINEL = 0 }; /* Internally used, can't be pushed as normal value */
 
 typedef struct Aca
 {
+#if 1
+    NativeAtomic wreserve; /* commited lags behind reserved */
+    NativeAtomic wcommit;
+    NativeAtomic rpos;
+    unsigned size;
+#else
     Spinlock lock;
     unsigned pos; /* TODO: make actual lock-free impl that uses wide atomics instead of a spinlock */
     unsigned size;
+#endif
 } Aca;
 
 TWS_PRIVATE void aca_init(Aca *a, unsigned slots);

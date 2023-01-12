@@ -5,7 +5,7 @@
 #define TWS_THREAD_IMPLEMENTATION
 #include "tws_thread.h"
 
-static char mem[409600];
+static char mem[4096];
 static tws_Pool *gpool;
 
 static tws_LWsem sem;
@@ -84,7 +84,7 @@ int main(int argc, char **argv)
         const tws_PoolInfo *info = tws_info(gpool);
         printf("[%u] space for %u jobs\n", r, info->maxjobs);
 
-        
+
         for(size_t i = 0; i < NTH; ++i)
         {
             char name[3] = { 'w', '0' + i, 0 };
