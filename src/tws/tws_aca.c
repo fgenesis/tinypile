@@ -61,37 +61,41 @@ TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned mi
     if(maxn > size) /* Don't even try unreasonable sizes. Saves on using a modulo below */
         maxn = size;
 
-    unsigned r = _RelaxedGet(&a->rpos);
-
     /* Try to reserve a chunk for reading */
-    unsigned next, n;
-    for(;;)
+    unsigned next, n, idx;
     {
-        const unsigned w = _RelaxedGet(&a->wcommit);
-        n = r <= w
-            ? w - r           /* [....R------->W....] */
-            : (size - r) + w; /* [~--->W......R----~] */
+        tws_Atomic r = _RelaxedGet(&a->rpos);
+        for(;;)
+        {
+            idx = r;
+            const unsigned w = (unsigned)_RelaxedGet(&a->wcommit);
+            n = idx <= w
+                ? w - idx           /* [....R------->W....] */
+                : (size - idx) + w; /* [~--->W......R----~] */
 
-        if(n < minn)
-            return 0; /* Not enough elements available */
-        if(n > maxn)
-            n = maxn; /* There's more than we need, clamp down */
+            if(n < minn)
+                return 0; /* Not enough elements available */
+            if(n > maxn)
+                n = maxn; /* There's more than we need, clamp down */
 
-        next = r + n;
-        if(next >= size) /* Handle wraparound. modulo-free because n <= maxn <= size */
-            next -= size;
-        if(_AtomicCAS_Weak_Acq(&a->rpos, &r, next))
-            break;
+            next = idx + n;
+            if(next >= size) /* Handle wraparound. modulo-free because n <= maxn <= size */
+                next -= size;
+            if(_AtomicCAS_Weak_Acq(&a->rpos, &r, next))
+                break;
+        }
     }
+
+    TWS_ASSERT(next != idx, "why");
 
     /* Copy over elements */
-    if(next > r)
-        for(unsigned i = r; i < next; ++i) { TWS_ASSERT(base[i] != ACA_SENTINEL, "oops"); *dst++ = base[i]; base[i] = ACA_SENTINEL; }
-    else
+    if(next < idx) /* End part until wraparound */
     {
-        for(unsigned i = r; i < size; ++i) { TWS_ASSERT(base[i] != ACA_SENTINEL, "oops"); *dst++ = base[i]; base[i] = ACA_SENTINEL; }
-        for(unsigned i = 0; i < next; ++i) { TWS_ASSERT(base[i] != ACA_SENTINEL, "oops"); *dst++ = base[i]; base[i] = ACA_SENTINEL; }
+        for(unsigned i = idx; i < size; ++i) { TWS_ASSERT(base[i] != ACA_SENTINEL, "oops"); *dst++ = base[i]; base[i] = ACA_SENTINEL; }
+        idx = 0; /* Wrap to beginning */
     }
+
+    for(unsigned i = idx; i < next; ++i) { TWS_ASSERT(base[i] != ACA_SENTINEL, "oops"); *dst++ = base[i]; base[i] = ACA_SENTINEL; }
 
     /* There is nothing to commit because we've only read things,
        and push() doesn't need to care about what pop() does */
