@@ -3,31 +3,12 @@
 
 #if 1
 
-// TODO:
-// make array actually circular
-// update wpos first (non-atomically)
-// cmpxchg_weak assuming base[wpos] is ACA_SENTINEL (this is a memory barrier),
-// if failed re-read wpos and try again
-
 TWS_PRIVATE void aca_init(Aca* a, unsigned slots)
 {
     a->size = slots + ACA_EXTRA_ELEMS;
     a->wreserve.val = slots;
     a->wcommit.val = slots;
     a->rpos.val = 0;
-}
-
-/* If used in an enum, it might turn out negative...
-   For use in wrap-around serial numbering, see https://www.rfc-editor.org/rfc/rfc1982 */
-static const unsigned ACA_WRAP = 1 << (sizeof(tws_Atomic) * 8 - 1);
-
-/* a > b in wraparound arithmetic */
-inline static int _aca_greater(unsigned a, unsigned b)
-{
-    return a != b && (
-           (a < b && b - a > ACA_WRAP)
-        || (a > b && a - b < ACA_WRAP)
-    );
 }
 
 TWS_PRIVATE void aca_push(Aca* a, unsigned *base, unsigned x)
