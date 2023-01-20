@@ -108,6 +108,7 @@ typedef union WideAtomic WideAtomic;
 
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Acq(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval);
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Rel(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval);
+TWS_PRIVATE_INLINE int _AtomicWideCAS_Strong_Acq(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval);
 
 /* load with no synchronization or guarantees. Additionally, tearing into 2 partial loads on 32bit archs is not a problem */
 TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x);

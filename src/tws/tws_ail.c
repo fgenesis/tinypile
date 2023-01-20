@@ -39,7 +39,7 @@ TWS_PRIVATE void *ail_pop(AList *al, void *base)
         next.half.first = *(unsigned*)p;
         next.half.second = (unsigned)cur.half.second;
 
-        /* There is no ABA problem because cur.both.second is incremented on every push(). */
+        /* There is no ABA problem because cur.half.second is incremented on every push(). */
         if(_AtomicWideCAS_Weak_Acq(&al->whead, &cur.both, next.both))
             return p;
     }

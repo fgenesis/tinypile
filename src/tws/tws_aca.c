@@ -1,105 +1,73 @@
 #include "tws_aca.h"
 
+#ifdef TWS_HAS_WIDE_ATOMICS
 
-#if 1
+/* Invariants:
+   - For each k > 0, base[k] != k
+*/
 
-TWS_PRIVATE void aca_init(Aca* a, unsigned slots)
+TWS_PRIVATE void aca_init(Aca* a, unsigned slots, unsigned *base)
 {
-    a->size = slots + ACA_EXTRA_ELEMS;
-    a->wreserve.val = slots;
-    a->wcommit.val = slots;
-    a->rpos.val = 0;
+    a->whead.half.first = 1;
+    a->whead.half.second = 0;
+
+    base[0] = ACA_SENTINEL; /* index 0 is never used */
+    base[slots] = ACA_SENTINEL; /* the extra index terminates the list of elems */
+    for(unsigned i = 1; i < slots; ++i)
+        base[i] = i+1; /* setup linked list */
 }
 
+/* push is going to be called a lot more than pop, so this should be really fast */
 TWS_PRIVATE void aca_push(Aca* a, unsigned *base, unsigned x)
 {
     TWS_ASSERT(x != ACA_SENTINEL, "sentinel");
-    const unsigned size = a->size;
-    tws_Atomic w = _RelaxedGet(&a->wreserve);
 
-    /* Reserve a slot */
-    unsigned newpos;
+    WideAtomic cur, next;
+    next.half.first = x; /* This will be the new head */
+    cur.both = _RelaxedWideGet(&a->whead);
     for(;;)
     {
-        /* Next index, with wraparound */
-        newpos = (unsigned)w + 1u;
-        if(newpos == size)
-            newpos = 0;
-
-        /* Once the CAS succeeds that slot is reserved */
-        if(_AtomicCAS_Weak_Rel(&a->wreserve, &w, newpos))
+        TWS_ASSERT(x != cur.half.first, "invariant broken");
+        /* Store current head. We still own base[x] until the CAS succeeds. */
+        base[x] = cur.half.first;
+        /* Prevent ABA problem */
+        next.half.second = (unsigned)cur.half.second + 1u; /* signed int overflow is UB, so make it unsigned */
+        /* Make x the new head */
+        if(_AtomicWideCAS_Weak_Rel(&a->whead, &cur.both, next.both))
             break;
     }
-
-    const unsigned idx = (unsigned)w;
-
-    /* Slot reserved. Do the write. */
-    TWS_ASSERT(base[idx] == ACA_SENTINEL, "stomp");
-    base[idx] = x;
-
-    /* Race with others, but everyone needs to finish in order.
-       Hope that we don't get preempted before committing to keep perf to a maximum */
-    for(;;)
-    {
-        /* Commit the write */
-        if(_AtomicCAS_Weak_Rel(&a->wcommit, &w, newpos))
-            break; /* All good, exit */
-
-        /* Someone reserved before us but didn't commit yet, wait a tiny bit */
-        _YieldLong();
-
-        /* Ensure that we don't create possibly unwritten holes */
-        w = idx;
-    }
-
-    _UnyieldLong();
 }
 
 TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned minn, unsigned maxn)
 {
-    const unsigned size = a->size;
-    if(maxn > size) /* Don't even try unreasonable sizes. Saves on using a modulo below */
-        maxn = size;
+    WideAtomic cur;
+    cur.both = _RelaxedWideGet(&a->whead);
 
-    /* Try to reserve a chunk for reading */
-    unsigned next, n, idx;
+    for(;;)
     {
-        tws_Atomic r = _RelaxedGet(&a->rpos);
-        for(;;)
+        unsigned idx = cur.half.first;
+        unsigned n = 0;
+        /* base[] forms a linked list where each value is the index of the next free slot */
+        for( ; idx != ACA_SENTINEL && n < maxn; ++n)
         {
-            idx = r;
-            const unsigned w = (unsigned)_RelaxedGet(&a->wcommit);
-            n = idx <= w
-                ? w - idx           /* [....R------->W....] */
-                : (size - idx) + w; /* [~--->W......R----~] */
-
-            if(n < minn)
-                return 0; /* Not enough elements available */
-            if(n > maxn)
-                n = maxn; /* There's more than we need, clamp down */
-
-            next = idx + n;
-            if(next >= size) /* Handle wraparound. modulo-free because n <= maxn <= size */
-                next -= size;
-            if(_AtomicCAS_Weak_Acq(&a->rpos, &r, next))
-                break;
+            dst[n] = idx; /* grab free slot */
+            idx = base[idx]; /* and follow linked list */
         }
+        if(n < minn)
+            return 0; /* Didn't get enough elements */
+
+        WideAtomic next;
+        next.half.first = idx; /* this may or may not be 0 (ACA_SENTINEL) */
+        next.half.second = (unsigned)cur.half.second;
+
+        /* There is no ABA problem because cur.half.second is incremented on every push().
+           Prefer a strong CAS to avoid repeating the above loop in case if a spurious failure. */
+        if(_AtomicWideCAS_Strong_Acq(&a->whead, &cur.both, next.both))
+            return n;
+
+        /* Failed the race. Someone else had changed the head in the meantime;
+           means anything written to dst[] is possibly bogus. Try again with updated cur. */
     }
-
-    TWS_ASSERT(next != idx, "why");
-
-    /* Copy over elements */
-    if(next < idx) /* End part until wraparound */
-    {
-        for(unsigned i = idx; i < size; ++i) { TWS_ASSERT(base[i] != ACA_SENTINEL, "oops"); *dst++ = base[i]; base[i] = ACA_SENTINEL; }
-        idx = 0; /* Wrap to beginning */
-    }
-
-    for(unsigned i = idx; i < next; ++i) { TWS_ASSERT(base[i] != ACA_SENTINEL, "oops"); *dst++ = base[i]; base[i] = ACA_SENTINEL; }
-
-    /* There is nothing to commit because we've only read things,
-       and push() doesn't need to care about what pop() does */
-    return n;
 }
 
 
@@ -107,11 +75,15 @@ TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned mi
 
 #else /* This impl works but is quite bad; the spinlock is hit hard esp. during aca_push() */
 
-TWS_PRIVATE void aca_init(Aca* a, unsigned slots)
+TWS_PRIVATE void aca_init(Aca* a, unsigned slots, unsigned *base)
 {
     a->size = slots+1;
     a->pos = slots;
     _initSpinlock(&a->lock);
+
+    for(unsigned i = 0; i < slots; ++i)
+        base[i] = i+1; /* Job index of 0 is invalid */
+    base[slots] = ACA_SENTINEL;
 }
 
 

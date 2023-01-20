@@ -74,14 +74,8 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     const size_t jobsArraySizeBytes = numjobs * sizeof(tws_Job);
     p += jobsArraySizeBytes;
 
-    aca_init(&pool->freeslots, numjobs); /* This knows that there is 1 extra slot */
+    aca_init(&pool->freeslots, numjobs, (unsigned*)p); /* This knows that there is 1 extra slot */
     pool->slotsOffset =  p - (uintptr_t)pool;
-
-    /* Park all jobs */
-    unsigned *base = (unsigned*)p;
-    for(size_t i = 0; i < numjobs; ++i)
-        base[i] = i+1; /* Job index of 0 is invalid */
-    base[numjobs] = ACA_SENTINEL;
 
     TWS_ASSERT(p + (numjobs + ACA_EXTRA_ELEMS) * sizeof(unsigned) <= end, "stomped memory");
 

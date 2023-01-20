@@ -17,11 +17,8 @@ enum { ACA_SENTINEL = 0 }; /* Internally used, can't be pushed as normal value *
 
 typedef struct Aca
 {
-#if 1
-    NativeAtomic wreserve; /* commited lags behind reserved */
-    NativeAtomic wcommit;
-    NativeAtomic rpos;
-    unsigned size;
+#ifdef TWS_HAS_WIDE_ATOMICS
+    WideAtomic whead;
 #else
     Spinlock lock;
     unsigned pos; /* TODO: make actual lock-free impl that uses wide atomics instead of a spinlock */
@@ -29,7 +26,7 @@ typedef struct Aca
 #endif
 } Aca;
 
-TWS_PRIVATE void aca_init(Aca *a, unsigned slots);
+TWS_PRIVATE void aca_init(Aca *a, unsigned slots, unsigned *base);
 
 /* Add one elem */
 TWS_PRIVATE void aca_push(Aca *a, unsigned *base, unsigned x);
