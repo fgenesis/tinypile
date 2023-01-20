@@ -63,16 +63,18 @@ static void _ail_link(AList *al, unsigned idx, void *p)
     }
 }
 
-TWS_PRIVATE void ail_push(AList *al, void *base, void *p)
-{
-    _ail_link(al, ail_toidx(base, p), p);
-}
+
 
 TWS_PRIVATE void ail_pushNonAtomic(AList *al, void *base, void *p)
 {
     unsigned newidx = ail_toidx(base, p);
     *(unsigned*)p = al->whead.half.first;
     al->whead.half.first = newidx;
+}
+
+TWS_PRIVATE void ail_push(AList *al, void *base, void *p)
+{
+    _ail_link(al, ail_toidx(base, p), p);
 }
 
 TWS_PRIVATE void ail_merge(AList *al, AList *other, void *tail)
@@ -83,7 +85,6 @@ TWS_PRIVATE void ail_merge(AList *al, AList *other, void *tail)
 /* --------------------------------------- */
 #else
 
-// TODO: rewrite to use _ail_link() with spinlock
 
 TWS_PRIVATE void ail_init(AList* al)
 {
@@ -133,9 +134,8 @@ TWS_PRIVATE void *ail_pop(AList *al, void *base)
     return p;
 }
 
-TWS_PRIVATE void ail_push(AList *al, void *base, void *p)
+static void _ail_link(AList *al, unsigned idx, void *p)
 {
-    const tws_Atomic idx = ail_toidx(base, p);
     //_atomicLock(&al->popLock);
     tws_Atomic cur = _RelaxedGet(&al->head);
     for(;;)
@@ -148,6 +148,24 @@ TWS_PRIVATE void ail_push(AList *al, void *base, void *p)
     }
     //_atomicUnlock(&al->popLock);
 }
+
+TWS_PRIVATE void ail_pushNonAtomic(AList *al, void *base, void *p)
+{
+    unsigned newidx = ail_toidx(base, p);
+    *(unsigned*)p = al->head.val;
+    al->head.val = newidx;
+}
+
+TWS_PRIVATE void ail_push(AList *al, void *base, void *p)
+{
+    _ail_link(al, ail_toidx(base, p), p);
+}
+
+TWS_PRIVATE void ail_merge(AList *al, AList *other, void *tail)
+{
+    _ail_link(al, other->head.val, tail);
+}
+
 
 #endif /* TWS_HAS_WIDE_ATOMICS */
 

@@ -7,7 +7,9 @@
 #  if defined(TWS_ARCH_X64) || defined(TWS_ARCH_X86) || defined(TWS_ARCH_ARM64)
 #    define TWS_HAS_WIDE_ATOMICS 1 /* If this is not available, spinlocks are used */
 #  endif
-#elif !TWS_HAS_WIDE_ATOMICS /* So that it can be externally #define'd to 0 to disable it */
+#endif
+
+#if !(TWS_HAS_WIDE_ATOMICS+0L) /* So that it can be externally #define'd to 0 to disable it */
 #  undef TWS_HAS_WIDE_ATOMICS
 #endif
 
