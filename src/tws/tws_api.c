@@ -18,7 +18,7 @@ TWS_EXPORT size_t tws_size(size_t concurrentJobs, unsigned numChannels, size_t c
     return AlignUp(sizeof(tws_Pool), cacheLineSize)
         + (numChannels * channelHeadSize)
         + (concurrentJobs * sizeof(tws_Job)) /* jobs array */
-        + ((concurrentJobs + 1) * sizeof(unsigned)) /* index storage for aca */
+        + ((concurrentJobs + 1) * sizeof(unsigned)) /* index storage for axp */
         + (cacheLineSize * 2); /* rough guess: compensate loss due to alignment adjustment */
 }
 
@@ -61,10 +61,10 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     pool->jobsArrayOffset = p - (uintptr_t)pool;
 
     size_t jobspace = end - p;
-    if(jobspace < (sizeof(tws_Job) + sizeof(unsigned) + (ACA_EXTRA_ELEMS * sizeof(unsigned))))
+    if(jobspace < (sizeof(tws_Job) + sizeof(unsigned) + (AXP_EXTRA_ELEMS * sizeof(unsigned))))
         return NULL;
 
-    jobspace -= ACA_EXTRA_ELEMS * sizeof(unsigned);
+    jobspace -= AXP_EXTRA_ELEMS * sizeof(unsigned);
 
 
     const size_t numjobs = jobspace / (sizeof(tws_Job) + sizeof(unsigned));
@@ -74,10 +74,10 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     const size_t jobsArraySizeBytes = numjobs * sizeof(tws_Job);
     p += jobsArraySizeBytes;
 
-    aca_init(&pool->freeslots, numjobs, (unsigned*)p); /* This knows that there is 1 extra slot */
+    axp_init(&pool->freeslots, numjobs, (unsigned*)p); /* This knows that there is 1 extra slot */
     pool->slotsOffset =  p - (uintptr_t)pool;
 
-    TWS_ASSERT(p + (numjobs + ACA_EXTRA_ELEMS) * sizeof(unsigned) <= end, "stomped memory");
+    TWS_ASSERT(p + (numjobs + AXP_EXTRA_ELEMS) * sizeof(unsigned) <= end, "stomped memory");
 
     pool->info.maxjobs = numjobs;
 

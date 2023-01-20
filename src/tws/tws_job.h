@@ -41,7 +41,7 @@ typedef enum SubmitFlags SubmitFlags;
    That's why we do the internal allocation at runtime and just save the offsets. */
 struct tws_Pool
 {
-    Aca freeslots;
+    AtomicIndexPool freeslots;
     unsigned slotsOffset;
     unsigned channelHeadOffset;
     unsigned channelHeadSize; /* Incl. padding to cache line */
@@ -55,7 +55,7 @@ struct tws_Pool
     tws_ChannelHead[0..numchannels], each with enough padding to be on a separate cache line
     ...
     tws_Job[N]
-    unsigned[N+1]  <-- slots array used as base for freeslots
+    unsigned[N + AXP_EXTRA_ELEMS]  <-- slots array used as base for freeslots
     */
 };
 

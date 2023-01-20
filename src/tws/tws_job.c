@@ -9,7 +9,7 @@
 static size_t allocJobs(tws_WorkTmp *dst, tws_Pool *pool, size_t minn, size_t maxn)
 {
     unsigned *base = jobSlotsBase(pool);
-    return aca_pop(&pool->freeslots, dst, base, minn, maxn);
+    return axp_pop(&pool->freeslots, dst, base, minn, maxn);
 }
 
 /* Move done job back into storage */
@@ -18,7 +18,7 @@ static void recycleJob(tws_Pool *pool, tws_Job *job)
     unsigned *base = jobSlotsBase(pool);
     unsigned idx = jobToIndex(pool, job);
     VALGRIND_MAKE_MEM_UNDEFINED(job, sizeof(*job));
-    aca_push(&pool->freeslots, base, idx);
+    axp_push(&pool->freeslots, base, idx);
     if(pool->cb.recycled)
         pool->cb.recycled(pool->cb.ud, 1);
 }

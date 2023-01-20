@@ -6,21 +6,21 @@
    - For each k > 0, base[k] != k
 */
 
-TWS_PRIVATE void aca_init(Aca* a, unsigned slots, unsigned *base)
+TWS_PRIVATE void axp_init(AtomicIndexPool* a, unsigned slots, unsigned *base)
 {
     a->whead.half.first = 1;
     a->whead.half.second = 0;
 
-    base[0] = ACA_SENTINEL; /* index 0 is never used */
-    base[slots] = ACA_SENTINEL; /* the extra index terminates the list of elems */
+    base[0] = AXP_SENTINEL; /* index 0 is never used */
+    base[slots] = AXP_SENTINEL; /* the extra index terminates the list of elems */
     for(unsigned i = 1; i < slots; ++i)
         base[i] = i+1; /* setup linked list */
 }
 
 /* push is going to be called a lot more than pop, so this should be really fast */
-TWS_PRIVATE void aca_push(Aca* a, unsigned *base, unsigned x)
+TWS_PRIVATE void axp_push(AtomicIndexPool* a, unsigned *base, unsigned x)
 {
-    TWS_ASSERT(x != ACA_SENTINEL, "sentinel");
+    TWS_ASSERT(x != AXP_SENTINEL, "sentinel");
 
     WideAtomic cur, next;
     next.half.first = x; /* This will be the new head */
@@ -38,7 +38,7 @@ TWS_PRIVATE void aca_push(Aca* a, unsigned *base, unsigned x)
     }
 }
 
-TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned minn, unsigned maxn)
+TWS_PRIVATE size_t axp_pop(AtomicIndexPool *a, tws_WorkTmp *dst, unsigned *base, unsigned minn, unsigned maxn)
 {
     WideAtomic cur;
     cur.both = _RelaxedWideGet(&a->whead);
@@ -48,7 +48,7 @@ TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned mi
         unsigned idx = cur.half.first;
         unsigned n = 0;
         /* base[] forms a linked list where each value is the index of the next free slot */
-        for( ; idx != ACA_SENTINEL && n < maxn; ++n)
+        for( ; idx != AXP_SENTINEL && n < maxn; ++n)
         {
             dst[n] = idx; /* grab free slot */
             idx = base[idx]; /* and follow linked list */
@@ -57,7 +57,7 @@ TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned mi
             return 0; /* Didn't get enough elements */
 
         WideAtomic next;
-        next.half.first = idx; /* this may or may not be 0 (ACA_SENTINEL) */
+        next.half.first = idx; /* this may or may not be 0 (AXP_SENTINEL) */
         next.half.second = (unsigned)cur.half.second;
 
         /* There is no ABA problem because cur.half.second is incremented on every push().
@@ -73,9 +73,9 @@ TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned mi
 
 /* ---------------------------------------------*/
 
-#else /* This impl works but is quite bad; the spinlock is hit hard esp. during aca_push() */
+#else /* This impl works but is quite bad; the spinlock is hit hard esp. during axp_push() */
 
-TWS_PRIVATE void aca_init(Aca* a, unsigned slots, unsigned *base)
+TWS_PRIVATE void axp_init(AtomicIndexPool* a, unsigned slots, unsigned *base)
 {
     a->size = slots+1;
     a->pos = slots;
@@ -83,25 +83,25 @@ TWS_PRIVATE void aca_init(Aca* a, unsigned slots, unsigned *base)
 
     for(unsigned i = 0; i < slots; ++i)
         base[i] = i+1; /* Job index of 0 is invalid */
-    base[slots] = ACA_SENTINEL;
+    base[slots] = AXP_SENTINEL;
 }
 
 
-TWS_PRIVATE void aca_push(Aca* a, unsigned *base, unsigned x)
+TWS_PRIVATE void axp_push(AtomicIndexPool* a, unsigned *base, unsigned x)
 {
-    TWS_ASSERT(x != ACA_SENTINEL, "sentinel");
+    TWS_ASSERT(x != AXP_SENTINEL, "sentinel");
 
     _atomicLock(&a->lock);
 
     unsigned idx = a->pos;
-    TWS_ASSERT(base[idx] == ACA_SENTINEL, "stomp");
+    TWS_ASSERT(base[idx] == AXP_SENTINEL, "stomp");
     base[idx] = x;
     a->pos = idx + 1;
 
     _atomicUnlock(&a->lock);
 }
 
-TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned minn, unsigned maxn)
+TWS_PRIVATE size_t axp_pop(AtomicIndexPool *a, tws_WorkTmp *dst, unsigned *base, unsigned minn, unsigned maxn)
 {
     size_t done = 0;
     _atomicLock(&a->lock);
@@ -112,10 +112,10 @@ TWS_PRIVATE size_t aca_pop(Aca *a, tws_WorkTmp *dst, unsigned *base, unsigned mi
         do
         {
             --idx;
-            TWS_ASSERT(base[idx] != ACA_SENTINEL, "already used");
+            TWS_ASSERT(base[idx] != AXP_SENTINEL, "already used");
             dst[done++] = base[idx];
 #ifdef TWS_DEBUG
-            base[idx] = ACA_SENTINEL;
+            base[idx] = AXP_SENTINEL;
 #endif
         }
         while(idx && done < maxn);
