@@ -18,13 +18,11 @@ TWS_PRIVATE_INLINE tws_Atomic _RelaxedGet(const NativeAtomic *x) { return atomic
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Acq(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return atomic_compare_exchange_weak_explicit(&x->val, expected, newval, memory_order_acquire, memory_order_acquire); }
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Rel(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return atomic_compare_exchange_weak_explicit(&x->val, expected, newval, memory_order_release, memory_order_consume); }
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Strong_Acq(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return atomic_compare_exchange_strong_explicit(&x->val, expected, newval, memory_order_acquire, memory_order_acquire); }
+TWS_PRIVATE_INLINE tws_Atomic64 _AtomicWideExchange_Acq(WideAtomic *x, tws_Atomic64 newval) { return atomic_exchange_explicit(&x->val, newval, memory_order_acquire); } // return previous
 
 TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x)
 {
-    COMPILER_BARRIER();
-    tws_Atomic64 ret = x->val;
-    COMPILER_BARRIER();
-    return ret;
+    return atomic_load_explicit(&a->val, memory_order_relaxed);
 }
 #endif /* TWS_HAS_WIDE_ATOMICS */
 #endif
@@ -37,6 +35,7 @@ TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x)
 #pragma intrinsic(_InterlockedExchange)
 #pragma intrinsic(_InterlockedCompareExchange)
 #pragma intrinsic(_InterlockedCompareExchange64)
+#pragma intrinsic(_InterlockedExchange64)
 
 TWS_PRIVATE_INLINE tws_Atomic _AtomicInc_Acq(NativeAtomic *x) { return _InterlockedIncrement(&x->val); }
 TWS_PRIVATE_INLINE tws_Atomic _AtomicDec_Rel(NativeAtomic *x) { return _InterlockedDecrement(&x->val); }
@@ -74,6 +73,7 @@ static inline int _msvc_cas64_x86(WideAtomic *x, tws_Atomic64 *expected, tws_Ato
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Acq(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return _msvc_cas64_x86(x, expected, newval); }
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Rel(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return _msvc_cas64_x86(x, expected, newval); }
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Strong_Acq(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval) { return _msvc_cas64_x86(x, expected, newval); }
+TWS_PRIVATE_INLINE tws_Atomic64 _AtomicWideExchange_Acq(WideAtomic *x, tws_Atomic64 newval) { return _InterlockedExchange64(&x->val, newval); }
 
 TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x)
 {
@@ -135,6 +135,10 @@ TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Rel(WideAtomic *x, tws_Atomic64 *expe
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Strong_Acq(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval)
 {
     return __atomic_compare_exchange_8(&x->val, expected, newval, 0, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE);
+}
+TWS_PRIVATE_INLINE tws_Atomic64 _AtomicWideExchange_Acq(WideAtomic *x, tws_Atomic64 newval)
+{
+    __atomic_exchange_8(&x->val, newval, __ATOMIC_ACQUIRE);
 }
 
 TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x)
@@ -198,6 +202,18 @@ TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Acq(NativeAtomic64* x, tws_Atomic64* 
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Rel(NativeAtomic64* x, tws_Atomic64* expected, tws_Atomic64 newval) { return _sync_cas64(&x->val, expected, newval); }
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Strong_Acq(NativeAtomic64* x, tws_Atomic64* expected, tws_Atomic64 newval) { return _sync_cas64(&x->val, expected, newval); }
 
+TWS_PRIVATE_INLINE tws_Atomic64 _AtomicWideExchange_Acq(WideAtomic *x, tws_Atomic64 newval)
+{
+    tws_Atomic prev = x->val;
+    for (;;)
+    {
+        tws_Atomic old = __sync_val_compare_and_swap(&x->val, prev, newval);
+        if (old == prev)
+            return old;
+        prev = old;
+    }
+}
+
 TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x)
 {
     COMPILER_BARRIER();
@@ -214,11 +230,11 @@ TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x)
 
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval)
 {
-    return x->a_val.compare_exchange_weak(*expected, newval, std::memory_order_acquire, std::memory_order_acquire);
+    return x->val.compare_exchange_weak(*expected, newval, std::memory_order_acquire, std::memory_order_acquire);
 }
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval)
 {
-    return x->a_val.compare_exchange_weak(*expected, newval, std::memory_order_release, std::memory_order_consume);
+    return x->val.compare_exchange_weak(*expected, newval, std::memory_order_release, std::memory_order_consume);
 }
 TWS_PRIVATE_INLINE void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval)
 {
@@ -241,19 +257,23 @@ TWS_PRIVATE_INLINE tws_Atomic _RelaxedGet(const NativeAtomic *x)
 
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Acq(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval)
 {
-    return x->a_val.compare_exchange_weak(*expected, newval, std::memory_order_acquire, std::memory_order_acquire);
+    return x->val.compare_exchange_weak(*expected, newval, std::memory_order_acquire, std::memory_order_acquire);
 }
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Rel(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval)
 {
-    return x->a_val.compare_exchange_weak(*expected, newval, std::memory_order_release, std::memory_order_consume);
+    return x->val.compare_exchange_weak(*expected, newval, std::memory_order_release, std::memory_order_consume);
 }
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Strong_Acq(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval)
 {
-    return x->a_val.compare_exchange_strong(*expected, newval, std::memory_order_acquire, std::memory_order_acquire);
+    return x->val.compare_exchange_strong(*expected, newval, std::memory_order_acquire, std::memory_order_acquire);
+}
+TWS_PRIVATE_INLINE tws_Atomic64 _AtomicWideExchange_Acq(WideAtomic *x, tws_Atomic64 newval)
+{
+    return x->val.exchange(newval, std::memory_order_acquire);
 }
 TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x)
 {
-    return x->a_val.load(std::std::memory_order_relaxed);
+    return x->val.load(std::std::memory_order_relaxed);
 }
 #endif /* TWS_HAS_WIDE_ATOMICS */
 

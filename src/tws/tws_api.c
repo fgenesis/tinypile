@@ -25,6 +25,12 @@ TWS_EXPORT size_t tws_size(size_t concurrentJobs, unsigned numChannels, size_t c
 /* Unfortunatly, manually layouting the pool is a bit ugly, but there's nothing to be done about that */
 TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, size_t cacheLineSize, const tws_PoolCallbacks *cb)
 {
+#if TWS_HAS_WIDE_ATOMICS
+    TWS_STATIC_ASSERT(sizeof(WideAtomic) == sizeof(tws_Atomic64));
+#endif
+    TWS_STATIC_ASSERT(sizeof(NativeAtomic) == sizeof(tws_Atomic));
+    /* ---------------- */
+
     if(!numChannels || numChannels >= TWS_MAX_CHANNELS)
         return NULL;
 

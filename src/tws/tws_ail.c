@@ -17,7 +17,7 @@ inline static void* ail_toptr(void *base, unsigned idx)
 }
 
 /* --------------------------------------- */
-#ifdef TWS_HAS_WIDE_ATOMICS
+#if TWS_HAS_WIDE_ATOMICS
 
 
 TWS_PRIVATE void ail_init(AList* al)

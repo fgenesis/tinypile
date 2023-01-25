@@ -2,14 +2,13 @@
 Uses the first sizeof(unsigned) bytes of each block of memory to store a pointer to the next element */
 
 #pragma once
-#include "tws_atomic.h"
 #include "tws_priv.h"
 
 typedef unsigned AIdx;
 
 typedef struct AList
 {
-#ifdef TWS_HAS_WIDE_ATOMICS
+#if TWS_HAS_WIDE_ATOMICS
     WideAtomic whead;
 #else
     NativeAtomic head;

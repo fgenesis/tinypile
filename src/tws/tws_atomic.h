@@ -1,19 +1,6 @@
 #pragma once
 #include "tws_defs.h"
 
-/* --- CPU feature selection */
-
-#ifndef TWS_HAS_WIDE_ATOMICS
-#  if defined(TWS_ARCH_X64) || defined(TWS_ARCH_X86) || defined(TWS_ARCH_ARM64)
-#    define TWS_HAS_WIDE_ATOMICS 1 /* If this is not available, spinlocks are used */
-#  endif
-#endif
-
-#if !(TWS_HAS_WIDE_ATOMICS+0L) /* So that it can be externally #define'd to 0 to disable it */
-#  undef TWS_HAS_WIDE_ATOMICS
-#endif
-
-typedef int tws_Atomic;
 
 /* Ordered by preference. First one that's available is taken.
  Defines *one* TWS_ATOMIC_USE_XXX macro for the chosen TWS_HAS_XXX that can be checked order-independently from now on. */
@@ -51,6 +38,36 @@ typedef int tws_Atomic;
 #  error Unsupported compiler; missing support for atomic instrinsics
 #endif
 
+
+/* --- CPU feature selection --- */
+
+/* TWS_HAS_WIDE_ATOMICS
+If wide atomics are not available, spinlocks are used.
+Can be defined to 0 or 1 via build system, or not defined to autodetect */
+
+#ifndef TWS_HAS_WIDE_ATOMICS
+#  if defined(TWS_HAS_C11)
+#    include <stdatomic.h>
+#  elif defined(TWS_HAS_CPP11)
+#    include <atomic>
+#  elif defined(TWS_ARCH_X64) || defined(TWS_ARCH_X86) || defined(TWS_ARCH_ARM64)
+#    define TWS_HAS_WIDE_ATOMICS 1 /*  */
+#  endif
+#endif
+
+/* Both C11 and C++11 define ATOMIC_LLONG_LOCK_FREE */
+#if !defined(TWS_HAS_WIDE_ATOMICS) && (ATOMIC_LLONG_LOCK_FREE+0)
+#  #define TWS_HAS_WIDE_ATOMICS 1
+#endif
+
+#ifndef TWS_HAS_WIDE_ATOMICS
+#  define TWS_HAS_WIDE_ATOMICS 0 /* Always check this with #if, not #ifdef */
+#endif
+
+/* ------- */
+
+
+typedef int tws_Atomic;
 
 /* Native atomic type, wrapped in a struct to prevent accidental non-atomic access */
 struct NativeAtomic
@@ -111,6 +128,7 @@ typedef union WideAtomic WideAtomic;
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Acq(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval);
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Weak_Rel(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval);
 TWS_PRIVATE_INLINE int _AtomicWideCAS_Strong_Acq(WideAtomic *x, tws_Atomic64 *expected, tws_Atomic64 newval);
+TWS_PRIVATE_INLINE tws_Atomic64 _AtomicWideExchange_Acq(WideAtomic *x, tws_Atomic64 newval);
 
 /* load with no synchronization or guarantees. Additionally, tearing into 2 partial loads on 32bit archs is not a problem */
 TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x);

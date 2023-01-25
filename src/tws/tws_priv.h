@@ -1,12 +1,18 @@
 #pragma once
 #include "tws_atomic.h"
 
-/* Minimal memory alignment to guarantee atomic access and pointer load/store */
+/* Minimal memory alignment to guarantee atomic access */
 enum
 {
+#if TWS_HAS_WIDE_ATOMICS
+    TWS_MIN_ALIGN = sizeof(WideAtomic) < sizeof(void*)
+                  ? sizeof(void*)
+                  : sizeof(WideAtomic)
+#else
     TWS_MIN_ALIGN = sizeof(NativeAtomic) < sizeof(void*)
                   ? sizeof(void*)
                   : sizeof(NativeAtomic)
+#endif
 };
 
 
@@ -27,10 +33,10 @@ inline static void _atomicLock(Spinlock *sp)
 {
     for(;;)
     {
-        if(!_AtomicExchange_Acq(&sp->a, 1)) // try to grab the lock: if it was 0, we got it
+        if(!_AtomicExchange_Acq(&sp->a, 1)) /* try to grab the lock: if it was 0, we got it */
             break;
 
-        while(_RelaxedGet(&sp->a)) // spin and yield until someone releases the lock
+        while(_RelaxedGet(&sp->a)) /* spin and yield until someone releases the lock */
             _YieldLong();
     }
 }

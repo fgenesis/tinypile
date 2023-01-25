@@ -1100,7 +1100,7 @@ TWS_THREAD_EXPORT void tws_lwsem_destroy(tws_LWsem *ws)
 TWS_THREAD_EXPORT int tws_lwsem_tryacquire(tws_LWsem *ws)
 {
     _tws_IntType old = tws_relaxedGet(&ws->a_count);
-    return old > 0 && tws_atomicWeakCAS_Acq(&ws->a_count, &old, old - 1);
+    return old > 0 && tws_atomicWeakCAS_Acq(&ws->a_count, &old, old - 1); // FIXME: this should be strong cas
 }
 
 TWS_THREAD_EXPORT void tws_lwsem_acquire(tws_LWsem *ws, unsigned spin)
@@ -1123,10 +1123,11 @@ TWS_THREAD_EXPORT void tws_lwsem_acquire(tws_LWsem *ws, unsigned spin)
         tws_sem_acquire(ws->sem);
 }
 
-TWS_THREAD_EXPORT void tws_lwsem_release(tws_LWsem *ws, unsigned n)
+TWS_THREAD_EXPORT void tws_lwsem_release(tws_LWsem *ws, unsigned n_)
 {
+    _tws_IntType n = n_; /* Avoid mismatched sign warning */
     const _tws_IntType old = tws_atomicAdd_Rel(&ws->a_count, n);
-    int toRelease = -old < n ? -old : n;
+    _tws_IntType toRelease = -old < n ? -old : n;
     if(toRelease > 0)
         tws_sem_release(ws->sem, toRelease);
 }
