@@ -1,15 +1,35 @@
 #include "tws_axp.h"
 
-#ifdef TWS_HAS_WIDE_ATOMICS
+#if TWS_HAS_WIDE_ATOMICS
 
 /* Invariants:
    - For each k > 0, base[k] != k
 */
 
+/* Works like this:
+Start with:
+head: [ABCDEF]
+tail: []
+pop 5:
+head: [F]
+tail: []
+3x push 1
+head: [F]
+tail: [BAC] (any of the 5 popped ones really)
+pop 3:
+  triggers flip:
+    head: [BACF]
+    tail: []
+head: [CF]
+tail: []
+*/
+
+
 TWS_PRIVATE void axp_init(AtomicIndexPool* a, unsigned slots, unsigned *base)
 {
     a->whead.half.first = 1;
     a->whead.half.second = 0;
+    a->wtail.both = AXP_SENTINEL;
 
     base[0] = AXP_SENTINEL; /* index 0 is never used */
     base[slots] = AXP_SENTINEL; /* the extra index terminates the list of elems */
@@ -17,25 +37,66 @@ TWS_PRIVATE void axp_init(AtomicIndexPool* a, unsigned slots, unsigned *base)
         base[i] = i+1; /* setup linked list */
 }
 
-/* push is going to be called a lot more than pop, so this should be really fast */
+/* push is going to be called a lot more than pop, so this should be really fast.
+   This never uses the head and only appends x to the tail */
 TWS_PRIVATE void axp_push(AtomicIndexPool* a, unsigned *base, unsigned x)
 {
     TWS_ASSERT(x != AXP_SENTINEL, "sentinel");
 
-    WideAtomic cur, next;
+    WideAtomic tail, next;
     next.half.first = x; /* This will be the new head */
+    tail.both = _RelaxedWideGet(&a->wtail);
+    for(;;)
+    {
+        TWS_ASSERT(x != tail.half.first, "invariant broken");
+        /* Store current head. We still own base[x] until the CAS succeeds. */
+        base[x] = tail.half.first;
+        /* Starting new tail? Remember terminating index */
+        next.half.second = tail.half.second ? tail.half.second : x;
+        TWS_ASSERT(next.half.first && next.half.second, "must have valid tail after axp_push");
+        /* Make x the tail's new head */
+        if(_AtomicWideCAS_Weak_Rel(&a->wtail, &tail.both, next.both))
+            break;
+    }
+}
+
+/* Atomically detach tail, append the current head to it, and make this the new head.
+   -> Resets tail to empty, moves elements to be pop-able again */
+static unsigned axp_flip(AtomicIndexPool *a, unsigned *base)
+{
+    WideAtomic tail;
+    /* Do a normal read first; avoid locking the bus if there's no tail */
+    tail.both = _RelaxedGet(&a->wtail);
+    if(!tail.both)
+        return AXP_SENTINEL;
+
+    tail.both = _AtomicWideExchange_Acq(&a->wtail, AXP_SENTINEL); /* Set both tail halves to 0 */
+    /* Either both halves are 0, or both are not 0. */
+    TWS_ASSERT(!tail.half.first == !tail.half.second, "invariant broken");
+    if(tail.both == AXP_SENTINEL)
+        return AXP_SENTINEL; /* No tail present */
+
+    /* Grabbed the tail. Prepare attaching to head. */
+    const unsigned tailidx = tail.half.second; /* This is the end of the linked list */
+
+    WideAtomic cur, next;
+    next.half.first = tail.half.first; /* Tail's first elem becomes the return value */
+
     cur.both = _RelaxedWideGet(&a->whead);
     for(;;)
     {
-        TWS_ASSERT(x != cur.half.first, "invariant broken");
-        /* Store current head. We still own base[x] until the CAS succeeds. */
-        base[x] = cur.half.first;
+        /* Make tail the new head, reattach old head as new tail */
+        /* We own the tail, so any tail index can be modified */
+        base[tailidx] = cur.half.first;
+
         /* Prevent ABA problem */
-        next.half.second = (unsigned)cur.half.second + 1u; /* signed int overflow is UB, so make it unsigned */
-        /* Make x the new head */
+        next.half.second = (unsigned)cur.half.second + 1u;
+
         if(_AtomicWideCAS_Weak_Rel(&a->whead, &cur.both, next.both))
             break;
     }
+
+    return tail.half.first;
 }
 
 TWS_PRIVATE size_t axp_pop(AtomicIndexPool *a, tws_WorkTmp *dst, unsigned *base, unsigned minn, unsigned maxn)
@@ -54,7 +115,11 @@ TWS_PRIVATE size_t axp_pop(AtomicIndexPool *a, tws_WorkTmp *dst, unsigned *base,
             idx = base[idx]; /* and follow linked list */
         }
         if(n < minn)
+        {
+            if(axp_flip(a, base))
+                continue; /* Try again */
             return 0; /* Didn't get enough elements */
+        }
 
         WideAtomic next;
         next.half.first = idx; /* this may or may not be 0 (AXP_SENTINEL) */

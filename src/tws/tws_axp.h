@@ -13,12 +13,14 @@ Properties:
 #include "tws_priv.h"
 
 enum { AXP_EXTRA_ELEMS = 1 };
-enum { AXP_SENTINEL = 0 }; /* Internally used, can't be pushed as normal value */
+enum { AXP_SENTINEL = 0 }; /* Internally used, can't be pushed as normal value. Must be 0. */
 
 typedef struct AtomicIndexPool
 {
-#ifdef TWS_HAS_WIDE_ATOMICS
+#if TWS_HAS_WIDE_ATOMICS
     WideAtomic whead;
+    char pad[128];
+    WideAtomic wtail;
 #else
     Spinlock lock;
     unsigned pos;
