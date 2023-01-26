@@ -82,17 +82,6 @@ typedef union tws_JobData tws_JobData;
 /* Generic worker and callback function type. */
 typedef void (*tws_Func)(tws_Pool *pool, const tws_JobData *data);
 
-/* Fallback callback. Called when tws_submit() is unable to queue jobs because the pool is full.
-   You probably want to call tws_run() in the fallback.
-   Return 1 if progress was made, 0 if not.
-   If no progress was made, jobs will be executed inline -- see tws_submit().
-   A simple fallback function could look like this:
-     int myfb(tws_Pool *pool, void *ud) {
-        return tws_run(pool, 0)  // try to run jobs on channel 0 first...
-            || tws_run(pool, 1); // ... if empty, try channel 1
-     } */
-typedef int (*tws_Fallback)(tws_Pool *pool, void *ud);
-
 
 #define TWS_RELATIVE(x) (-(int)(x))
 
@@ -119,6 +108,39 @@ struct tws_JobDesc
 };
 typedef struct tws_JobDesc tws_JobDesc;
 
+/* --- Fallbacks - for when tws_submit() fails --- */
+/* Return this as result from the fallback so that the library knows what you did.
+   This is a bitmask, OR together if needed. */
+enum tws_FallbackResult_
+{
+    TWS_FALLBACK_EXECUTED_HERE = 0x1, /* called f(data), consider the job done */
+
+    TWS_FALLBACK_RAN_OTHER = 0x2 /* called tws_run() to execute some other job.
+                                    Important: Only return this when tws_run() returned success,
+                                    ie. actually finished a job! */,
+};
+typedef unsigned tws_FallbackResult;
+
+/* Fallback callback. Called when tws_submit() is unable to queue jobs because the pool is full.
+   There are some ways how to proceed here, eg. any one or combination of the following:
+     - call f(data), then return TWS_FALLBACK_EXECUTED_HERE.
+     - call tws_run(), if it returned non-zero return TWS_FALLBACK_RAN_OTHER.
+       This frees up a slot internally, unless another thread grabs that right away
+       or the job spawns new jobs (in which case the fallback called again)
+     - Wait on a semaphore that is signaled in the recycled() callback, then return 0.
+     - Switch to another thread or Sleep() for a while and hope for the best, then return 0
+       (this is bad, don't do this!)
+
+   A simple fallback function could look like this:
+     tws_FallbackResult myfb(tws_Pool *pool, void *ud, const tws_JobDesc *d) {
+        d->func(pool, &d->data);
+        return TWS_FALLBACK_EXECUTED_HERE;
+     }
+
+     If you don't pass a fallback, jobs are executed on the spot, like the above function. */
+typedef tws_FallbackResult (*tws_Fallback)(tws_Pool *pool, void *ud, const tws_JobDesc *d);
+
+/* --- Callbacks --- */
 struct tws_PoolCallbacks
 {
     /* Userdata passed to callback functions */

@@ -90,6 +90,12 @@ TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job, unsigned mychannel)
         tryToReady(pool, jobByIndex(pool, followupIdx), mychannel);
 }
 
+tws_FallbackResult _tws_default_fallback(tws_Pool *pool, void *ud, const tws_JobDesc *d)
+{
+    d->func(pool, &d->data);
+    return TWS_FALLBACK_EXECUTED_HERE;
+}
+
 /* Returns how many job indices are waiting in tmp[0..] to be submitted */
 TWS_PRIVATE size_t prepare(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* tmp, size_t n, tws_Fallback fallback, void *fallbackUD, SubmitFlags flags)
 {
@@ -110,6 +116,9 @@ TWS_PRIVATE size_t prepare(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp*
         return n;
     }
 
+    if(!fallback)
+        fallback = _tws_default_fallback;
+
     /* Pre-alloc as many jobs as we need */
     const size_t minn = (flags & SUBMIT_ALL_OR_NONE) ? n : 1;
     size_t k = allocJobs(tmp, pool, minn, n); /* k = allocated up until here */
@@ -126,18 +135,14 @@ TWS_PRIVATE size_t prepare(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp*
         TWS_ASSERT(flags & SUBMIT_CAN_EXEC, "at least one flag must be set");
         for(;;)
         {
-            int progress = 0;
-            if(fallback)
-                progress = fallback(pool, fallbackUD);
+            /* May exec the earliest reserved job directly.
+               We know, since we started at i=0, that no other job could have been already submitted
+               that has this job as followup, so once we're here either all deps have been executed in-line
+               or there were no deps in the first place. */
+            const tws_FallbackResult fb = fallback(pool, fallbackUD, &jobs[w]);
 
-            if(!progress)
+            if(fb & TWS_FALLBACK_EXECUTED_HERE)
             {
-                /* Exec earliest reserved job directly.
-                   We know, since we started at i=0, that no other job could have been already submitted
-                   that has this job as followup, so once we're here either all deps have been executed in-line
-                   or there were no deps in the first place. */
-                jobs[w].func(pool, &jobs[w].data);
-
                 if(w < k) /* Are there actually any reserved jobs? */
                 {
                     /* Re-purpose job of the func just executed for the next job that failed to alloc */
@@ -151,13 +156,15 @@ TWS_PRIVATE size_t prepare(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp*
                     return 0; /* Everything exec'd locally. Done here. */
                 if(k == n)
                     break;
-
             }
 
-            /* Maybe someone else released some jobs in the meantime... */
-            /*k += allocJobs(tmp + k, pool, 1, n - k);
-            if(k == n)
-                break;*/
+            if(fb & TWS_FALLBACK_RAN_OTHER)
+            {
+                /* Some jobs were recycled in the meantime... probably */
+                k += allocJobs(tmp + k, pool, 1, n - k);
+                if(k == n)
+                    break;
+            }
         }
     }
 
