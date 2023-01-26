@@ -41,7 +41,8 @@ Inspired by / reading material:
 /* --- Compile config for library internals ---
    Define either in your build system or change the defaults here */
 
-/* Max. channels accepted by tws_init() & tws_size(). Used to bound a stack array. */
+/* Max. channels accepted by tws_init() & tws_size(). Used to bound a stack array.
+   Must fit in a byte, ie. <= 255. Keep this small for efficiency! */
 #ifndef TWS_MAX_CHANNELS
 #  define TWS_MAX_CHANNELS 16
 #endif

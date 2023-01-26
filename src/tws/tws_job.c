@@ -26,8 +26,8 @@ static void recycleJob(tws_Pool *pool, tws_Job *job)
 /* Enqueue job to its channel's ready head, making it possible to exec any time */
 static void enqueueWithoutCallback(tws_Pool *pool, tws_Job *job, unsigned channel)
 {
-    TWS_ASSERT(job->u.waiting.a_remain.val == 0, "too early to enqueue");
-    TWS_ASSERT(job->u.waiting.channel == channel, "channel mismatch");
+    TWS_ASSERT((job->u.waiting.a_remain_and_channel.val & JOB_REMAIN_MASK) == 0, "too early to enqueue");
+    TWS_ASSERT(((job->u.waiting.a_remain_and_channel.val >> JOB_CHANNEL_SHIFT) & JOB_CHANNEL_MASK) == channel, "channel mismatch");
     TWS_ASSERT((uintptr_t)(job->func) > 10, "he");
     tws_ChannelHead *ch = channelHead(pool, channel);
     ail_push(&ch->list, AILBASE, job); /* this trashes job->u */
@@ -42,7 +42,7 @@ inline static void readyCB(tws_Pool *pool, unsigned channel, unsigned n)
 /* Enqueue job as ready & notify ready callback */
 static void enqueue(tws_Pool *pool, tws_Job *job)
 {
-    const unsigned channel = job->u.waiting.channel;
+    const unsigned channel = (job->u.waiting.a_remain_and_channel.val >> JOB_CHANNEL_SHIFT) & JOB_CHANNEL_MASK;
     enqueueWithoutCallback(pool, job, channel);
     readyCB(pool, channel, 1);
 }
@@ -59,11 +59,13 @@ static void tryToReady(tws_Pool *pool, tws_Job *job, unsigned mychannel)
 {
     const tws_Func func = job->func;
     TWS_ASSERT(func, "dead job");
-    int remain = _AtomicDec_Rel(&job->u.waiting.a_remain);
+    const unsigned remainAndChannel = _AtomicDec_Rel(&job->u.waiting.a_remain_and_channel);
+    const unsigned remain = remainAndChannel & JOB_REMAIN_MASK;
     TWS_ASSERT(remain >= 0, "job readied more than once");
     if(!remain)
     {
-        if(job->u.waiting.channel == mychannel)
+        const unsigned jobchannel = (remainAndChannel >> JOB_CHANNEL_SHIFT) & JOB_CHANNEL_MASK;
+        if(jobchannel == mychannel)
             execAndFinish(pool, job, mychannel); /* No need to push if same channel */
         else
             enqueue(pool, job);
@@ -171,7 +173,7 @@ TWS_PRIVATE size_t prepare(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp*
         const unsigned jobidx = tmp[i];
         TWS_ASSERT(jobidx, "must be > 0");
         tws_Job *job = &jobbase[jobidx];
-        job->u.waiting.a_remain.val = 0;
+        job->u.waiting.a_remain_and_channel.val = 0;
     }
 
     size_t nready = 0;
@@ -188,7 +190,6 @@ TWS_PRIVATE size_t prepare(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp*
 
         job->func = desc->func;
         job->data = desc->data;
-        job->u.waiting.channel = desc->channel;
 
         unsigned next = (unsigned)(desc->next < 0
             ? (-desc->next + i) /* Relative to absolute index */
@@ -201,17 +202,19 @@ TWS_PRIVATE size_t prepare(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp*
             TWS_ASSERT(next, "must be > 0");
             TWS_ASSERT(next <= pool->info.maxjobs, "job idx out of range");
             tws_Job *followup = &jobbase[next];
-            TWS_ASSERT(followup->u.waiting.a_remain.val >= 0, "tmp");
-            ++followup->u.waiting.a_remain.val;
+            ++followup->u.waiting.a_remain_and_channel.val;
         }
+
         job->followupIdx = next;
 
-        if(!job->u.waiting.a_remain.val) /* Do we have any prereqs that must run first? */
+        if(!job->u.waiting.a_remain_and_channel.val) /* Do we have any prereqs that must run first? */
         {
             /* Not a followup of any other job. Mark as ready. */
             TWS_ASSERT(tmp[nready] == 0, "should be unused slot");
             tmp[nready++] = jobidx; /* Record as ready to launch */
         }
+
+        job->u.waiting.a_remain_and_channel.val |= (desc->channel << JOB_CHANNEL_SHIFT);
     }
 
     TWS_ASSERT(nready, "must ready at least 1 job per submit() call");
@@ -251,7 +254,7 @@ TWS_PRIVATE void submitPrepared(tws_Pool* pool, const tws_WorkTmp* tmp, size_t n
     {
         TWS_ASSERT(tmp[i], "jobidx must be > 0");
         tws_Job *job = &jobbase[tmp[i]];
-        unsigned channel = job->u.waiting.channel;
+        unsigned channel = (job->u.waiting.a_remain_and_channel.val >> JOB_CHANNEL_SHIFT) & JOB_CHANNEL_MASK;
         ++toReady[channel];
         if(!first[channel])
             first[channel] = job;

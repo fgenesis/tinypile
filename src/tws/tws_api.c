@@ -7,6 +7,8 @@ TWS_EXPORT const tws_PoolInfo* tws_info(const tws_Pool* pool)
 
 TWS_EXPORT size_t tws_size(size_t concurrentJobs, unsigned numChannels, size_t cacheLineSize)
 {
+    TWS_STATIC_ASSERT(TWS_MAX_CHANNELS <= JOB_CHANNEL_MASK); /* just putting this here; could be anywhere */
+
     if(!numChannels || numChannels >= TWS_MAX_CHANNELS || !concurrentJobs)
         return 0;
 

@@ -12,15 +12,19 @@ struct tws_Job
          AIdx nextInList; /* id of next elem in AIL */
          struct
          {
-            NativeAtomic a_remain;
-            unsigned channel;
+             NativeAtomic a_remain_and_channel; /* upper 8 bits is the channel, rest the remain count */
          } waiting; /* used before readied and put in AIL */
     } u;
     unsigned followupIdx;
     tws_Func func;
     tws_JobData data;
-}
-;
+};
+
+/* To access tws_Job::a_remain_and_channel */
+#define JOB_CHANNEL_SHIFT 24u
+#define JOB_CHANNEL_MASK 0xffu
+#define JOB_REMAIN_MASK 0xffffffu
+
 struct tws_ChannelHead
 {
     AList list;
