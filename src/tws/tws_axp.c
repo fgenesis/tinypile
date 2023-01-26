@@ -65,11 +65,6 @@ TWS_PRIVATE void axp_push(AtomicIndexPoolTail* tl, unsigned *base, unsigned x)
 inline static unsigned axp_flip(AtomicIndexPoolHead *hd, AtomicIndexPoolTail *tl, WideAtomic *cur, unsigned *base)
 {
     WideAtomic tail;
-    /* Do a normal read first; avoid locking the bus if there's no tail */
-    //tail.both = _RelaxedGet(&tl->wtail);
-    /* Either both halves are 0, or both are not 0. */
-    //if(tail.half.first == AXP_SENTINEL)
-    //    return AXP_SENTINEL;
 
     tail.both = _AtomicWideExchange_Acq(&tl->wtail, AXP_SENTINEL); /* Set both tail halves to 0 */
     TWS_ASSERT(!tail.half.first == !tail.half.second, "invariant broken");
@@ -83,7 +78,6 @@ inline static unsigned axp_flip(AtomicIndexPoolHead *hd, AtomicIndexPoolTail *tl
     WideAtomic next;
     next.half.first = tail.half.first; /* Tail's first elem becomes the new head */
 
-    /*cur->both = _RelaxedWideGet(&hd->whead); -- this was loaded by caller */
     for(;;)
     {
         /* Make tail the new head, reattach old head as new tail */

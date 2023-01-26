@@ -80,6 +80,7 @@ TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job, unsigned mychannel)
 #ifdef TWS_DEBUG
     job->func = NULL;
 #endif
+    /* Make local copies */
     const unsigned followupIdx = job->followupIdx;
     const tws_JobData data = job->data;
     /* At this point we have everything we need -- recycle the job early to reduce pressure */
@@ -90,7 +91,7 @@ TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job, unsigned mychannel)
         tryToReady(pool, jobByIndex(pool, followupIdx), mychannel);
 }
 
-tws_FallbackResult _tws_default_fallback(tws_Pool *pool, void *ud, const tws_JobDesc *d)
+static tws_FallbackResult _tws_default_fallback(tws_Pool *pool, void *ud, const tws_JobDesc *d)
 {
     d->func(pool, &d->data);
     return TWS_FALLBACK_EXECUTED_HERE;
