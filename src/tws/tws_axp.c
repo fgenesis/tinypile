@@ -25,11 +25,11 @@ tail: []
 */
 
 
-TWS_PRIVATE void axp_init(AtomicIndexPool* a, unsigned slots, unsigned *base)
+TWS_PRIVATE void axp_init(AtomicIndexPoolHead *hd, AtomicIndexPoolTail *tl, unsigned slots, unsigned *base)
 {
-    a->whead.half.first = 1;
-    a->whead.half.second = 0;
-    a->wtail.both = AXP_SENTINEL;
+    hd->whead.half.first = 1;
+    hd->whead.half.second = 0;
+    tl->wtail.both = AXP_SENTINEL;
 
     base[0] = AXP_SENTINEL; /* index 0 is never used */
     base[slots] = AXP_SENTINEL; /* the extra index terminates the list of elems */
@@ -39,13 +39,13 @@ TWS_PRIVATE void axp_init(AtomicIndexPool* a, unsigned slots, unsigned *base)
 
 /* push is going to be called a lot more than pop, so this should be really fast.
    This never uses the head and only appends x to the tail */
-TWS_PRIVATE void axp_push(AtomicIndexPool* a, unsigned *base, unsigned x)
+TWS_PRIVATE void axp_push(AtomicIndexPoolTail* tl, unsigned *base, unsigned x)
 {
     TWS_ASSERT(x != AXP_SENTINEL, "sentinel");
 
     WideAtomic tail, next;
     next.half.first = x; /* This will be the new head */
-    tail.both = _RelaxedWideGet(&a->wtail);
+    tail.both = _RelaxedWideGet(&tl->wtail);
     for(;;)
     {
         TWS_ASSERT(x != tail.half.first, "invariant broken");
@@ -55,55 +55,55 @@ TWS_PRIVATE void axp_push(AtomicIndexPool* a, unsigned *base, unsigned x)
         next.half.second = tail.half.second ? tail.half.second : x;
         TWS_ASSERT(next.half.first && next.half.second, "must have valid tail after axp_push");
         /* Make x the tail's new head */
-        if(_AtomicWideCAS_Weak_Rel(&a->wtail, &tail.both, next.both))
+        if(_AtomicWideCAS_Weak_Rel(&tl->wtail, &tail.both, next.both))
             break;
     }
 }
 
 /* Atomically detach tail, append the current head to it, and make this the new head.
    -> Resets tail to empty, moves elements to be pop-able again */
-static unsigned axp_flip(AtomicIndexPool *a, unsigned *base)
+inline static unsigned axp_flip(AtomicIndexPoolHead *hd, AtomicIndexPoolTail *tl, WideAtomic *cur, unsigned *base)
 {
     WideAtomic tail;
     /* Do a normal read first; avoid locking the bus if there's no tail */
-    tail.both = _RelaxedGet(&a->wtail);
-    if(!tail.both)
-        return AXP_SENTINEL;
-
-    tail.both = _AtomicWideExchange_Acq(&a->wtail, AXP_SENTINEL); /* Set both tail halves to 0 */
+    //tail.both = _RelaxedGet(&tl->wtail);
     /* Either both halves are 0, or both are not 0. */
+    //if(tail.half.first == AXP_SENTINEL)
+    //    return AXP_SENTINEL;
+
+    tail.both = _AtomicWideExchange_Acq(&tl->wtail, AXP_SENTINEL); /* Set both tail halves to 0 */
     TWS_ASSERT(!tail.half.first == !tail.half.second, "invariant broken");
-    if(tail.both == AXP_SENTINEL)
+
+    if(tail.half.first == AXP_SENTINEL)
         return AXP_SENTINEL; /* No tail present */
 
     /* Grabbed the tail. Prepare attaching to head. */
     const unsigned tailidx = tail.half.second; /* This is the end of the linked list */
 
-    WideAtomic cur, next;
-    next.half.first = tail.half.first; /* Tail's first elem becomes the return value */
+    WideAtomic next;
+    next.half.first = tail.half.first; /* Tail's first elem becomes the new head */
 
-    cur.both = _RelaxedWideGet(&a->whead);
+    /*cur->both = _RelaxedWideGet(&hd->whead); -- this was loaded by caller */
     for(;;)
     {
         /* Make tail the new head, reattach old head as new tail */
         /* We own the tail, so any tail index can be modified */
-        base[tailidx] = cur.half.first;
+        base[tailidx] = cur->half.first;
 
         /* Prevent ABA problem */
-        next.half.second = (unsigned)cur.half.second + 1u;
+        next.half.second = (unsigned)cur->half.second + 1u;
 
-        if(_AtomicWideCAS_Weak_Rel(&a->whead, &cur.both, next.both))
+        if(_AtomicWideCAS_Weak_Rel(&hd->whead, &cur->both, next.both))
             break;
     }
 
-    return tail.half.first;
+    return tail.half.first; /* any non-zero; this is known to be so */
 }
 
-TWS_PRIVATE size_t axp_pop(AtomicIndexPool *a, tws_WorkTmp *dst, unsigned *base, unsigned minn, unsigned maxn)
+TWS_PRIVATE size_t axp_pop(AtomicIndexPoolHead *hd, AtomicIndexPoolTail *tl, tws_WorkTmp *dst, unsigned *base, unsigned minn, unsigned maxn)
 {
     WideAtomic cur;
-    cur.both = _RelaxedWideGet(&a->whead);
-
+    cur.both = _RelaxedWideGet(&hd->whead);
     for(;;)
     {
         unsigned idx = cur.half.first;
@@ -116,7 +116,7 @@ TWS_PRIVATE size_t axp_pop(AtomicIndexPool *a, tws_WorkTmp *dst, unsigned *base,
         }
         if(n < minn)
         {
-            if(axp_flip(a, base))
+            if(axp_flip(hd, tl, &cur, base)) /* may update cur */
                 continue; /* Try again */
             return 0; /* Didn't get enough elements */
         }
@@ -126,8 +126,8 @@ TWS_PRIVATE size_t axp_pop(AtomicIndexPool *a, tws_WorkTmp *dst, unsigned *base,
         next.half.second = (unsigned)cur.half.second;
 
         /* There is no ABA problem because cur.half.second is incremented on every push().
-           Prefer a strong CAS to avoid repeating the above loop in case if a spurious failure. */
-        if(_AtomicWideCAS_Strong_Acq(&a->whead, &cur.both, next.both))
+           Prefer a strong CAS to avoid repeating the above loop in case of a spurious failure. */
+        if(_AtomicWideCAS_Strong_Acq(&hd->whead, &cur.both, next.both))
             return n;
 
         /* Failed the race. Someone else had changed the head in the meantime;
@@ -140,7 +140,7 @@ TWS_PRIVATE size_t axp_pop(AtomicIndexPool *a, tws_WorkTmp *dst, unsigned *base,
 
 #else /* This impl works but is quite bad; the spinlock is hit hard esp. during axp_push() */
 
-TWS_PRIVATE void axp_init(AtomicIndexPool* a, unsigned slots, unsigned *base)
+TWS_PRIVATE void axp_init(AtomicIndexPoolHead *unused, AtomicIndexPoolTail *a, unsigned slots, unsigned *base)
 {
     a->size = slots+1;
     a->pos = slots;
@@ -152,7 +152,7 @@ TWS_PRIVATE void axp_init(AtomicIndexPool* a, unsigned slots, unsigned *base)
 }
 
 
-TWS_PRIVATE void axp_push(AtomicIndexPool* a, unsigned *base, unsigned x)
+TWS_PRIVATE void axp_push(AtomicIndexPoolTail* a, unsigned *base, unsigned x)
 {
     TWS_ASSERT(x != AXP_SENTINEL, "sentinel");
 
@@ -166,7 +166,7 @@ TWS_PRIVATE void axp_push(AtomicIndexPool* a, unsigned *base, unsigned x)
     _atomicUnlock(&a->lock);
 }
 
-TWS_PRIVATE size_t axp_pop(AtomicIndexPool *a, tws_WorkTmp *dst, unsigned *base, unsigned minn, unsigned maxn)
+TWS_PRIVATE size_t axp_pop(AtomicIndexPoolHead *unused, AtomicIndexPoolTail *a, tws_WorkTmp *dst, unsigned *base, unsigned minn, unsigned maxn)
 {
     size_t done = 0;
     _atomicLock(&a->lock);

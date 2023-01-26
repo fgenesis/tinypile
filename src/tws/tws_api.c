@@ -14,8 +14,10 @@ TWS_EXPORT size_t tws_size(size_t concurrentJobs, unsigned numChannels, size_t c
     TWS_ASSERT(IsPowerOfTwo(cacheLineSize), "Warning: Weird cache line size. You know what you're doing?");
 
     size_t channelHeadSize = AlignUp(sizeof(tws_ChannelHead), cacheLineSize);
+    size_t axpHeadSize = AlignUp(sizeof(AtomicIndexPoolHead), cacheLineSize);
 
     return AlignUp(sizeof(tws_Pool), cacheLineSize)
+        + axpHeadSize
         + (numChannels * channelHeadSize)
         + (concurrentJobs * sizeof(tws_Job)) /* jobs array */
         + ((concurrentJobs + 1) * sizeof(unsigned)) /* index storage for axp */
@@ -44,11 +46,17 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     tws_Pool * const pool = (tws_Pool*)mem;
     pool->info.maxchannels = numChannels;
 
-    size_t channelHeadSize = AlignUp(sizeof(tws_ChannelHead), cacheLineSize);
-
-    /* After the data come the cacheline-aligned channel heads */
+    /* Begin dynamic struct alignment */
     uintptr_t p = (uintptr_t)(pool + 1);
     p = AlignUp(p, cacheLineSize);
+
+    /* axp head */
+    size_t axpHeadSize = AlignUp(sizeof(AtomicIndexPoolHead), cacheLineSize);
+    pool->axpHeadOffset = p - (uintptr_t)pool;
+    p += axpHeadSize;
+
+    /* After the data come the cacheline-aligned channel heads */
+    size_t channelHeadSize = AlignUp(sizeof(tws_ChannelHead), cacheLineSize);
     if(p + (numChannels * channelHeadSize) >= end)
         return NULL;
 
@@ -80,7 +88,7 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
     const size_t jobsArraySizeBytes = numjobs * sizeof(tws_Job);
     p += jobsArraySizeBytes;
 
-    axp_init(&pool->freeslots, numjobs, (unsigned*)p); /* This knows that there is 1 extra slot */
+    axp_init(axpHead(pool), &pool->axpTail, numjobs, (unsigned*)p); /* This knows that there is 1 extra slot */
     pool->slotsOffset =  p - (uintptr_t)pool;
 
     TWS_ASSERT(p + (numjobs + AXP_EXTRA_ELEMS) * sizeof(unsigned) <= end, "stomped memory");

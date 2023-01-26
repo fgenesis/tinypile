@@ -41,8 +41,9 @@ typedef enum SubmitFlags SubmitFlags;
    That's why we do the internal allocation at runtime and just save the offsets. */
 struct tws_Pool
 {
-    AtomicIndexPool freeslots;
+    AtomicIndexPoolTail axpTail;
     unsigned slotsOffset;
+    unsigned axpHeadOffset;
     unsigned channelHeadOffset;
     unsigned channelHeadSize; /* Incl. padding to cache line */
     unsigned jobsArrayOffset;
@@ -51,6 +52,9 @@ struct tws_Pool
     tws_PoolCallbacks cb;
 
     /*
+    ... padding...
+    AtomicIndexPoolHead axpHead;
+
     ... padding...
     tws_ChannelHead[0..numchannels], each with enough padding to be on a separate cache line
     ...
@@ -98,3 +102,7 @@ inline static TWS_NOTNULL tws_Job *jobArrayBase(tws_Pool *pool)
     return (tws_Job*)((char*)pool + pool->jobsArrayOffset);
 }
 
+inline static TWS_NOTNULL AtomicIndexPoolHead *axpHead(tws_Pool *pool)
+{
+    return (AtomicIndexPoolHead*)((char*)pool + pool->axpHeadOffset);
+}

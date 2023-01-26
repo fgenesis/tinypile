@@ -15,24 +15,33 @@ Properties:
 enum { AXP_EXTRA_ELEMS = 1 };
 enum { AXP_SENTINEL = 0 }; /* Internally used, can't be pushed as normal value. Must be 0. */
 
-typedef struct AtomicIndexPool
+
+/* Normally this would be one struct, but since whead/wtail should be on different cache lines
+   we let external code layout them manually and just pass in both */
+typedef struct AtomicIndexPoolHead
 {
 #if TWS_HAS_WIDE_ATOMICS
-    WideAtomic whead;
-    char pad[128];
-    WideAtomic wtail;
+    WideAtomic whead; /* L: list head, R: counter against ABA problem */
+#endif
+} AtomicIndexPoolHead;
+
+typedef struct AtomicIndexPoolTail
+{
+#if TWS_HAS_WIDE_ATOMICS
+    WideAtomic wtail; /* L: tail head, R: last elem */
 #else
     Spinlock lock;
     unsigned pos;
     unsigned size;
 #endif
-} AtomicIndexPool;
+} AtomicIndexPoolTail;
 
-TWS_PRIVATE void axp_init(AtomicIndexPool *a, unsigned slots, unsigned *base);
+
+TWS_PRIVATE void axp_init(AtomicIndexPoolHead *hd, AtomicIndexPoolTail *tl, unsigned slots, unsigned *base);
 
 /* Add one elem */
-TWS_PRIVATE void axp_push(AtomicIndexPool *a, unsigned *base, unsigned x);
+TWS_PRIVATE void axp_push(AtomicIndexPoolTail *tl, unsigned *base, unsigned x);
 
 /* Remove at least minn elems, write them to dst. Up to maxn elems. Returns # elems removed,
    0 if failed (dst[] is undefined in that case) */
-TWS_PRIVATE size_t axp_pop(AtomicIndexPool *a, tws_WorkTmp *dst, unsigned *base, unsigned minn, unsigned maxn);
+TWS_PRIVATE size_t axp_pop(AtomicIndexPoolHead *hd, AtomicIndexPoolTail *tl, tws_WorkTmp *dst, unsigned *base, unsigned minn, unsigned maxn);
