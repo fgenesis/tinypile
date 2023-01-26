@@ -87,6 +87,10 @@ TWS_THREAD_EXPORT int tws_lwsem_tryacquire(tws_LWsem *ws);
 TWS_THREAD_EXPORT void tws_lwsem_acquire(tws_LWsem *ws, unsigned spincount);
 TWS_THREAD_EXPORT void tws_lwsem_release(tws_LWsem *ws, unsigned n);
 
+/* Release semaphore n times, but cap the release count. This is useful to ensure you don't
+   end up spinning a lot when acquiring the semaphore in a loop. */
+TWS_THREAD_EXPORT void tws_lwsem_releaseCapped(tws_LWsem *ws, unsigned n, unsigned maxcount);
+
 #ifdef __cplusplus
 }
 #endif
@@ -898,6 +902,10 @@ inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected
 {
     return atomic_compare_exchange_weak_explicit(&x->a_val, expected, newval, memory_order_acquire, memory_order_acquire);
 }
+inline static int tws_atomicStrongCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+{
+    return atomic_compare_exchange_strong_explicit(&x->a_val, expected, newval, memory_order_acquire, memory_order_acquire);
+}
 inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
 {
     return atomic_compare_exchange_weak_explicit(&x->a_val, expected, newval, memory_order_release, memory_order_consume);
@@ -930,7 +938,7 @@ inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
 #  define _InterlockedExchangeAdd_acq _InterlockedExchangeAdd
 #  define _InterlockedExchangeAdd_rel _InterlockedExchangeAdd
 #endif
-inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+inline static int tws_atomicStrongCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
 {
     const _tws_IntType expectedVal = *expected;
     _tws_IntType prevVal = _InterlockedCompareExchange_acq(&x->a_val, newval, expectedVal);
@@ -940,6 +948,7 @@ inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected
     *expected = prevVal;
     return 0;
 }
+#define tws_atomicWeakCAS_Acq tws_atomicStrongCAS_Acq
 inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
 {
     const _tws_IntType expectedVal = *expected;
@@ -967,6 +976,10 @@ inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected
 {
     return x->a_val.compare_exchange_weak(*expected, newval, std::memory_order_acquire, std::memory_order_acquire);
 }
+inline static int tws_atomicStrongCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+{
+    return x->a_val.compare_exchange_strong(*expected, newval, std::memory_order_acquire, std::memory_order_acquire);
+}
 inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
 {
     return x->a_val.compare_exchange_weak(*expected, newval, std::memory_order_release, std::memory_order_consume);
@@ -986,13 +999,14 @@ inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
 #endif
 
 #ifdef TWS_ATOMIC_USE_SDL2
-inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+inline static int tws_atomicStrongCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
 {
     int ok = SDL_AtomicCAS(&x->a_val, *expected, newval);
     if(!ok)
         *expected = SDL_AtomicGet(&x->a_val);
     return ok;
 }
+#define tws_atomicWeakCAS_Acq tws_atomicStrongCAS_Acq
 inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
 {
     int ok = SDL_AtomicCAS(&x->a_val, *expected, newval);
@@ -1020,11 +1034,15 @@ inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
 #ifdef TWS_ATOMIC_USE_GCC_ATOMIC
 inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
 {
-    return __atomic_compare_exchange_4(&x->a_val, expected, newval, true, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE);
+    return __atomic_compare_exchange_4(&x->a_val, expected, newval, 1, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE);
+}
+inline static int tws_atomicStrongCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+{
+    return __atomic_compare_exchange_4(&x->a_val, expected, newval, 0, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE);
 }
 inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
 {
-    return __atomic_compare_exchange_4(&x->a_val, expected, newval, true, __ATOMIC_RELEASE, __ATOMIC_CONSUME);
+    return __atomic_compare_exchange_4(&x->a_val, expected, newval, 1, __ATOMIC_RELEASE, __ATOMIC_CONSUME);
 }
 inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x)
 {
@@ -1050,10 +1068,11 @@ static inline int _tws_sync_cas32(tws_Atomic *x, tws_Atomic *expected, tws_Atomi
     *expected = prev;
     return 0;
 }
-inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+inline static int tws_atomicStrongCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
 {
     return _tws_sync_cas32(&x->a_val, expected, newval);
 }
+#define tws_atomicWeakCAS_Acq tws_atomicStrongCAS_Acq
 inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
 {
     return _tws_sync_cas32(&x->a_val, expected, newval);
@@ -1100,7 +1119,7 @@ TWS_THREAD_EXPORT void tws_lwsem_destroy(tws_LWsem *ws)
 TWS_THREAD_EXPORT int tws_lwsem_tryacquire(tws_LWsem *ws)
 {
     _tws_IntType old = tws_relaxedGet(&ws->a_count);
-    return old > 0 && tws_atomicWeakCAS_Acq(&ws->a_count, &old, old - 1); // FIXME: this should be strong cas
+    return old > 0 && tws_atomicStrongCAS_Acq(&ws->a_count, &old, old - 1);
 }
 
 TWS_THREAD_EXPORT void tws_lwsem_acquire(tws_LWsem *ws, unsigned spin)
@@ -1109,13 +1128,19 @@ TWS_THREAD_EXPORT void tws_lwsem_acquire(tws_LWsem *ws, unsigned spin)
     if(spin)
     {
         old = tws_relaxedGet(&ws->a_count);
+        goto noyield;
         do
         {
+            tws_yieldCPU(0);
+noyield:
             if (old > 0 && tws_atomicWeakCAS_Acq(&ws->a_count, &old, old - 1))
                 return;
-            tws_yieldCPU(0);
         }
         while(--spin);
+
+        /* Try one last time with a strong CAS, in case the previous ones were spurious failures */
+        if (old > 0 && tws_atomicStrongCAS_Acq(&ws->a_count, &old, old - 1))
+            return;
     }
     /* Failed to acquire after trying; wait via OS-semaphore */
     old = tws_atomicAdd_Acq(&ws->a_count, -1);
@@ -1127,6 +1152,23 @@ TWS_THREAD_EXPORT void tws_lwsem_release(tws_LWsem *ws, unsigned n_)
 {
     _tws_IntType n = n_; /* Avoid mismatched sign warning */
     const _tws_IntType old = tws_atomicAdd_Rel(&ws->a_count, n);
+    _tws_IntType toRelease = -old < n ? -old : n;
+    if(toRelease > 0)
+        tws_sem_release(ws->sem, toRelease);
+}
+
+TWS_THREAD_EXPORT void tws_lwsem_releaseCapped(tws_LWsem *ws, unsigned n_, unsigned maxcount)
+{
+    _tws_IntType n = n_;
+    _tws_IntType old = tws_relaxedGet(&ws->a_count);
+    for(;;)
+    {
+        _tws_IntType next = old + n;
+        if((unsigned)next > maxcount)
+            next = (_tws_IntType)maxcount;
+        if(tws_atomicWeakCAS_Rel(&ws->a_count, &old, next))
+            break;
+    }
     _tws_IntType toRelease = -old < n ? -old : n;
     if(toRelease > 0)
         tws_sem_release(ws->sem, toRelease);

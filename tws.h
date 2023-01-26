@@ -127,7 +127,9 @@ typedef unsigned tws_FallbackResult;
      - call tws_run(), if it returned non-zero return TWS_FALLBACK_RAN_OTHER.
        This frees up a slot internally, unless another thread grabs that right away
        or the job spawns new jobs (in which case the fallback called again)
-     - Wait on a semaphore that is signaled in the recycled() callback, then return 0.
+     - Acquire (ie. wait on) a semaphore that is released in the recycled() callback, then return 0.
+       (see tws_lwsem_releaseCapped() from tws_thread.h, pass the the max# of threads
+       that could submit jobs for the cap. That includes threads calling tws_run()!)
      - Switch to another thread or Sleep() for a while and hope for the best, then return 0
        (this is bad, don't do this!)
 
