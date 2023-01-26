@@ -57,7 +57,7 @@ Can be defined to 0 or 1 via build system, or not defined to autodetect */
 
 /* Both C11 and C++11 define ATOMIC_LLONG_LOCK_FREE */
 #if !defined(TWS_HAS_WIDE_ATOMICS) && (ATOMIC_LLONG_LOCK_FREE+0)
-#  #define TWS_HAS_WIDE_ATOMICS 1
+#  define TWS_HAS_WIDE_ATOMICS 1
 #endif
 
 #ifndef TWS_HAS_WIDE_ATOMICS
