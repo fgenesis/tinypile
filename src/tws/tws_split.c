@@ -16,16 +16,16 @@ static void _tws_continueSplitWorker(tws_Pool *pool, const tws_JobData *data)
 
     tws_SplitHelper *sh = (tws_SplitHelper*)data->p[0];
     size_t begin = data->p[1];
-    size_t remain = data->p[2];
-    sh->splitter(pool, sh, begin, remain);
+    size_t n = data->p[2];
+    sh->splitter(pool, sh, begin, n);
 }
 
 static void _tws_continueSplitWorker_Even(tws_Pool *pool, const tws_JobData *data)
 {
     tws_SplitHelper *wrk = (tws_SplitHelper*)data->p[0];
     size_t begin = data->p[1];
-    size_t remain = data->p[2];
-    tws_splitter_evensize(pool, wrk, begin, remain);
+    size_t n = data->p[2];
+    tws_splitter_evensize(pool, wrk, begin, n);
 }
 
 TWS_EXPORT void _tws_beginSplitWorker(tws_Pool *pool, const tws_JobData *data)
@@ -37,15 +37,13 @@ TWS_EXPORT void _tws_beginSplitWorker(tws_Pool *pool, const tws_JobData *data)
 }
 
 
-static unsigned _splitOffRightSubset(tws_Pool *pool, tws_SplitHelper *sh, size_t rightsize, size_t totalsize, tws_Func cont)
+static unsigned _splitOffSubset(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n, tws_Func cont)
 {
-    const size_t rightbegin = totalsize - rightsize;
-
     tws_JobDesc desc;
     desc.func = cont;
     desc.data.p[0] = (uintptr_t)sh;
-    desc.data.p[1] = rightbegin;
-    desc.data.p[2] = rightsize;
+    desc.data.p[1] = begin;
+    desc.data.p[2] = n;
     desc.channel = sh->channel;
     desc.next = 0;
     tws_WorkTmp tmp[1];
@@ -96,10 +94,11 @@ TWS_EXPORT void tws_splitter_evensize(tws_Pool *pool, tws_SplitHelper *sh, size_
     while(n > splitsize)
     {
         /* spawn right child, half size of us */
-        const size_t righthalf = n / 2u;
-        if(!_splitOffRightSubset(pool, sh, righthalf, n, _tws_continueSplitWorker_Even))
+        const size_t half = n / 2u;
+        const size_t rightbegin = begin + half;
+        if(!_splitOffSubset(pool, sh, rightbegin, half, _tws_continueSplitWorker_Even))
             break; /* full? Gotta finish the rest myself */
-        n -= righthalf; /* "loop-recurse" into left child */
+        n -= half; /* "loop-recurse" into left child */
     }
 
     _splitCall(pool, sh, begin, n);
@@ -112,15 +111,16 @@ TWS_EXPORT void tws_splitter_chunksize(tws_Pool *pool, tws_SplitHelper *sh, size
 
     const size_t splitsize = sh->splitsize;
 
-    // FIXME: this should split off the LEFT half evenly, so that we don't break page alignment etc
     while(n > splitsize)
     {
-        /* Make it so that righthalf is always a power-of-2 multiple of maxn */
-        const size_t righthalf = splitsize * RoundUpToPowerOfTwo((n / 2u + (splitsize - 1)) / splitsize);
-        /* The right subset can be split evenly since a power of 2 is involved */
-        if(!_splitOffRightSubset(pool, sh, righthalf, n, _tws_continueSplitWorker_Even))
+        /* Make it so that lefthalf is always a power-of-2 multiple of maxn */
+        const size_t lefthalf = splitsize * RoundUpToPowerOfTwo((n / 2u + (splitsize - 1)) / splitsize);
+        /* The left subset can be split evenly since a power of 2 is involved */
+        if(!_splitOffSubset(pool, sh, begin, lefthalf, _tws_continueSplitWorker_Even))
             break;
-        n -= righthalf;
+        /* continue as the right part */
+        begin += lefthalf;
+        n -= lefthalf;
     }
 
     _splitCall(pool, sh, begin, n);
@@ -142,11 +142,11 @@ TWS_EXPORT void tws_splitter_numblocks(tws_Pool* pool, tws_SplitHelper* sh, size
     const size_t elemsPerJob = sh->totalsize / div;
     TWS_ASSERT(elemsPerJob > 0, "empty jobs make no sense");
     size_t leftover = sh->totalsize - (elemsPerJob * div);
+    const size_t usedInArray = spinoff < BATCHSIZE ? spinoff : BATCHSIZE;
     {
-        const size_t used = spinoff < BATCHSIZE ? spinoff : BATCHSIZE;
         const unsigned channel = sh->channel;
         /* Some preparations, these fields are always the same */
-        for(size_t i = 0 ; i < used; ++i)
+        for(size_t i = 0 ; i < usedInArray; ++i)
         {
             desc[i].func = _splitCallThunk; /* forwards to actual func */
             desc[i].data.p[0] = (uintptr_t)sh;
@@ -161,11 +161,10 @@ TWS_EXPORT void tws_splitter_numblocks(tws_Pool* pool, tws_SplitHelper* sh, size
         {
             size_t done = 0;
             /* Possible that we want to spawn more than BATCHSIZE jobs, so we'll do it in multiple batches */
-            const size_t used = spinoff < BATCHSIZE ? spinoff : BATCHSIZE;
             size_t i = 0;
-            for( ; i < used; ++i)
+            for( ; i < usedInArray; ++i)
             {
-                /* take a single element from leftovers, if any -> makes it a nice and even split */
+                /* take a single element from leftovers, if any. This makes it a nice and even split */
                 size_t adj = !!leftover;
                 leftover -= adj;
                 /* starting position and size */

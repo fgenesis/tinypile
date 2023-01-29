@@ -66,8 +66,8 @@ typedef struct tws_Pool tws_Pool; /* opaque */
 struct tws_Slice
 {
     void *ptr;
-    size_t size;
     size_t begin;
+    size_t size;
 };
 typedef struct tws_Slice tws_Slice;
 
