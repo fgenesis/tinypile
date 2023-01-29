@@ -29,7 +29,7 @@ static void work(tws_Pool *pool, const tws_JobData *data)
 {
     //printf("work (%u, %u) th %d\n", (unsigned)data->ext.ptr, (unsigned)data->ext.size, GetCurrentThreadId());
 
-    if(!data->ext.size)
+    if(!data->slice.size)
     {
         /* 10 jobs, each one must be run before the next: A->B->C->... */
         enum { N = 100 };
@@ -37,8 +37,8 @@ static void work(tws_Pool *pool, const tws_JobData *data)
         for(unsigned i = 0; i < N; ++i)
         {
             d[i].func = work;
-            d[i].data.ext.ptr = data->ext.ptr;
-            d[i].data.ext.size = i+1;
+            d[i].data.slice.ptr = data->slice.ptr;
+            d[i].data.slice.size = i+1;
             d[i].channel = 0;
             d[i].next = TWS_RELATIVE(1);
         }

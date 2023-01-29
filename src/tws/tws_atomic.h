@@ -85,12 +85,14 @@ _Rel = release semantics
 _Seq = sequentially consistent (strongest memory guarantees)
 _Weak = allow CAS to spuriously fail
 Inc, Dec must return modified/new value.
+Add returns old value.
 Set must act as memory barrier and return the previous value
 CAS returns 0 on fail, anything else on success. On fail, *expected is updated to current value.
 */
 
 TWS_PRIVATE_INLINE tws_Atomic _AtomicInc_Acq(NativeAtomic *x);
 TWS_PRIVATE_INLINE tws_Atomic _AtomicDec_Rel(NativeAtomic *x);
+TWS_PRIVATE_INLINE tws_Atomic _AtomicAdd_Acq(NativeAtomic *x, tws_Atomic add);
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval);
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Rel(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval);
 TWS_PRIVATE_INLINE void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval);

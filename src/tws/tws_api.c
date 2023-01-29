@@ -42,7 +42,7 @@ TWS_EXPORT tws_Pool* tws_init(void* mem, size_t memsz, unsigned numChannels, siz
 
     /* User can pass 0 to get the most compact layout (at the cost of speed),
        but anything that's not power-of-2 is probably very wrong */
-    cacheLineSize = AlignUp(cacheLineSize, TWS_MIN_ALIGN);
+    cacheLineSize = AlignUp(cacheLineSize + !cacheLineSize, TWS_MIN_ALIGN);
     TWS_ASSERT(IsPowerOfTwo(cacheLineSize), "Warning: Weird cache line size. You know what you're doing?");
 
     tws_Pool * const pool = (tws_Pool*)mem;

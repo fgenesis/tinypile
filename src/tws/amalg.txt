@@ -26,3 +26,4 @@
 < tws_job.h
 < tws_job.c
 < tws_api.c
+< tws_split.c

@@ -12,6 +12,7 @@ set(src
     tws_ail.h
     tws_axp.c
     tws_axp.h
+    tws_split.c
 )
 
 add_library(tws ${src})

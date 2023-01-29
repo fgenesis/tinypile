@@ -32,6 +32,7 @@ TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x)
 
 #pragma intrinsic(_InterlockedIncrement)
 #pragma intrinsic(_InterlockedDecrement)
+#pragma intrinsic(_InterlockedExchangeAdd)
 #pragma intrinsic(_InterlockedExchange)
 #pragma intrinsic(_InterlockedCompareExchange)
 #pragma intrinsic(_InterlockedCompareExchange64)
@@ -39,6 +40,11 @@ TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x)
 
 TWS_PRIVATE_INLINE tws_Atomic _AtomicInc_Acq(NativeAtomic *x) { return _InterlockedIncrement(&x->val); }
 TWS_PRIVATE_INLINE tws_Atomic _AtomicDec_Rel(NativeAtomic *x) { return _InterlockedDecrement(&x->val); }
+TWS_PRIVATE_INLINE tws_Atomic _AtomicAdd_Acq(NativeAtomic *x, tws_Atomic add)
+{
+    return _InterlockedExchangeAdd(&x->val, add);
+}
+
 // msvc's <atomic> header does exactly this
 static inline int _msvc_cas32_x86(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval)
 {
@@ -96,6 +102,10 @@ TWS_PRIVATE_INLINE tws_Atomic _AtomicInc_Acq(NativeAtomic *x)
 TWS_PRIVATE_INLINE tws_Atomic _AtomicDec_Rel(NativeAtomic *x)
 {
     return __atomic_sub_fetch(&x->val, 1, __ATOMIC_RELEASE);
+}
+TWS_PRIVATE_INLINE tws_Atomic _AtomicAdd_Acq(NativeAtomic *x, tws_Atomic add)
+{
+    return __atomic_fetch_add(&x->val, 1, __ATOMIC_ACQUIRE);
 }
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval)
 {
@@ -177,6 +187,7 @@ TWS_PRIVATE_INLINE int _sync_cas64(tws_Atomic* x, tws_Atomic64* expected, tws_At
 
 TWS_PRIVATE_INLINE tws_Atomic _AtomicInc_Acq(NativeAtomic* x) { return __sync_add_and_fetch(&x->val, 1); }
 TWS_PRIVATE_INLINE tws_Atomic _AtomicDec_Rel(NativeAtomic* x) { return __sync_sub_and_fetch(&x->val, 1); }
+TWS_PRIVATE_INLINE tws_Atomic _AtomicAdd_Acq(NativeAtomic *x, tws_Atomic add) { return __sync_add_and_fetch(&x->val, add); }
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Acq(NativeAtomic* x, tws_Atomic* expected, tws_Atomic newval) { return _sync_cas32(&x->val, expected, newval); }
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Rel(NativeAtomic* x, tws_Atomic* expected, tws_Atomic newval) { return _sync_cas32(&x->val, expected, newval); }
 TWS_PRIVATE_INLINE void _AtomicSet_Rel(NativeAtomic* x, tws_Atomic newval) { x->val = newval; __sync_synchronize(); }
@@ -228,6 +239,10 @@ TWS_PRIVATE_INLINE tws_Atomic64 _RelaxedWideGet(const WideAtomic *x)
 /* -------------------------------------------------------- */
 #ifdef TWS_ATOMIC_USE_CPP11
 
+TWS_PRIVATE_INLINE tws_Atomic _AtomicAdd_Acq(NativeAtomic *x, tws_Atomic add)
+{
+    return x->val.fetch_add(add, std::memory_order_acquire);
+}
 TWS_PRIVATE_INLINE int _AtomicCAS_Weak_Acq(NativeAtomic *x, tws_Atomic *expected, tws_Atomic newval)
 {
     return x->val.compare_exchange_weak(*expected, newval, std::memory_order_acquire, std::memory_order_acquire);

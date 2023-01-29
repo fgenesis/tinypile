@@ -34,7 +34,7 @@ Inspired by / reading material:
 
 #include <stddef.h> /* size_t, uintptr_t on MSVC */
 
-#if (defined(__STDC_VERSION__) && ((__STDC_VERSION__+0) >= 199901L)) || (defined(__cplusplus) && ((__cplusplus+0) >= 201103L))
+#if (defined(__STDC_VERSION__) && ((__STDC_VERSION__+0) >= 199901L)) || (defined(__cplusplus) && ((__cplusplus+0L) >= 201103L))
 #  include <stdint.h> /* uintptr_t on gcc/clang/posix */
 #endif
 
@@ -62,7 +62,16 @@ extern "C" {
 
 typedef struct tws_Pool tws_Pool; /* opaque */
 
-/* By default, this is all you get, eg. pointer + size + something else.
+/* This is for the splitter functions below */
+struct tws_Slice
+{
+    void *ptr;
+    size_t size;
+    size_t begin;
+};
+typedef struct tws_Slice tws_Slice;
+
+/* By default, 3x uintptr_t is all you get, eg. pointer + size + something else.
    You may adapt this to your own needs, but keep this POD and as small as possible.
    Note that tws_JobData is used internally, so make sure the library uses the same definition! */
 union tws_JobData
@@ -70,12 +79,9 @@ union tws_JobData
     uintptr_t p[3];
     char opaque[sizeof(uintptr_t) * 3];
 
-    struct
-    {
-        void *ptr;
-        size_t size;
-        size_t begin;
-    } ext;
+    /* In case you decide to change or remove this, the splitter functions will no longer compile.
+       Plan ahead accordingly. */
+    tws_Slice slice;
 };
 typedef union tws_JobData tws_JobData;
 
@@ -245,6 +251,107 @@ TWS_EXPORT void tws_submitPrepared(tws_Pool *pool, const tws_WorkTmp *tmp, size_
    Used to make spinlocks less tight.
    n is number of extra yields, ie. pass n=0 to yield once. */
 TWS_EXPORT void tws_yieldCPU(unsigned n);
+
+
+/* -------------------------------------------- */
+/* ---- Helpers to create specialized jobs ---- */
+/* -------------------------------------------- */
+
+typedef struct tws_SplitHelper tws_SplitHelper;
+
+typedef void (*tws_SplitFunc)(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t remain);
+
+/* This struct is required for all functions in this section.
+   Must stay alive while any of the jobs are running, ie. while tws_helper_done() returns false. */
+struct tws_SplitHelper
+{
+    tws_SplitFunc splitter;
+    tws_Func func;      /* called with data = (pointer to this tws_SplitHelper) */
+    size_t splitsize;   /* split down to chunks containing this many elements */
+    size_t begin;       /* begin at this index */
+    size_t totalsize;   /* total number of elements to operate on */
+    void *ud;           /* anything else that is needed to process */
+    tws_Func finalize;  /* optional, pushed as a separate job with data = (ud, size, 0) when everything is done */
+    unsigned channel;   /* channel that jobs are pushed to */
+    /* private part. used by the implementation, don't touch! */
+    struct
+    {
+        int a_counter;  /* for tws_work_done() */
+    } internal;
+};
+
+
+/* returns true as soon as all related jobs (and if present, the finalizer) were run */
+// TODO: should have tws_Event in split helper? maybe?
+//TWS_EXPORT int tws_work_done(const tws_SplitHelper *sh);
+
+/* -- Splitters -- */
+
+/* ------------------------------------------------
+   DO NOT CALL DIRECTLY!
+   Use only to pass to tws_gen_parallelFor() below!
+   ------------------------------------------------ */
+
+/* Split work in half evenly, until the number of elements in each chunk is <= splitsize. */
+TWS_EXPORT void tws_splitter_evensize(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n);
+
+/* Split work into splitsize-sized chunks.
+   This is similar to the above function, but instead of splitting evenly, it will prefer an uneven split
+   and call your func repeatedly with chunks of exactly splitzsize elements and once with the leftover chunk.
+   The uneven split is useful for eg. processing as many elements as the L1 cache of a single core can fit.
+   (In case there is a leftover block it will be on the far right side, so that all blocks to the left
+   are complete. This is intentional as to not break alignment) */
+TWS_EXPORT void tws_splitter_chunksize(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n);
+
+/* Split work into up to splitsize many blocks, with work evenly distributed among them.
+   Each resulting block operates on at least 1 element; no empty jobs are created (eg. if splitsize < #elements).
+   This is useful you want to split work evenly across N threads, so that each thread gets 1/Nth of the work. */
+TWS_EXPORT void tws_splitter_numblocks(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n);
+
+/* -- Higher-level constructs -- */
+
+/* Internal function. Avoid using directly. */
+TWS_EXPORT void _tws_beginSplitWorker(tws_Pool *pool, const tws_JobData *data);
+
+/* Return a tws_JobDesc that, when submitted, runs a parallel for "loop" over ud.
+   Effectively, your input is split into multiple parts that can be processed in parallel.
+   The splitting behavior is controlled by the splitter function and the splitsize.
+   sh is initialized and must be kept alive and untouched until tws_work_done() returns true
+   or the finalizer function is being run (eg. the finalizer can free() it if it was malloc()'d).
+   The inputs, in order:
+      - sh: Initialized by the function. Needed until done. Don't modify.
+      - splitter: Pass one of the tws_splitter_*() functions
+      - splitsize: Parameter for the splitter function. Must be > 0.
+      - func: called as often as necessary with data.slice.(ud, begin, size), where begin is
+              the starting index and size is the number of elements to process for that slice.
+      - ud: can be anything
+      - begin: begin at this index
+      - total: the total number of elements to process
+      - finalize: Finalizer function to be run after everything else is completed.
+                  Pass NULL if not needed. Called with data = (sh).
+   To make the parallel for actually run, you must submit the returned tws_JobDesc.
+*/
+static inline tws_JobDesc tws_gen_parallelFor(
+    tws_SplitHelper *sh, /* working space */
+    tws_SplitFunc splitter, size_t splitsize, /* split behavior */
+    tws_Func func, void *ud, size_t begin, size_t total, unsigned channel, tws_Func finalize /* your input */
+){
+    sh->splitter = splitter;
+    sh->func = func;
+    sh->splitsize = splitsize;
+    sh->ud = ud;
+    sh->finalize = finalize;
+    sh->channel = channel;
+    sh->totalsize = total;
+    sh->begin = begin;
+
+    /* tws_JobData needs to be able to hold at least 3x size or ptr to compile this.
+       If you shrunk tws_JobData, comment out this function to make sure you never call it! */
+    const tws_JobData data = { (uintptr_t)sh, begin, total };
+    const tws_JobDesc desc = { _tws_beginSplitWorker, data, channel, 0 };
+    return desc; /* Older MSVC does not support compound literals in C++ mode, but temporaries are fine. */
+}
+
 
 #ifdef __cplusplus
 } /* end extern C */
