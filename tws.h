@@ -291,14 +291,9 @@ struct tws_SplitHelper
     /* private part. used by the implementation, don't touch! */
     struct
     {
-        int a_counter;  /* for tws_work_done() */
+        int a_counter;  /* for tws_split_done() */
     } internal;
 };
-
-
-/* returns true as soon as all related jobs (and if present, the finalizer) were run */
-// TODO: should have tws_Event in split helper? maybe?
-//TWS_EXPORT int tws_work_done(const tws_SplitHelper *sh);
 
 /* -- Splitters -- */
 
@@ -328,22 +323,23 @@ TWS_EXPORT void tws_splitter_numblocks(tws_Pool *pool, tws_SplitHelper *sh, size
 /* Internal function. Avoid using directly. */
 TWS_EXPORT void _tws_beginSplitWorker(tws_Pool *pool, const tws_JobData *data);
 
-/* Return a tws_JobDesc that, when submitted, runs a parallel for "loop" over ud.
-   Effectively, your input is split into multiple parts that can be processed in parallel.
+/* Return a tws_JobDesc that, when submitted, runs a parallel for "loop" over ud,
+   ie. your work func gets a starting index and a size and can do its job based on that.
+   Effectively, your input is split into multiple parts to be processed in parallel.
    The splitting behavior is controlled by the splitter function and the splitsize.
-   sh is initialized and must be kept alive and untouched until tws_work_done() returns true
-   or the finalizer function is being run (eg. the finalizer can free() it if it was malloc()'d).
+   sh is initialized and must be kept alive and untouched until tws_split_done() returns true
+   or the finalizer function is being run (eg. the finalizer could free() it).
    The inputs, in order:
       - sh: Initialized by the function. Needed until done. Don't modify.
       - splitter: Pass one of the tws_splitter_*() functions
       - splitsize: Parameter for the splitter function. Must be > 0.
       - func: called as often as necessary with data.slice.(ud, begin, size), where begin is
               the starting index and size is the number of elements to process for that slice.
-      - ud: can be anything
+      - ud: whatever you need to access
       - begin: begin at this index
       - size: the total number of elements to process
       - finalize: Finalizer function to be run after everything else is completed.
-                  Pass NULL if not needed. Called with data = (sh).
+                  Pass NULL if not needed. Called with data.p[0] = (sh).
    To make the parallel for actually run, you must submit the returned tws_JobDesc.
 */
 static inline tws_JobDesc tws_gen_parallelFor(
@@ -352,6 +348,7 @@ static inline tws_JobDesc tws_gen_parallelFor(
     tws_Func func, void *ud, size_t begin, size_t size, /* your input */
     unsigned channel, tws_Func finalize /* job control */
 ){
+    /* (This is a header function because C does not define an ABI for returning structs) */
     sh->slice.ptr = ud;
     sh->slice.begin = begin;
     sh->slice.size = size;
@@ -360,6 +357,7 @@ static inline tws_JobDesc tws_gen_parallelFor(
     sh->splitsize = splitsize;
     sh->finalize = finalize;
     sh->channel = channel;
+    sh->internal.a_counter = -1;
 
     /* tws_JobData needs to be able to hold at least 3x size or ptr to compile this.
        If you shrunk tws_JobData, comment out this function to make sure you never call it! */
@@ -367,6 +365,14 @@ static inline tws_JobDesc tws_gen_parallelFor(
     const tws_JobDesc desc = { _tws_beginSplitWorker, data, channel, 0 };
     return desc; /* Older MSVC does not support compound literals in C++ mode, but temporaries are fine. */
 }
+
+/* Returns true as soon as all related jobs were run.
+   Caution: Does not consider the finalizer!
+            Ie. returns true even while the finalizer is still running.
+   If you use a finalizer, prefer using that for synchronization.
+   (And of yourse, if your finalizer deletes the tws_SplitHelper,
+    don't ever use this!) */
+TWS_EXPORT int tws_split_done(const tws_SplitHelper* sh);
 
 
 #ifdef __cplusplus

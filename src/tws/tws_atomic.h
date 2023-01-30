@@ -99,6 +99,7 @@ TWS_PRIVATE_INLINE void _AtomicSet_Rel(NativeAtomic *x, tws_Atomic newval);
 TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Acq(NativeAtomic *x, tws_Atomic newval); /* return previous */
 TWS_PRIVATE_INLINE tws_Atomic _AtomicExchange_Seq(NativeAtomic *x, tws_Atomic newval); /* return previous */
 TWS_PRIVATE_INLINE tws_Atomic _RelaxedGet(const NativeAtomic *x); /* load with no synchronization or guarantees */
+TWS_PRIVATE_INLINE tws_Atomic _AtomicGet_Seq(const NativeAtomic *x);
 
 #if TWS_HAS_WIDE_ATOMICS
 

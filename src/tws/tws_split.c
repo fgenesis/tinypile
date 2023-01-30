@@ -2,12 +2,6 @@
 
 /* Add-ons for efficient splitting of linear work into jobs */
 
-/*TWS_EXPORT int tws_work_done(const tws_SplitHelper * sh)
-{
-    NativeAtomic *a = (NativeAtomic*)&sh->internal.a_counter;
-    return _AtomicGet_Seq(a) == 0;
-}*/
-
 static void _tws_continueSplitWorker(tws_Pool *pool, const tws_JobData *data)
 {
     /* make sure a job can hold 3x pointer or size -- the default, but maybe the user changed it.
@@ -24,10 +18,14 @@ TWS_EXPORT void _tws_beginSplitWorker(tws_Pool *pool, const tws_JobData *data)
 {
     tws_SplitHelper *sh = (tws_SplitHelper*)data->p[0];
     TWS_ASSERT(sh->splitsize, "splitsize must be > 0");
-    sh->internal.a_counter = 1 + !!sh->finalize; /* finalizer is an extra step */
+    sh->internal.a_counter = 1;
     _tws_continueSplitWorker(pool, data);
 }
 
+TWS_EXPORT int tws_split_done(const tws_SplitHelper* sh)
+{
+    return !_AtomicGet_Seq((NativeAtomic*)&sh->internal.a_counter);
+}
 
 static unsigned _splitOffSubset(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n)
 {
@@ -53,6 +51,7 @@ static unsigned _splitOffSubset(tws_Pool *pool, tws_SplitHelper *sh, size_t begi
 /* Forward to the user's tws_Func and decr the remain counter when done. */
 static inline _splitCall(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n)
 {
+    TWS_ASSERT(n, "split produced empty set");
     tws_JobData d;
     d.slice.ptr = sh->slice.ptr;
     d.slice.size = n;
@@ -60,12 +59,11 @@ static inline _splitCall(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size
     sh->func(pool, &d);
 
     /* Any pending jobs left? */
-    if(_AtomicDec_Rel((NativeAtomic*)&sh->internal.a_counter) == 1 && sh->finalize)
+    if(!_AtomicDec_Rel((NativeAtomic*)&sh->internal.a_counter) && sh->finalize)
     {
         const tws_JobData d = { (uintptr_t)sh };
         sh->finalize(pool, &d);
-
-        _AtomicDec_Rel((NativeAtomic*)&sh->internal.a_counter);
+        /* Finalizer might have deleted sh, don't touch anymore after this */
     }
 }
 
@@ -112,7 +110,7 @@ TWS_EXPORT void tws_splitter_chunksize(tws_Pool *pool, tws_SplitHelper *sh, size
     {
         /* Make it so that lefthalf is always a power-of-2 multiple of the split size */
         const size_t lefthalf = splitsize * RoundUpToPowerOfTwo((n / 2u + (splitsize - 1)) / splitsize);
-        /* The left subset can be split evenly since a power of 2 is involved.
+        /* The left subset can always be split evenly since a power of 2 is involved.
            sh->splitter was already changed to an even split above. */
         if(!_splitOffSubset(pool, sh, begin, lefthalf))
             break;
