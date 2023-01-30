@@ -86,11 +86,12 @@ TWS_EXPORT void tws_splitter_evensize(tws_Pool *pool, tws_SplitHelper *sh, size_
     while(n > splitsize)
     {
         /* spawn right child, half size of us */
-        const size_t half = n / 2u;
-        const size_t rightbegin = begin + half;
-        if(!_splitOffSubset(pool, sh, rightbegin, half))
+        const size_t rightsize = n / 2u;
+        const size_t leftsize = n - rightsize;
+        const size_t rightbegin = begin + leftsize;
+        if(!_splitOffSubset(pool, sh, rightbegin, rightsize))
             break; /* full? Gotta finish the rest myself */
-        n -= half; /* "loop-recurse" into left child */
+        n = leftsize; /* "loop-recurse" into left child */
     }
 
     _splitCall(pool, sh, begin, n);
