@@ -20,14 +20,6 @@ static void _tws_continueSplitWorker(tws_Pool *pool, const tws_JobData *data)
     sh->splitter(pool, sh, begin, n);
 }
 
-static void _tws_continueSplitWorker_Even(tws_Pool *pool, const tws_JobData *data)
-{
-    tws_SplitHelper *wrk = (tws_SplitHelper*)data->p[0];
-    size_t begin = data->p[1];
-    size_t n = data->p[2];
-    tws_splitter_evensize(pool, wrk, begin, n);
-}
-
 TWS_EXPORT void _tws_beginSplitWorker(tws_Pool *pool, const tws_JobData *data)
 {
     tws_SplitHelper *sh = (tws_SplitHelper*)data->p[0];
@@ -37,10 +29,10 @@ TWS_EXPORT void _tws_beginSplitWorker(tws_Pool *pool, const tws_JobData *data)
 }
 
 
-static unsigned _splitOffSubset(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n, tws_Func cont)
+static unsigned _splitOffSubset(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n)
 {
     tws_JobDesc desc;
-    desc.func = cont;
+    desc.func = _tws_continueSplitWorker;
     desc.data.p[0] = (uintptr_t)sh;
     desc.data.p[1] = begin;
     desc.data.p[2] = n;
@@ -98,7 +90,7 @@ TWS_EXPORT void tws_splitter_evensize(tws_Pool *pool, tws_SplitHelper *sh, size_
         /* spawn right child, half size of us */
         const size_t half = n / 2u;
         const size_t rightbegin = begin + half;
-        if(!_splitOffSubset(pool, sh, rightbegin, half, _tws_continueSplitWorker_Even))
+        if(!_splitOffSubset(pool, sh, rightbegin, half))
             break; /* full? Gotta finish the rest myself */
         n -= half; /* "loop-recurse" into left child */
     }
@@ -113,12 +105,16 @@ TWS_EXPORT void tws_splitter_chunksize(tws_Pool *pool, tws_SplitHelper *sh, size
 
     const size_t splitsize = sh->splitsize;
 
+    /* We're the only invocation that splits off unevenly, the rest is an even split */
+    sh->splitter = tws_splitter_evensize;
+
     while(n > splitsize)
     {
-        /* Make it so that lefthalf is always a power-of-2 multiple of maxn */
+        /* Make it so that lefthalf is always a power-of-2 multiple of the split size */
         const size_t lefthalf = splitsize * RoundUpToPowerOfTwo((n / 2u + (splitsize - 1)) / splitsize);
-        /* The left subset can be split evenly since a power of 2 is involved */
-        if(!_splitOffSubset(pool, sh, begin, lefthalf, _tws_continueSplitWorker_Even))
+        /* The left subset can be split evenly since a power of 2 is involved.
+           sh->splitter was already changed to an even split above. */
+        if(!_splitOffSubset(pool, sh, begin, lefthalf))
             break;
         /* continue as the right part */
         begin += lefthalf;
@@ -156,7 +152,6 @@ TWS_EXPORT void tws_splitter_numblocks(tws_Pool* pool, tws_SplitHelper* sh, size
             desc[i].next = 0;
         }
     }
-
 
     if(spinoff)
         do
