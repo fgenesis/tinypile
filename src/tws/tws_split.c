@@ -32,7 +32,7 @@ TWS_EXPORT void _tws_beginSplitWorker(tws_Pool *pool, const tws_JobData *data)
 {
     tws_SplitHelper *sh = (tws_SplitHelper*)data->p[0];
     TWS_ASSERT(sh->splitsize, "splitsize must be > 0");
-    sh->internal.a_counter = 1;
+    sh->internal.a_counter = 1 + !!sh->finalize; /* finalizer is an extra step */
     _tws_continueSplitWorker(pool, data);
 }
 
@@ -62,16 +62,18 @@ static unsigned _splitOffSubset(tws_Pool *pool, tws_SplitHelper *sh, size_t begi
 static inline _splitCall(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n)
 {
     tws_JobData d;
-    d.slice.ptr = sh->ud;
+    d.slice.ptr = sh->slice.ptr;
     d.slice.size = n;
     d.slice.begin = begin;
     sh->func(pool, &d);
 
     /* Any pending jobs left? */
-    if(!_AtomicDec_Rel((NativeAtomic*)&sh->internal.a_counter) && sh->finalize)
+    if(_AtomicDec_Rel((NativeAtomic*)&sh->internal.a_counter) == 1 && sh->finalize)
     {
         const tws_JobData d = { (uintptr_t)sh };
         sh->finalize(pool, &d);
+
+        _AtomicDec_Rel((NativeAtomic*)&sh->internal.a_counter);
     }
 }
 
@@ -139,9 +141,9 @@ TWS_EXPORT void tws_splitter_numblocks(tws_Pool* pool, tws_SplitHelper* sh, size
     const size_t div = n < sh->splitsize ? n : sh->splitsize;
 
     size_t spinoff = div - 1; /* One block is ours, to directly forward to */
-    const size_t elemsPerJob = sh->totalsize / div;
+    const size_t elemsPerJob = sh->slice.size / div;
     TWS_ASSERT(elemsPerJob > 0, "empty jobs make no sense");
-    size_t leftover = sh->totalsize - (elemsPerJob * div);
+    size_t leftover = sh->slice.size - (elemsPerJob * div);
     const size_t usedInArray = spinoff < BATCHSIZE ? spinoff : BATCHSIZE;
     {
         const unsigned channel = sh->channel;

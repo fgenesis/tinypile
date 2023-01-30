@@ -223,12 +223,6 @@ TWS_EXPORT int tws_trysubmit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkT
 TWS_EXPORT int tws_run(tws_Pool *pool, unsigned channel);
 
 
-/* -------------------------- */
-/* ---- Helper functions ---- */
-/* -------------------------- */
-
-
-
 /* ------------------------ */
 /* ---- Advanced usage ---- */
 /* ------------------------ */
@@ -244,7 +238,7 @@ TWS_EXPORT int tws_run(tws_Pool *pool, unsigned channel);
 /* Same semantics as tws_trysubmit(), but does not actually begin executing jobs.
    Use tws_submitPrepared() to submit jobs that were prepared with this function.
    WARNING: Preparing but not submitting a job is a "resource leak" and will prevent job slots from being recycled.
-   Returns the number of jobs that are ready to start (ie. those without dependencies), which is always >= 1 on success.;
+   Returns the number of jobs that are ready to start (ie. those without dependencies), which is always >= 1 on success.
    returns 0 when not enough job slots are free to enqueue everything (ie. on fail).
    (Upon return, tmp[0 ... return value) contains internal IDs of jobs ready to start.
     You can copy them somewhere else to manually prepare a single large batch via multiple calls to this function) */
@@ -269,18 +263,16 @@ TWS_EXPORT void tws_yieldCPU(unsigned n);
 
 typedef struct tws_SplitHelper tws_SplitHelper;
 
-typedef void (*tws_SplitFunc)(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t remain);
+typedef void (*tws_SplitFunc)(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n);
 
 /* This struct is required for all functions in this section.
    Must stay alive while any of the jobs are running, ie. while tws_helper_done() returns false. */
 struct tws_SplitHelper
 {
+    tws_Slice slice;    /* the complete input as one slice (ud, begin, size) */
     tws_SplitFunc splitter;
     tws_Func func;      /* called with data = (pointer to this tws_SplitHelper) */
     size_t splitsize;   /* split down to chunks containing this many elements */
-    size_t begin;       /* begin at this index */
-    size_t totalsize;   /* total number of elements to operate on */
-    void *ud;           /* anything else that is needed to process */
     tws_Func finalize;  /* optional, pushed as a separate job with data = (ud, size, 0) when everything is done */
     unsigned channel;   /* channel that jobs are pushed to */
     /* private part. used by the implementation, don't touch! */
@@ -336,7 +328,7 @@ TWS_EXPORT void _tws_beginSplitWorker(tws_Pool *pool, const tws_JobData *data);
               the starting index and size is the number of elements to process for that slice.
       - ud: can be anything
       - begin: begin at this index
-      - total: the total number of elements to process
+      - size: the total number of elements to process
       - finalize: Finalizer function to be run after everything else is completed.
                   Pass NULL if not needed. Called with data = (sh).
    To make the parallel for actually run, you must submit the returned tws_JobDesc.
@@ -344,20 +336,21 @@ TWS_EXPORT void _tws_beginSplitWorker(tws_Pool *pool, const tws_JobData *data);
 static inline tws_JobDesc tws_gen_parallelFor(
     tws_SplitHelper *sh, /* working space */
     tws_SplitFunc splitter, size_t splitsize, /* split behavior */
-    tws_Func func, void *ud, size_t begin, size_t total, unsigned channel, tws_Func finalize /* your input */
+    tws_Func func, void *ud, size_t begin, size_t size, /* your input */
+    unsigned channel, tws_Func finalize /* job control */
 ){
+    sh->slice.ptr = ud;
+    sh->slice.begin = begin;
+    sh->slice.size = size;
     sh->splitter = splitter;
     sh->func = func;
     sh->splitsize = splitsize;
-    sh->ud = ud;
     sh->finalize = finalize;
     sh->channel = channel;
-    sh->totalsize = total;
-    sh->begin = begin;
 
     /* tws_JobData needs to be able to hold at least 3x size or ptr to compile this.
        If you shrunk tws_JobData, comment out this function to make sure you never call it! */
-    const tws_JobData data = { (uintptr_t)sh, begin, total };
+    const tws_JobData data = { (uintptr_t)sh, begin, size };
     const tws_JobDesc desc = { _tws_beginSplitWorker, data, channel, 0 };
     return desc; /* Older MSVC does not support compound literals in C++ mode, but temporaries are fine. */
 }
