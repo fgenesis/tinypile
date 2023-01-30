@@ -27,7 +27,7 @@ at compile time based on whether certain macros exist, and pick one, ie.:
   * <If you want to see your library of choice here, send me a patch/PR>
 
 Alternatively, you can #define TWS_BACKEND to one of the TWS_BACKEND_* constants
-to force using that library.
+to force using that.
 
 See the tws examples how to use this, including the lightweight semaphore implemented
 at the bottom of this file (tws_LWsem).
@@ -46,10 +46,11 @@ License:
 #endif
 
 /* #define TWS_BACKEND to one of these to force this backend; otherwise autodetect */
+#define TWS_BACKEND_AUTO     0 /* Same as not defining it */
 #define TWS_BACKEND_WIN32    1
 #define TWS_BACKEND_C11      2 /* Needs at least C11. Implements semaphores based on mutex+condvar */
 #define TWS_BACKEND_CPP11    3 /* Needs at least C++11. Uses C++20 semaphores if available, otherwise mutex+condvar */
-#define TWS_BACKEND_PTHREADS 4
+#define TWS_BACKEND_PTHREADS 4 /* Anything POSIX, link with -lpthread */
 #define TWS_BACKEND_SDL      5
 #define TWS_BACKEND_OSX      6 /* NYI, do not use */
 
@@ -79,13 +80,54 @@ TWS_THREAD_EXPORT unsigned tws_cpu_count(void);
    Never 0. You can use the returned value directly. */
 TWS_THREAD_EXPORT unsigned tws_cpu_cachelinesize(void);
 
-/* Lightweight semaphore. Consider using this instead of the (likely slower) OS semaphore */
+/* Lightweight semaphore, supports partial spinning.
+   Consider using this instead of the (likely slower) OS semaphore */
+struct tws_LWsem
+{
+    long opaqueCount;
+    void *opaquePtr;
+}; /* struct is only for size, don't touch! */
 typedef struct tws_LWsem tws_LWsem;
 TWS_THREAD_EXPORT void *tws_lwsem_init(tws_LWsem *ws, int count); /* Returns NULL on failure */
 TWS_THREAD_EXPORT void tws_lwsem_destroy(tws_LWsem *ws);
-TWS_THREAD_EXPORT int tws_lwsem_tryacquire(tws_LWsem *ws);
-TWS_THREAD_EXPORT void tws_lwsem_acquire(tws_LWsem *ws, unsigned spincount);
-TWS_THREAD_EXPORT void tws_lwsem_release(tws_LWsem *ws, unsigned n);
+TWS_THREAD_EXPORT int tws_lwsem_tryacquire(tws_LWsem *ws); /* returns 0 if failed, anything else if sem was acquired */
+TWS_THREAD_EXPORT void tws_lwsem_acquire(tws_LWsem *ws, unsigned spincount); /* if spin > 0, spin a bit before eventually going to sleep */
+TWS_THREAD_EXPORT void tws_lwsem_release(tws_LWsem *ws, unsigned n); /* n must be > 0 */
+
+/* Manual reset event -- helper for tws_Promise
+   wait() blocks only while event is not set
+   When set, release all waiting threads and don't block new ones */
+struct tws_Event
+{
+    long opaqueCount;
+    void *opaquePtr;
+}; /* struct is only for size, don't touch! */
+typedef struct tws_Event tws_Event;
+TWS_THREAD_EXPORT void *tws_ev_init(tws_Event *ev, int isset);
+TWS_THREAD_EXPORT void tws_ev_destroy(tws_Event *ev);
+TWS_THREAD_EXPORT int tws_ev_isset(tws_Event *ev);
+TWS_THREAD_EXPORT void tws_ev_set(tws_Event *ev);
+TWS_THREAD_EXPORT void tws_ev_unset(tws_Event *ev);
+TWS_THREAD_EXPORT void tws_ev_wait(tws_Event *ev);
+TWS_THREAD_EXPORT void tws_sync_signal(tws_Event *ev, unsigned n); /* break up to n threads out of a wait */
+
+/* Sync object. Kind of like a reverse semaphore.
+   Blocks when the counter is != 0, lets all threads pass when it is == 0.
+   Waiting threads do not change the counter */
+struct tws_Sync
+{
+    long opaqueCount;
+    tws_Event opaqueEv;
+}; /* struct is only for size, don't touch! */
+typedef struct tws_Sync tws_Sync;
+
+TWS_THREAD_EXPORT void *tws_sync_init(tws_Event *ev, int count);
+TWS_THREAD_EXPORT void tws_sync_destroy(tws_Event *ev);
+TWS_THREAD_EXPORT int tws_sync_done(tws_Event *ev);
+TWS_THREAD_EXPORT int tws_sync_wait(tws_Event *ev);
+TWS_THREAD_EXPORT int tws_sync_change(tws_Event *ev, int n); /* add n to internal counter. If it becomes 0, release all waiting threads */
+TWS_THREAD_EXPORT void tws_sync_signal(tws_Event *ev, unsigned n);
+TWS_THREAD_EXPORT void tws_sync_broadcast(tws_Event *ev);
 
 /* Release semaphore n times, but cap the release count. This is useful to ensure you don't
    end up spinning a lot when acquiring the semaphore in a loop. */
@@ -98,6 +140,11 @@ TWS_THREAD_EXPORT void tws_lwsem_releaseCapped(tws_LWsem *ws, unsigned n, unsign
 /*--- 8< -----------------------------------------------------------*/
 #ifdef TWS_THREAD_IMPLEMENTATION
 
+#ifndef TWS_STATIC_ASSERT
+/* Downside: This can't be on file scope; must be placed in a function */
+#  define TWS_STATIC_ASSERT(cond) switch((int)!!(cond)){case 0:;case(!!(cond)):;}
+#endif
+
 /* Check which backends are potentially available */
 #if defined(_WIN32)
 #  define TWS_HAS_BACKEND_WIN32
@@ -105,7 +152,7 @@ TWS_THREAD_EXPORT void tws_lwsem_releaseCapped(tws_LWsem *ws, unsigned n, unsign
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
 #  define TWS_HAS_BACKEND_C11
 #endif
-#if (defined(__cplusplus) && ((__cplusplus+0) >= 201103L)) || (defined(_MSC_VER) && (_MSC_VER+0 >= 1600))
+#if (defined(__cplusplus) && ((__cplusplus+0L) >= 201103L)) || (defined(_MSC_VER) && (_MSC_VER+0L >= 1600))
 #  define TWS_HAS_BACKEND_CPP11
 #endif
 #if defined(SDLCALL) || defined(SDL_stdinc_h_) || defined(SDL_INIT_EVERYTHING) || defined(SDL_CreateThread) || defined(SDL_VERSION)
@@ -141,7 +188,7 @@ TWS_THREAD_EXPORT void tws_lwsem_releaseCapped(tws_LWsem *ws, unsigned n, unsign
 #error No threading backend recognized
 #endif
 
-/* Ask the OS. If we know how to. */
+/* Ask the OS. If we know how to.*/
 static unsigned tws_os_cachelinesize()
 {
     int n = 0;
@@ -149,6 +196,8 @@ static unsigned tws_os_cachelinesize()
 #ifdef _SC_LEVEL1_DCACHE_LINESIZE
     n =  sysconf(_SC_LEVEL1_DCACHE_LINESIZE);
 #endif
+
+    /* Win32 is implemented separately, not here */
 
     return n < 0 ? 0 : n;
 }
@@ -176,6 +225,8 @@ static unsigned tws_os_cpucount()
     n = sysconf(_SC_NPROCESSORS_CONF);
 #endif
 
+    /* Win32 is implemented separately, not here */
+
     return n < 0 ? 0 : n;
 }
 
@@ -198,6 +249,8 @@ static int tws_os_tid()
     return getpid();
 #  endif
 #endif
+
+    /* Win32 is implemented separately, not here */
 
     return -1;
 }
@@ -927,6 +980,7 @@ inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
 #ifdef TWS_ATOMIC_USE_MSVC
 #pragma intrinsic(_InterlockedCompareExchange)
 #pragma intrinsic(_InterlockedExchangeAdd)
+#pragma intrinsic(_InterlockedOr)
 #if defined(TWS_ARCH_ARM) || defined(TWS_ARCH_ARM64)
 #  pragma intrinsic(_InterlockedCompareExchange_acq)
 #  pragma intrinsic(_InterlockedCompareExchange_rel)
@@ -959,6 +1013,16 @@ inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected
     *expected = prevVal;
     return 0;
 }
+inline static int tws_atomicCAS_Seq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
+{
+    const _tws_IntType expectedVal = *expected;
+    _tws_IntType prevVal = _InterlockedCompareExchange(&x->a_val, newval, expectedVal);
+    if(prevVal == expectedVal)
+        return 1;
+
+    *expected = prevVal;
+    return 0;
+}
 inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x) { return x->a_val; }
 /* Add returns original value */
 inline static _tws_IntType tws_atomicAdd_Acq(tws_AtomicInt *x, _tws_IntType v)
@@ -968,6 +1032,10 @@ inline static _tws_IntType tws_atomicAdd_Acq(tws_AtomicInt *x, _tws_IntType v)
 inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
 {
     return _InterlockedExchangeAdd_rel(&x->a_val, v);
+}
+inline static _tws_IntType tws_atomicGet_Seq(tws_AtomicInt *x)
+{
+    return _InterlockedOr(&x->a_val, 0);
 }
 #endif
 
@@ -1099,80 +1167,157 @@ inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
 
 
 /* Adapted from https://github.com/preshing/cpp11-on-multicore/blob/master/common/sema.h */
-struct tws_LWsem
+struct tws_LWsemImpl
 {
     tws_AtomicInt a_count;
     tws_Sem *sem;
 };
+typedef struct tws_LWsemImpl tws_LWsemImpl;
 
 TWS_THREAD_EXPORT void *tws_lwsem_init(tws_LWsem *ws, int count)
 {
-    ws->a_count.a_val = count;
-    return ((ws->sem = tws_sem_create()));
+    TWS_STATIC_ASSERT(sizeof(tws_LWsemImpl) == sizeof(tws_LWsem));
+    tws_LWsemImpl *impl = (tws_LWsemImpl*)ws;
+    impl->a_count.a_val = count;
+    return ((impl->sem = tws_sem_create()));
 }
 
 TWS_THREAD_EXPORT void tws_lwsem_destroy(tws_LWsem *ws)
 {
-    tws_sem_destroy(ws->sem);
+    tws_LWsemImpl *impl = (tws_LWsemImpl*)ws;
+    tws_sem_destroy(impl->sem);
 }
 
 TWS_THREAD_EXPORT int tws_lwsem_tryacquire(tws_LWsem *ws)
 {
-    _tws_IntType old = tws_relaxedGet(&ws->a_count);
-    return old > 0 && tws_atomicStrongCAS_Acq(&ws->a_count, &old, old - 1);
+    tws_LWsemImpl *impl = (tws_LWsemImpl*)ws;
+    _tws_IntType old = tws_relaxedGet(&impl->a_count);
+    return old > 0 && tws_atomicWeakCAS_Acq(&impl->a_count, &old, old - 1);
 }
 
 TWS_THREAD_EXPORT void tws_lwsem_acquire(tws_LWsem *ws, unsigned spin)
 {
+    tws_LWsemImpl *impl = (tws_LWsemImpl*)ws;
     _tws_IntType old;
     if(spin)
     {
-        old = tws_relaxedGet(&ws->a_count);
+        old = tws_relaxedGet(&impl->a_count);
         goto noyield;
         do
         {
             tws_yieldCPU(0);
 noyield:
-            if (old > 0 && tws_atomicWeakCAS_Acq(&ws->a_count, &old, old - 1))
+            if (old > 0 && tws_atomicWeakCAS_Acq(&impl->a_count, &old, old - 1))
                 return;
         }
         while(--spin);
 
         /* Try one last time with a strong CAS, in case the previous ones were spurious failures */
-        if (old > 0 && tws_atomicStrongCAS_Acq(&ws->a_count, &old, old - 1))
+        if (old > 0 && tws_atomicStrongCAS_Acq(&impl->a_count, &old, old - 1))
             return;
     }
     /* Failed to acquire after trying; wait via OS-semaphore */
-    old = tws_atomicAdd_Acq(&ws->a_count, -1);
+    old = tws_atomicAdd_Acq(&impl->a_count, -1);
     if (old <= 0)
-        tws_sem_acquire(ws->sem);
+        tws_sem_acquire(impl->sem);
 }
 
 TWS_THREAD_EXPORT void tws_lwsem_release(tws_LWsem *ws, unsigned n_)
 {
+    tws_LWsemImpl *impl = (tws_LWsemImpl*)ws;
     _tws_IntType n = n_; /* Avoid mismatched sign warning */
-    const _tws_IntType old = tws_atomicAdd_Rel(&ws->a_count, n);
+    const _tws_IntType old = tws_atomicAdd_Rel(&impl->a_count, n);
     _tws_IntType toRelease = -old < n ? -old : n;
     if(toRelease > 0)
-        tws_sem_release(ws->sem, toRelease);
+        tws_sem_release(impl->sem, toRelease);
 }
 
 TWS_THREAD_EXPORT void tws_lwsem_releaseCapped(tws_LWsem *ws, unsigned n_, unsigned maxcount)
 {
+    tws_LWsemImpl *impl = (tws_LWsemImpl*)ws;
     _tws_IntType n = n_;
-    _tws_IntType old = tws_relaxedGet(&ws->a_count);
+    _tws_IntType old = tws_relaxedGet(&impl->a_count);
     for(;;)
     {
         _tws_IntType next = old + n;
         if((unsigned)next > maxcount)
             next = (_tws_IntType)maxcount;
-        if(tws_atomicWeakCAS_Rel(&ws->a_count, &old, next))
+        if(tws_atomicWeakCAS_Rel(&impl->a_count, &old, next))
             break;
     }
     _tws_IntType toRelease = -old < n ? -old : n;
     if(toRelease > 0)
-        tws_sem_release(ws->sem, toRelease);
+        tws_sem_release(impl->sem, toRelease);
 }
+
+
+/* ---------------------------------------------------- */
+
+struct tws_EventImpl
+{
+    tws_AtomicInt a_count;
+    tws_Sem *sem;
+};
+typedef struct tws_EventImpl tws_EventImpl;
+
+TWS_THREAD_EXPORT void *tws_ev_init(tws_Event *ev, int isset)
+{
+    TWS_STATIC_ASSERT(sizeof(tws_EventImpl) == sizeof(tws_Event));
+    tws_EventImpl *impl = (tws_EventImpl*)ev;
+    impl->a_count.a_val = !!isset;
+    return ((impl->sem = tws_sem_create()));
+}
+
+TWS_THREAD_EXPORT void tws_ev_destroy(tws_Event *ev)
+{
+    tws_EventImpl *impl = (tws_EventImpl*)ev;
+    tws_sem_destroy(impl->sem);
+}
+
+TWS_THREAD_EXPORT int tws_ev_isset(tws_Event *ev)
+{
+    tws_EventImpl *impl = (tws_EventImpl*)ev;
+    return tws_atomicGet_Seq(&impl->a_count) > 0; /* TODO: acq or rel here? Not sure */
+}
+
+TWS_THREAD_EXPORT void tws_ev_set(tws_Event *ev)
+{
+    tws_EventImpl *impl = (tws_EventImpl*)ev;
+    _tws_IntType oldStatus = tws_relaxedGet(&impl->a_count);
+    for(;;)
+        if(tws_atomicWeakCAS_Rel(&impl->a_count, &oldStatus, 1)) // updates oldStatus on failure
+            break;
+    if(oldStatus < 0) // wake all waiting threads
+        tws_sem_release(impl->sem, -oldStatus);
+}
+
+TWS_THREAD_EXPORT void tws_ev_unset(tws_Event *ev)
+{
+    tws_EventImpl *impl = (tws_EventImpl*)ev;
+    _tws_IntType expected = 1;
+    tws_atomicCAS_Seq(&impl->a_count, &expected, 0); // does nothing when not set (there might be threads waiting)
+}
+
+TWS_THREAD_EXPORT void tws_ev_wait(tws_Event *ev)
+{
+    tws_EventImpl *impl = (tws_EventImpl*)ev;
+    _tws_IntType oldStatus = tws_relaxedGet(&impl->a_count);
+    //TWS_ASSERT(oldStatus <= 1, "MREvent invalid status");
+
+    _tws_IntType newStatus;
+    for(;;)
+    {
+        newStatus = oldStatus <= 0 ? oldStatus - 1 : 1; // one more waiting thread, but only if not signaled
+        if(tws_atomicWeakCAS_Acq(&impl->a_count, &oldStatus, newStatus)) // updates oldStatus on failure
+            break;
+    }
+
+    // We're either signaled or now a single thread waiting. 0 threads waiting at this point is impossible.
+    //TWS_ASSERT(newStatus != 0, "zero waiting threads is invalid here");
+    if(newStatus < 0) // not signaled? then wait.
+        tws_sem_acquire(impl->sem);
+}
+
 
 #endif /* TWS_BACKEND_IMPLEMENTATION */
 

@@ -8,13 +8,17 @@ Design goals:
 - Vulkan-style preparation up-front, then fire & forget
 - Safe operation even if grossly overloaded
 
+Intentionally not supported to keep things simple:
+- Cancellation of tasks
+- Priorities (can be emulated with channels)
+
 License:
   Public domain, WTFPL, CC0 or your favorite permissive license; whatever is available in your country.
   Pick whatever you like, I don't care.
 
 Dependencies:
 - Compiles as C99 or oldschool C++ code, but can benefit from C11 or if compiled as C++11
-- Requires compiler/library/CPU support for: atomic int compare-and-swap (CAS), add, exchange; optional: wide CAS, cpu-yield
+- Requires compiler/library/CPU support for: atomic int compare-and-swap (CAS), add, exchange; optional: wide CAS
 - Does NOT require the libc or TLS (thread-local storage)
 
 Origin:
@@ -217,6 +221,12 @@ TWS_EXPORT int tws_trysubmit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkT
 /* Run one job waiting on the given channel.
    Returns 1 if a job was executed, 0 if not, ie. there was no waiting job on this channel. */
 TWS_EXPORT int tws_run(tws_Pool *pool, unsigned channel);
+
+
+/* -------------------------- */
+/* ---- Helper functions ---- */
+/* -------------------------- */
+
 
 
 /* ------------------------ */

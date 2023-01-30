@@ -306,7 +306,7 @@ Refer to https://sourceforge.net/p/predef/wiki/Architectures/ for platform defin
 #if defined(TWS_ARCH_X86) || defined(TWS_ARCH_X64)
 # include <immintrin.h>
 TWS_PRIVATE_INLINE void _Yield(void) { _mm_pause(); }
-TWS_PRIVATE_INLINE void _YieldLong(void) { _mm_pause(); }
+TWS_PRIVATE_INLINE void _YieldLong(void) { _Yield(); }
 TWS_PRIVATE_INLINE void _UnyieldLong(void) { }
 
 /* wfe on ARM is pretty much exactly what we need, as long as it's paired with a sev instruction */
@@ -332,7 +332,7 @@ TWS_PRIVATE_INLINE void _UnyieldLong(void) {  }
 # define WIN32_NOMINMAX
 # include <Windows.h>
 TWS_PRIVATE_INLINE void _Yield(void) { YieldProcessor(); }
-TWS_PRIVATE_INLINE void _YieldLong(void) { YieldProcessor(); }
+TWS_PRIVATE_INLINE void _YieldLong(void) { _Yield(); }
 TWS_PRIVATE_INLINE void _UnyieldLong(void) { }
 
 #else
