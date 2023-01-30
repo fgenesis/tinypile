@@ -127,15 +127,10 @@ TWS_EXPORT int tws_trysubmit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTm
     return 0;
 }
 
-TWS_EXPORT int tws_run(tws_Pool* pool, unsigned channel)
+TWS_EXPORT size_t tws_run(tws_Pool* pool, unsigned channel, tws_RunFlags flags)
 {
     tws_Job *job = dequeue(pool, channel);
-    if(job)
-    {
-        execAndFinish(pool, job, channel);
-        return 1;
-    }
-    return 0;
+    return job ? execAndFinish(pool, job, channel, flags) : 0;
 }
 
 TWS_EXPORT size_t tws_prepare(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* tmp, size_t n)

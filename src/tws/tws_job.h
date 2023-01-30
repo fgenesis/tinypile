@@ -69,7 +69,7 @@ struct tws_Pool
 
 TWS_PRIVATE size_t prepare(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Fallback fallback, void *fallbackUD, SubmitFlags flags);
 TWS_PRIVATE void submitPrepared(tws_Pool *pool, const tws_WorkTmp *tmp, size_t nready); /* nready is return value of prepare() */
-TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job, unsigned channel);
+TWS_PRIVATE size_t execAndFinish(tws_Pool *pool, tws_Job *job, unsigned channel, tws_RunFlags flags);
 TWS_PRIVATE tws_Job *dequeue(tws_Pool *pool, unsigned channel);
 
 

@@ -28,7 +28,7 @@ static void enqueueWithoutCallback(tws_Pool *pool, tws_Job *job, unsigned channe
 {
     TWS_ASSERT((job->u.waiting.a_remain_and_channel.val & JOB_REMAIN_MASK) == 0, "too early to enqueue");
     TWS_ASSERT(((job->u.waiting.a_remain_and_channel.val >> JOB_CHANNEL_SHIFT) & JOB_CHANNEL_MASK) == channel, "channel mismatch");
-    TWS_ASSERT((uintptr_t)(job->func) > 10, "he");
+    TWS_ASSERT(job->func, "dead job");
     tws_ChannelHead *ch = channelHead(pool, channel);
     ail_push(&ch->list, AILBASE, job); /* this trashes job->u */
 }
@@ -40,9 +40,8 @@ inline static void readyCB(tws_Pool *pool, unsigned channel, unsigned n)
 }
 
 /* Enqueue job as ready & notify ready callback */
-static void enqueue(tws_Pool *pool, tws_Job *job)
+static void enqueue(tws_Pool *pool, tws_Job *job, unsigned channel)
 {
-    const unsigned channel = (job->u.waiting.a_remain_and_channel.val >> JOB_CHANNEL_SHIFT) & JOB_CHANNEL_MASK;
     enqueueWithoutCallback(pool, job, channel);
     readyCB(pool, channel, 1);
 }
@@ -54,41 +53,47 @@ TWS_PRIVATE tws_Job *dequeue(tws_Pool *pool, unsigned channel)
     return (tws_Job*)ail_pop(&ch->list, AILBASE);
 }
 
-/* Called by other jobs as they finish, to ready their followup if they have one */
-static void tryToReady(tws_Pool *pool, tws_Job *job, unsigned mychannel)
+TWS_PRIVATE size_t execAndFinish(tws_Pool *pool, tws_Job *job, unsigned mychannel, tws_RunFlags flags)
 {
-    const tws_Func func = job->func;
-    TWS_ASSERT(func, "dead job");
-    const unsigned remainAndChannel = _AtomicDec_Rel(&job->u.waiting.a_remain_and_channel);
-    const unsigned remain = remainAndChannel & JOB_REMAIN_MASK;
-    TWS_ASSERT(remain >= 0, "job readied more than once");
-    if(!remain)
+    size_t ran = 0;
+    for(;;)
     {
+        /* save some things. Note that job->u has been trashed. */
+        const tws_Func func = job->func;
+        TWS_ASSERT(func, "dead job");
+    #ifdef TWS_DEBUG
+        job->func = NULL;
+    #endif
+        /* Make local copies */
+        const unsigned followupIdx = job->followupIdx;
+        const tws_JobData data = job->data;
+        /* At this point we have everything we need -- recycle the job early to reduce pressure */
+        recycleJob(pool, job);
+        func(pool, &data); /* Do actual work */
+        ++ran; /* Job done */
+
+        if(!followupIdx)
+            break;
+
+        /* There's a followup */
+        job = jobByIndex(pool, followupIdx);
+        const unsigned remainAndChannel = _AtomicDec_Rel(&job->u.waiting.a_remain_and_channel);
+        const unsigned remain = remainAndChannel & JOB_REMAIN_MASK;
+        if (remain)
+            break; /* Followup depends on other jobs that haven't finished yet */
+
+        /* Followup is ready to run */
         const unsigned jobchannel = (remainAndChannel >> JOB_CHANNEL_SHIFT) & JOB_CHANNEL_MASK;
-        if(jobchannel == mychannel)
-            execAndFinish(pool, job, mychannel); /* No need to push if same channel */
-        else
-            enqueue(pool, job);
+        if (jobchannel != mychannel || (flags & TWS_RUN_NO_FOLLOWUP))
+        {
+            enqueue(pool, job, jobchannel);
+            break;
+        }
+
+        /* Same channel, can run followup inline. Continue the loop with the followup */
     }
-}
 
-TWS_PRIVATE void execAndFinish(tws_Pool *pool, tws_Job *job, unsigned mychannel)
-{
-    /* save some things. Note that job->u has been trashed. */
-    const tws_Func func = job->func;
-    TWS_ASSERT(func, "dead job");
-#ifdef TWS_DEBUG
-    job->func = NULL;
-#endif
-    /* Make local copies */
-    const unsigned followupIdx = job->followupIdx;
-    const tws_JobData data = job->data;
-    /* At this point we have everything we need -- recycle the job early to reduce pressure */
-    recycleJob(pool, job);
-    func(pool, &data); /* Do actual work */
-
-    if(followupIdx)
-        tryToReady(pool, jobByIndex(pool, followupIdx), mychannel);
+    return ran;
 }
 
 static tws_FallbackResult _tws_default_fallback(tws_Pool *pool, void *ud, const tws_JobDesc *d)
@@ -241,7 +246,8 @@ TWS_PRIVATE void submitPrepared(tws_Pool* pool, const tws_WorkTmp* tmp, size_t n
     {
         TWS_ASSERT(tmp[0], "jobidx must be > 0");
         tws_Job *job = &jobbase[tmp[0]];
-        enqueue(pool, job);
+        unsigned channel = (job->u.waiting.a_remain_and_channel.val >> JOB_CHANNEL_SHIFT) & JOB_CHANNEL_MASK;
+        enqueue(pool, job, channel);
         return;
     }
 

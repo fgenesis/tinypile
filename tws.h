@@ -134,6 +134,9 @@ typedef unsigned tws_FallbackResult;
 /* Fallback callback. Called when tws_submit() is unable to queue jobs because the pool is full.
    There are some ways how to proceed here, eg. any one or combination of the following:
      - call f(data), then return TWS_FALLBACK_EXECUTED_HERE.
+       This is the best course of action and you should prefer to do this if possible.
+       If there is a reason not to, ie. because we can't run a job because it's on the wrong
+       channel and OpenGL or TLS are involved, consider one of the other options below.
      - call tws_run(), if it returned non-zero return TWS_FALLBACK_RAN_OTHER.
        This frees up a slot internally, unless another thread grabs that right away
        or the job spawns new jobs (in which case the fallback called again)
@@ -218,9 +221,19 @@ TWS_EXPORT void tws_submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp
    Returns 1 if everything was submitted or 0 if failed. */
 TWS_EXPORT int tws_trysubmit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n);
 
+enum tws_RunFlags_ /* bitmask */
+{
+    /* For efficiency, followups on the same channel are run directly after the last job
+       that the followup depended on. Pass this flag if you don't want this and instead
+       want the job to be queued like any other job. */
+    TWS_RUN_NO_FOLLOWUP = 0x1,
+};
+typedef unsigned tws_RunFlags;
+
 /* Run one job waiting on the given channel.
-   Returns 1 if a job was executed, 0 if not, ie. there was no waiting job on this channel. */
-TWS_EXPORT int tws_run(tws_Pool *pool, unsigned channel);
+   Pass flags = 0 for default behavior, otherwise some combination of TWS_RUN_* flags.
+   Returns the number of jobs executed. 0 if failed, ie. there was no ready job on this channel.*/
+TWS_EXPORT size_t tws_run(tws_Pool *pool, unsigned channel, tws_RunFlags flags);
 
 
 /* ------------------------ */

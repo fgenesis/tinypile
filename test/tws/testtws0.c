@@ -59,7 +59,7 @@ static void thrun(void *ud)
     printf("spawned th %d\n", tid);
     while(!quit)
     {
-        tws_run(gpool, 0);
+        tws_run(gpool, 0, 0);
         //printf("sleep th %d\n", tid);
         tws_lwsem_acquire(&sem, 100);
         //printf("wakeup th %d\n", tid);
@@ -103,7 +103,7 @@ int main(int argc, char **argv)
             }
 
             /* Run all readied jobs until the queue is empty */
-            while(tws_run(gpool, 0)) {};
+            while(tws_run(gpool, 0, 0)) {};
 
             /* At this point,all jobs are submitted, most of them finished,
                but a few may still be executing (and possibly spawn new jobs on their own!)
