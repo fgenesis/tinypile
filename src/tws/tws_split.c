@@ -189,3 +189,35 @@ TWS_EXPORT void tws_splitter_numblocks(tws_Pool* pool, tws_SplitHelper* sh, size
 
     _splitCall(pool, sh, begin, n);
 }
+
+#if 0
+/* I wish it was possible to export this function without hassle, but... nope.
+   If anyone has an idea how to solve this without adding dependecies into the library, let me know */
+void tws_parallelFor(tws_Pool * pool, tws_SplitFunc splitter, size_t splitsize, tws_Func func, void * ud, size_t begin, size_t size, unsigned channel)
+{
+    tws_SplitHelper sh;
+    sh.slice.ptr = ud;
+    sh.slice.begin = begin;
+    sh.slice.size = size;
+    sh.splitter = splitter;
+    sh.func = func;
+    sh.splitsize = splitsize;
+    sh.finalize = NULL;
+    sh.channel = channel;
+    sh.internal.a_counter = 1;
+
+    splitter(pool, &sh, begin, size); /* this produces a bunch of jobs */
+
+    do
+    {
+        if(!tws_run(pool, channel, 0))
+        {
+            /* And now? No jobs to work on and there's nothing to efficiently wait.
+               And busy-waiting in a (yield) loop is also pretty bad.
+               No idea what to do. A callback to let the user handle this is an option,
+               but it adds extra complexity and just feels wrong. */
+        }
+    }
+    while(_AtomicGet_Seq((NativeAtomic*)&sh.internal.a_counter));
+}
+#endif

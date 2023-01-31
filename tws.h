@@ -18,8 +18,8 @@ License:
 
 Dependencies:
 - Compiles as C99 or oldschool C++ code, but can benefit from C11 or if compiled as C++11
-- Requires compiler/library/CPU support for: atomic int compare-and-swap (CAS), add, exchange; optional: wide CAS
-- Does NOT require the libc or TLS (thread-local storage)
+- Requires compiler/library/CPU support for: atomic int compare-and-swap (CAS), add, exchange; optional: 64bit CAS
+- Does NOT require the libc, TLS (thread-local storage), pthread, or any threading/OS API
 
 Origin:
 https://github.com/fgenesis/tinypile
@@ -133,13 +133,13 @@ typedef unsigned tws_FallbackResult;
 
 /* Fallback callback. Called when tws_submit() is unable to queue jobs because the pool is full.
    There are some ways how to proceed here, eg. any one or combination of the following:
-     - call f(data), then return TWS_FALLBACK_EXECUTED_HERE.
+     - call d->func(pool, d->data), then return TWS_FALLBACK_EXECUTED_HERE.
        This is the best course of action and you should prefer to do this if possible.
        If there is a reason not to, ie. because we can't run a job because it's on the wrong
        channel and OpenGL or TLS are involved, consider one of the other options below.
      - call tws_run(), if it returned non-zero return TWS_FALLBACK_RAN_OTHER.
        This frees up a slot internally, unless another thread grabs that right away
-       or the job spawns new jobs (in which case the fallback called again)
+       or the job spawns new jobs (in which case the fallback is called again)
      - Acquire (ie. wait on) a semaphore that is released in the recycled() callback, then return 0.
        (see tws_lwsem_releaseCapped() from tws_thread.h, pass the the max# of threads
        that could submit jobs for the cap. That includes threads calling tws_run()!)
@@ -195,9 +195,9 @@ TWS_EXPORT const tws_PoolInfo *tws_info(const tws_Pool *pool);
 /* Create a pool in mem. Returns mem casted to tws_Pool*. Returns NULL on failure.
    numChannels must be > 0 and < TWS_MAX_CHANNELS.
    As cacheLineSize, pass the L1 cache line size of your system (or whatever padding is needed to avoid false sharing).
-   Should be a power of 2. If in doubt, 64 should be fine.
+   Should be a power of 2. If in doubt, 64 should be fine. 0 for max. compactness at the cost of speed.
    If given, the callbacks struct is copied into the pool.
-   There is no function to free a pool. If you don't need it anymore, dispose the underlying mem and you're good;
+   There is no function to destroy a pool. If you don't need it anymore, dispose the underlying mem and you're good;
    but it's probably a good idea to run all queued jobs to completion to prevent leaks in your own code. */
 TWS_EXPORT tws_Pool *tws_init(void *mem, size_t memsz, unsigned numChannels, size_t cacheLineSize, const tws_PoolCallbacks *cb);
 
@@ -206,10 +206,7 @@ TWS_EXPORT tws_Pool *tws_init(void *mem, size_t memsz, unsigned numChannels, siz
    Returns immediately if all jobs could be queued.
    If the pool is full:
        - If fallback is present, calls fallback(pool, fallbackUD) repeatedly, until all jobs could be queued.
-         Hint: A good strategy is to call tws_run() in the fallback to make sure all jobs will be processed eventually.
-               Alternatively, you can wait on a semaphore until jobs become free (via the recycled() callback).
-       - If fallback is NULL or can't make progress, jobs may be executed directly.
-         --Note that this ignores the channel!--
+       - If fallback is NULL or can't make progress, jobs are executed directly, **ignoring the channel**
    The user must pass in a tws_WorkTmp[n] array of temporary storage. */
 TWS_EXPORT void tws_submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp *tmp, size_t n, tws_Fallback fallback, void *fallbackUD);
 
@@ -291,7 +288,7 @@ struct tws_SplitHelper
     /* private part. used by the implementation, don't touch! */
     struct
     {
-        int a_counter;  /* for tws_split_done() */
+        int a_counter;  /* for tws_split_done() and when to start the finalizer */
     } internal;
 };
 
@@ -302,8 +299,10 @@ struct tws_SplitHelper
    Use only to pass to tws_gen_parallelFor() below!
    ------------------------------------------------ */
 
+typedef void tws_DoNotCallMe;
+
 /* Split work in half evenly, until the number of elements in each chunk is <= splitsize. */
-TWS_EXPORT void tws_splitter_evensize(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n);
+TWS_EXPORT tws_DoNotCallMe tws_splitter_evensize(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n);
 
 /* Split work into splitsize-sized chunks.
    This is similar to the above function, but instead of splitting evenly, it will prefer an uneven split
@@ -311,23 +310,25 @@ TWS_EXPORT void tws_splitter_evensize(tws_Pool *pool, tws_SplitHelper *sh, size_
    The uneven split is useful for eg. processing as many elements as the L1 cache of a single core can fit.
    (In case there is a leftover block it will be on the far right side, so that all blocks to the left
    are complete. This is intentional as to not break alignment) */
-TWS_EXPORT void tws_splitter_chunksize(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n);
+TWS_EXPORT tws_DoNotCallMe tws_splitter_chunksize(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n);
 
 /* Split work into up to splitsize many blocks, with work evenly distributed among them.
    Each resulting block operates on at least 1 element; no empty jobs are created (eg. if splitsize < #elements).
    This is useful you want to split work evenly across N threads, so that each thread gets 1/Nth of the work. */
-TWS_EXPORT void tws_splitter_numblocks(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n);
+TWS_EXPORT tws_DoNotCallMe tws_splitter_numblocks(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n);
 
-/* -- Higher-level constructs -- */
+
+/* -- Parallel for, using a splitter -- */
 
 /* Internal function. Avoid using directly. */
-TWS_EXPORT void _tws_beginSplitWorker(tws_Pool *pool, const tws_JobData *data);
+TWS_EXPORT tws_DoNotCallMe _tws_beginSplitWorker(tws_Pool *pool, const tws_JobData *data);
+
 
 /* Return a tws_JobDesc that, when submitted, runs a parallel for "loop" over ud,
    ie. your work func gets a starting index and a size and can do its job based on that.
    Effectively, your input is split into multiple parts to be processed in parallel.
    The splitting behavior is controlled by the splitter function and the splitsize.
-   sh is initialized and must be kept alive and untouched until tws_split_done() returns true
+   sh is initialized here and must be kept alive and untouched until tws_split_done() returns true
    or the finalizer function is being run (eg. the finalizer could free() it).
    The inputs, in order:
       - sh: Initialized by the function. Needed until done. Don't modify.
@@ -357,7 +358,7 @@ static inline tws_JobDesc tws_gen_parallelFor(
     sh->splitsize = splitsize;
     sh->finalize = finalize;
     sh->channel = channel;
-    sh->internal.a_counter = -1;
+    sh->internal.a_counter = 1;
 
     /* tws_JobData needs to be able to hold at least 3x size or ptr to compile this.
        If you shrunk tws_JobData, comment out this function to make sure you never call it! */
@@ -365,6 +366,8 @@ static inline tws_JobDesc tws_gen_parallelFor(
     const tws_JobDesc desc = { _tws_beginSplitWorker, data, channel, 0 };
     return desc; /* Older MSVC does not support compound literals in C++ mode, but temporaries are fine. */
 }
+
+
 
 /* Returns true as soon as all related jobs were run.
    Caution: Does not consider the finalizer!

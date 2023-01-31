@@ -269,8 +269,7 @@ TWS_PRIVATE void submitPrepared(tws_Pool* pool, const tws_WorkTmp* tmp, size_t n
         TWS_ASSERT(tmp[i], "jobidx must be > 0");
         tws_Job *job = &jobbase[tmp[i]];
         unsigned channel = (job->u.waiting.a_remain_and_channel.val >> JOB_CHANNEL_SHIFT) & JOB_CHANNEL_MASK;
-        ++toReady[channel];
-        if(!first[channel])
+        if(!toReady[channel]++) /* MSVC C6385: Reading invalid data from toReady -- This is a false positive */
             first[channel] = job;
         ail_pushNonAtomic(&accu[channel], AILBASE, job);
     }

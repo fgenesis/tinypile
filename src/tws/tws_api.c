@@ -118,6 +118,8 @@ TWS_EXPORT void tws_submit(tws_Pool *pool, const tws_JobDesc * jobs, tws_WorkTmp
 
 TWS_EXPORT int tws_trysubmit(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* tmp, size_t n)
 {
+    /*TWS_ASSERT(n <= pool->info.maxjobs,
+        "Attempting to trysubmit() more jobs than the pool can hold. This will never succeed");*/
     size_t nready = prepare(pool, jobs, tmp, n, NULL, NULL, SUBMIT_ALL_OR_NONE);
     if(nready)
     {
@@ -135,6 +137,8 @@ TWS_EXPORT size_t tws_run(tws_Pool* pool, unsigned channel, tws_RunFlags flags)
 
 TWS_EXPORT size_t tws_prepare(tws_Pool* pool, const tws_JobDesc* jobs, tws_WorkTmp* tmp, size_t n)
 {
+    /*TWS_ASSERT(n <= pool->info.maxjobs,
+        "Attempting to prepare() more jobs than the pool can hold. This will never succeed");*/
     return prepare(pool, jobs, tmp, n, NULL, NULL, SUBMIT_ALL_OR_NONE);
 }
 
