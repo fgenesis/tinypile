@@ -1,7 +1,7 @@
 add_subdirectory(tio)
 add_subdirectory(tio_addons)
 add_subdirectory(tio_vfs)
-#add_subdirectory(tio_archive)
+add_subdirectory(tio_archive)
 #add_subdirectory(tbspx)
 add_subdirectory(tws)
 

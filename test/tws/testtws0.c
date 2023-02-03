@@ -31,8 +31,8 @@ static void work(tws_Pool *pool, const tws_JobData *data)
 
     if(!data->slice.size)
     {
-        /* 10 jobs, each one must be run before the next: A->B->C->... */
-        enum { N = 100 };
+        /* 5 jobs, each one must be run before the next: A->B->C->D->E */
+        enum { N = 5 };
         tws_JobDesc d[N];
         for(unsigned i = 0; i < N; ++i)
         {
@@ -77,12 +77,11 @@ int main(int argc, char **argv)
 
     tws_lwsem_init(&sem, 0);
 
-    for(unsigned r = 0; ; ++r)
     {
         quit = 0;
         gpool = tws_init(mem, sizeof(mem), 1, cachelinesize, &cb);
         const tws_PoolInfo *info = tws_info(gpool);
-        printf("[%u] space for %u jobs\n", r, info->maxjobs);
+        printf("space for %u jobs\n", info->maxjobs);
 
 
         for(size_t i = 0; i < NTH; ++i)
@@ -91,10 +90,10 @@ int main(int argc, char **argv)
             th[i] = tws_thread_create(thrun, name, NULL);
         }
 
-        for(;;)
+        for(unsigned k = 0; k < 100; ++k)
         {
-            printf("[%u] ...\n", r);
-            const unsigned N = 10000;
+            printf("[%u] ...\n", k);
+            const unsigned N = 1000;
             for(unsigned i = 0; i < N; ++i)
             {
                 tws_JobDesc d = { work, i, 0, 0, 0 };
@@ -108,7 +107,6 @@ int main(int argc, char **argv)
             /* At this point,all jobs are submitted, most of them finished,
                but a few may still be executing (and possibly spawn new jobs on their own!)
                So the above is not correct to ensure that everything is done. */
-            ++r;
         }
 
         quit = 1;

@@ -16,9 +16,15 @@ void BinReadBase::_readslow(void *dst, size_t have, size_t n)
     {
         do
         {
-            have = tio_srefill(this->sm); // assumes that the stream will not permanently refill 0 bytes without eventually setting error
             if(this->sm->err)
                 return;
+            tio_error err = tio_srefillx(this->sm);
+            if(err != tio_NoError) // anything wrong? in this case tio_Error_Wouldblock is also an error because we need a non-blocking stream here
+            {
+                this->sm->err = err; // tio_Error_Wouldblock is not permanently set. this makes sure it gets set.
+                return;
+            }
+            have = tio_savail(this->sm);
         }
         while(!have);
 entry:
@@ -33,6 +39,7 @@ entry:
     this->sm->cursor = src + cp;
 
 // --------- (just putting this somewhere for the compiler to pick up)
+    tio__static_assert(CHAR_BIT == 8);
     tio__static_assert(sizeof(u8) == sizeof(s8));
     tio__static_assert(sizeof(u16) == sizeof(s16));
     tio__static_assert(sizeof(u32) == sizeof(s32));

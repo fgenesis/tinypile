@@ -24,6 +24,7 @@ enum Maybe
 
 enum
 {
+    ZIP_CDH_MAGIC = 0x02014b50,
     ZIP_END_MAGIC = 0x06054b50,
     ZIP_END_HDR_SIZE = 22, // without comment field
     ZIP_END_MAXSIZE = ZIP_END_HDR_SIZE + 0xffff // with comment field
@@ -38,9 +39,10 @@ inline void  operator delete(void*, zipNewDummy, void*)       {}
 #define ZIP_PLACEMENT_NEW(p) new(zipNewDummy(), p)
 
 
+// assumes sig was was valid before calling this
 static Maybe parseEOCDNoSig(tio_ZipInfo *info, tio_Stream *sm)
 {
-    BinRead rd(sm);
+    BinReadLE rd(sm);
     //u32 sig;
     u16 diskNum;
     u16 diskCDHStart;
@@ -50,10 +52,6 @@ static Maybe parseEOCDNoSig(tio_ZipInfo *info, tio_Stream *sm)
     u32 offsetCDH;
     u16 commentLen;
     // + u8[commentLen], not interested in this
-
-    /*rd >> sig;
-    if(sig != ZIP_END_MAGIC)
-        return SOFT_NOPE;*/
 
     rd >> diskNum >> diskCDHStart >> myCDHNum >> totalCDH >> sizeofCDH >> offsetCDH >> commentLen;
     if(!rd)
@@ -89,7 +87,14 @@ TIO_EXPORT tio_error tio_zip_findEOCD(tio_ZipInfo* info, const void* tailbuf, si
 {
     if(tailbufSize < ZIP_END_HDR_SIZE)
         return tio_Error_Unspecified;
-    const char * const tail = (const char*)tailbuf;
+    const char * tail = (const char*)tailbuf;
+    if(tailbufSize > ZIP_END_MAXSIZE)
+    {
+        // input way too large? just look at the last ZIP_END_MAXSIZE bytes
+        size_t skip = tailbufSize - ZIP_END_MAXSIZE;
+        tail += skip;
+        tailbufSize = ZIP_END_MAXSIZE;
+    }
     const char *p = tail + (tailbufSize - ZIP_END_HDR_SIZE);
     size_t avail = ZIP_END_HDR_SIZE - 4;
     for( ; tail < p; --p, ++avail)
@@ -139,7 +144,7 @@ struct CDH
     // u8[fileCommentLen]
 };
 
-static BinRead& operator>>(BinRead& rd, CDH& h)
+static BinReadLE& operator>>(BinReadLE& rd, CDH& h)
 {
     rd >> h.sig >> h.versionMadeBy >> h.versionNeeded
        >> h.gpBit >> h.compMethod >> h.modtime >> h.moddate >> h.crc >> h.compSize >> h.uncompSize
@@ -199,7 +204,7 @@ TIO_EXPORT tio_error tio_zip_readCDH(tio_ZipFileList *pFiles, tio_Stream *sm, co
     pFiles->files = 0;
     pFiles->n = 0;
 
-    BinRead rd(sm);
+    BinReadLE rd(sm);
 
     void *zz = alloc(allocUD, 0, tioAllocMarker, sizeof(ZipFileListData));
     if(!zz)
@@ -216,8 +221,11 @@ TIO_EXPORT tio_error tio_zip_readCDH(tio_ZipFileList *pFiles, tio_Stream *sm, co
     for(size_t i = 0; i < N; ++i, ++e)
     {
         CDH h;
-        if(!(rd >> h) || h.sig != 0x02014b50)
-            return tio_Error_DataError;
+        if(!(rd >> h) || h.sig != ZIP_CDH_MAGIC)
+        {
+            err = tio_Error_DataError;
+            break;
+        }
 
         NameEntry ne = z->addName(size_t(h.fileNameLen) + 1); // + \0
         if(!tmp.resize(h.extraFieldLen) || !ne.dst)
@@ -226,8 +234,8 @@ TIO_EXPORT tio_error tio_zip_readCDH(tio_ZipFileList *pFiles, tio_Stream *sm, co
             break;
         }
 
-        rd.read(ne.dst, h.fileNameLen);
-        rd.read(tmp.data, h.extraFieldLen);
+        rd.rawread(ne.dst, h.fileNameLen);
+        rd.rawread(tmp.data, h.extraFieldLen);
         rd.skip(h.fileCommentLen);
 
         ne.dst[h.fileNameLen] = 0;
@@ -241,6 +249,9 @@ TIO_EXPORT tio_error tio_zip_readCDH(tio_ZipFileList *pFiles, tio_Stream *sm, co
         e->uncompSize = h.uncompSize;
         e->compMethod = h.compMethod;
     }
+
+    if(!err)
+        err = sm->err;
 
     if(!err)
     {
