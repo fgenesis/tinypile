@@ -988,7 +988,7 @@ private:
 
     Manipulator manip;
 
-    bool identifySuccessors(const Node& n);
+    bool identifySuccessors(const Node *n);
 
     bool findPathGreedy(Node *start, Node *end);
 
@@ -1325,15 +1325,15 @@ unsigned GridSearcher<GRID>::findNeighborsAStar(const Node& n, Position *wptr)
 
 
 template <typename GRID, typename Manipulator>
-bool Searcher<GRID, Manipulator>::identifySuccessors(const Node& n_)
+bool Searcher<GRID, Manipulator>::identifySuccessors(const Node *n)
 {
-    const SizeT nidx = this->storage.getindex(&n_);
-    const Position np = n_.pos;
+    const Position np = n->pos;
+    const SizeT nidx = this->storage.getindex(n);
     Position buf[8];
 
     const unsigned num = (this->_flags & JPS_Flag_AStarOnly)
-        ? this->findNeighborsAStar(n_, &buf[0])
-        : this->findNeighborsJPS(n_, &buf[0]);
+        ? this->findNeighborsAStar(*n, &buf[0])
+        : this->findNeighborsJPS(*n, &buf[0]);
 
     for(unsigned i = 0; i < num; ++i)
     {
@@ -1349,18 +1349,18 @@ bool Searcher<GRID, Manipulator>::identifySuccessors(const Node& n_)
         }
         // Now that the grid position is definitely a valid jump point, we have to create the actual node.
         // First, make sure that the manipulator allows us to create the node in the first place
-        const int userbits = manip.getNodeBits(jp, n_);
+        const int userbits = manip.getNodeBits(jp, *n);
         if (userbits < 0)
             continue; // User doesn't want this node to be created
 
-        Node *jn = this->getNode(jp); // this might realloc the storage and invalidate n_
+        Node *jn = this->getNode(jp); // this might realloc the storage and invalidate n
         if(!jn)
             return false; // out of memory
 
-        const Node& n = this->storage[nidx]; // get valid ref in case we realloc'd
-        JPS_ASSERT(jn != &n);
+        n = &this->storage[nidx]; // update to valid ref in case we realloc'd
+        JPS_ASSERT(jn != n);
         if(!jn->isClosed())
-            this->_expandNode(*jn, n, unsigned(userbits));
+            this->_expandNode(*jn, *n, unsigned(userbits));
     }
     return true;
 }
@@ -1466,7 +1466,7 @@ JPS_Result Searcher<GRID, Manipulator>::findPathStep(int limit)
         n.setClosed();
         if(n.pos == this->endPos)
             return JPS_FOUND_PATH;
-        if(!identifySuccessors(n))
+        if(!identifySuccessors(&n))
             return JPS_OUT_OF_MEMORY;
     }
     while(this->stepsRemain >= 0);
