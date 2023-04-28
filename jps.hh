@@ -1329,9 +1329,10 @@ bool Searcher<GRID, Manipulator>::identifySuccessors(const Node *n)
 {
     const Position np = n->pos;
     const SizeT nidx = this->storage.getindex(n);
+    const JPS_Flags flags = this->_flags;
     Position buf[8];
 
-    const unsigned num = (this->_flags & JPS_Flag_AStarOnly)
+    const unsigned num = (flags & JPS_Flag_AStarOnly)
         ? this->findNeighborsAStar(*n, &buf[0])
         : this->findNeighborsJPS(*n, &buf[0]);
 
@@ -1339,7 +1340,7 @@ bool Searcher<GRID, Manipulator>::identifySuccessors(const Node *n)
     {
         // Invariant: A node is only a valid neighbor if the corresponding grid position is walkable (asserted in jumpP)
         Position jp;
-        if(this->_flags & JPS_Flag_AStarOnly)
+        if(flags & JPS_Flag_AStarOnly)
             jp = buf[i];
         else
         {
