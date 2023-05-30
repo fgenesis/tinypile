@@ -21,8 +21,7 @@ typedef long sc_out;
     0 if fast syscalls are available
   < 0 on error (can't do syscalls at all)
   > 0 if syscalls can be made but it's not the fast path */
-SC_EXPORT sc_error sc_init(const void *argv);
-
+SC_EXPORT sc_error sc_init(const void* sys);
 
 SC_EXPORT sc_error sc_call0(sc_out *out, sc_id id);
 SC_EXPORT sc_error sc_call1(sc_out *out, sc_id id, sc_param a);

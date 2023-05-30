@@ -97,9 +97,9 @@ SC_EXPORT sc_error sc_call6(sc_out *out, sc_id id, sc_param a, sc_param b, sc_pa
     return sc_fin(ret);
 }
 
-SC_EXPORT int sc_init(const void *argv)
+SC_EXPORT int sc_init(const void *sys)
 {
-    (void)argv;
+    (void)sys;
     return 0; /* Nothing to do */
 }
 

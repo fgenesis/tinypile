@@ -49,7 +49,7 @@ static unsigned _splitOffSubset(tws_Pool *pool, tws_SplitHelper *sh, size_t begi
 }
 
 /* Forward to the user's tws_Func and decr the remain counter when done. */
-static inline _splitCall(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n)
+static void _splitCall(tws_Pool *pool, tws_SplitHelper *sh, size_t begin, size_t n)
 {
     TWS_ASSERT(n, "split produced empty set");
     tws_JobData d;

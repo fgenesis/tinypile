@@ -18,8 +18,9 @@ static void ready(void *ud, unsigned channel, unsigned num)
     tws_lwsem_release(&sem, num);
 }
 
-static int fallback(tws_Pool *pool, void *ud, const tws_JobDesc *d)
+static tws_FallbackResult fallback(tws_Pool *pool, void *ud, const tws_JobDesc *d)
 {
+    (void)ud; // unused
     //printf("... th %u fallback\n", tws_thread_id());
     d->func(pool, &d->data);
     return TWS_FALLBACK_EXECUTED_HERE;
@@ -70,7 +71,7 @@ static void thrun(void *ud)
 int main(int argc, char **argv)
 {
     const unsigned cachelinesize = tws_cpu_cachelinesize();
-    printf("main th %d, cache line size = %u\n", GetCurrentThreadId(), cachelinesize);
+    printf("main th %d, cache line size = %u\n", tws_thread_id(), cachelinesize);
 
     enum { NTH = 8 };
     tws_Thread *th[NTH];

@@ -1,3 +1,5 @@
+#pragma once
+
 #include "tio.h"
 #include <stdlib.h>
 
@@ -193,7 +195,7 @@ struct LittleEndian
     template<> struct Reader<1> { static inline u8  Read(const u8 *p) { return p[0]; } };
     template<> struct Reader<2> { static inline u16 Read(const u8 *p) { return p[0] | (p[1] << 8); } };
     template<> struct Reader<4> { static inline u32 Read(const u8 *p) { return p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24); } };
-    template<> struct Reader<8> { static inline u64 Read(const u8 *p) { u64 x = 0; for(size_t i = 0; i < 64; i += 8) { x |= u64(*p++) << i; } } };
+    template<> struct Reader<8> { static inline u64 Read(const u8 *p) { u64 x = 0; for(size_t i = 0; i < 64; i += 8) { x |= u64(*p++) << i; } return x; } };
 
     template<typename T>
     inline static T read(const u8 *p) { return static_cast<T>(Reader<sizeof(T)>::Read(p)); }
@@ -207,7 +209,7 @@ struct BigEndian
     template<> struct Reader<1> { static inline u8  Read(const u8 *p) { return p[0]; } };
     template<> struct Reader<2> { static inline u16 Read(const u8 *p) { return p[1] | (p[0] << 8); } };
     template<> struct Reader<4> { static inline u32 Read(const u8 *p) { return p[3] | (p[2] << 8) | (p[1] << 16) | (p[0] << 24); } };
-    template<> struct Reader<8> { static inline u64 Read(const u8 *p) { u64 x = p[0]; for(size_t i = 1; i < 8; ++i) { x <<= 8; x |= p[i]; } } };
+    template<> struct Reader<8> { static inline u64 Read(const u8 *p) { u64 x = p[0]; for(size_t i = 1; i < 8; ++i) { x <<= 8; x |= p[i]; } return x; } };
 
     template<typename T>
     inline static T read(const u8 *p) { return static_cast<T>(Reader<sizeof(T)>::Read(p)); }
@@ -274,7 +276,7 @@ class BinReadOps : protected Base
 {
 public:
     inline BinReadOps(tio_Stream *sm) : BinReadBase(sm) {}
-    inline operator void*() const { return (void*)(uintptr_t)!sm->err; } // bool conversion is bad; this is safer
+    inline operator void*() const { return (void*)(uintptr_t)!this->sm->err; } // bool conversion is bad; this is safer
     inline BinReadOps& skip(size_t n) { Base::skip(n); return *this; }
 
     inline BinReadOps& operator>>(u8& x)  { x = this->template read<u8>(); return *this; }
@@ -303,7 +305,7 @@ public:
     inline BinReadOps& rawread(void *dst, size_t n) { Base::read(dst, n); return *this; }
 
     // read with explicit endian
-    template<typename T, typename Endian>
+    template<typename T, typename Endian2>
     inline T readEndian()
     {
         u8 tmp[sizeof(T)];
@@ -313,7 +315,7 @@ public:
             Base::template read<sizeof(T)>(&tmp[0]);
             p = &tmp[0];
         }
-        return Endian::template read<T>(p);
+        return Endian2::template read<T>(p);
     }
 
     template<typename T>

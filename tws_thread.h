@@ -121,7 +121,7 @@ TWS_THREAD_EXPORT void tws_ev_wait(tws_Event *ev, unsigned spincount);
    Blocks when the counter is > 0, lets all threads pass when it is <= 0.
    Waiting threads do not change the counter.
    Recommended usage:
-     - Before submitting N jobs, change(+N). Call change(-1) in each job upon finishing.
+     - Before submitting N jobs, require(+N). Call fulfill(1) in each job upon finishing.
      - Then wait() until all jobs are done. */
 struct tws_Sync
 {
@@ -135,7 +135,7 @@ TWS_THREAD_EXPORT void tws_sync_destroy(tws_Sync *sync);
 TWS_THREAD_EXPORT int tws_sync_done(tws_Sync *sync); /* check if counter is 0 */
 TWS_THREAD_EXPORT void tws_sync_wait(tws_Sync *sync, unsigned spincount); /* blocking wait until counter is 0 */
 TWS_THREAD_EXPORT int tws_sync_require(tws_Sync *sync, unsigned n); /* add n to internal counter. returns new counter. */
-TWS_THREAD_EXPORT int tws_sync_fulfill(tws_Sync *sync, unsigned n); /* subtract n from internal counter. If it becomes 0, release all waiting threads. returns new counter. */
+TWS_THREAD_EXPORT int tws_sync_fulfill(tws_Sync *sync, unsigned n); /* subtract n from internal counter. If it becomes <= 0, release all waiting threads. returns new counter. */
 
 
 #ifdef __cplusplus
@@ -796,7 +796,7 @@ struct tws_C11Sem
     mtx_t mtx;
     cnd_t cv;
 };
-typedef struct tws_C11Sem
+typedef struct tws_C11Sem tws_C11Sem;
 
 TWS_THREAD_EXPORT tws_Thread *tws_thread_create(tws_ThreadEntry run, const char *name, void *ud)
 {
@@ -804,19 +804,19 @@ TWS_THREAD_EXPORT tws_Thread *tws_thread_create(tws_ThreadEntry run, const char 
     thrd_t *pt = (thrd_t*)malloc(sizeof(thrd_t));
     if(pt)
     {
-        if(thrd_start(pt, (thrd_start_t)run, ud) != thrd_success)
+        if(thrd_create(pt, (thrd_start_t)run, ud) != thrd_success)
         {
             free(pt);
             pt = NULL;
         }
     }
-    return pt;
+    return (tws_Thread*)pt;
 }
 
 TWS_THREAD_EXPORT void tws_thread_join(tws_Thread *th)
 {
     thrd_t *pt = (thrd_t*)th;
-    thrd_join(pt);
+    thrd_join(*pt, NULL);
     free(pt);
 }
 
@@ -835,7 +835,7 @@ TWS_THREAD_EXPORT tws_Sem* tws_sem_create(void)
         if(mtx_init(&cs->mtx, mtx_plain) == thrd_success)
         {
             if(cnd_init(&cs->cv) == thrd_success)
-                return cs;
+                return (tws_Sem*)cs;
             mtx_destroy(&cs->mtx);
         }
         free(cs);
@@ -846,7 +846,7 @@ TWS_THREAD_EXPORT tws_Sem* tws_sem_create(void)
 TWS_THREAD_EXPORT void tws_sem_destroy(tws_Sem *sem)
 {
     tws_C11Sem *cs = (tws_C11Sem*)sem;
-    cnd_destroy(&cs->mtx)
+    cnd_destroy(&cs->cv);
     mtx_destroy(&cs->mtx);
     free(sem);
 }
@@ -858,12 +858,12 @@ TWS_THREAD_EXPORT void tws_sem_acquire(tws_Sem *sem)
 
     for(;;)
     {
-        if(count)
+        if(cs->count)
             break;
         else
             cnd_wait(&cs->cv, &cs->mtx);
     }
-    --count;
+    --cs->count;
 
     mtx_unlock(&cs->mtx);
 }
@@ -909,7 +909,7 @@ TWS_THREAD_EXPORT unsigned tws_cpu_cachelinesize(void)
 
 
 /* Prefer C11 if available */
-#if defined(TWS_HAS_BACKEND_C) && !defined(__STDC_NO_ATOMICS__)
+#if defined(TWS_HAS_BACKEND_C11) && !defined(__STDC_NO_ATOMICS__)
 #  include <stdatomic.h>
 #  define TWS_ATOMIC_USE_C11
 typedef atomic_int _tws_AtomicIntType;
@@ -972,6 +972,10 @@ inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x)
 {
     return atomic_load_explicit(&x->a_val, memory_order_relaxed);
 }
+inline static _tws_IntType tws_atomicGet_Acq(const tws_AtomicInt *x)
+{
+    return atomic_load_explicit(&x->a_val, memory_order_acquire);
+}
 inline static _tws_IntType tws_atomicAdd_Acq(tws_AtomicInt *x, _tws_IntType v)
 {
     return atomic_fetch_add_explicit(&x->a_val, v, memory_order_acquire);
@@ -1018,16 +1022,6 @@ inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected
     *expected = prevVal;
     return 0;
 }
-inline static int tws_atomicCAS_Seq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
-{
-    const _tws_IntType expectedVal = *expected;
-    _tws_IntType prevVal = _InterlockedCompareExchange(&x->a_val, newval, expectedVal);
-    if(prevVal == expectedVal)
-        return 1;
-
-    *expected = prevVal;
-    return 0;
-}
 inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x) { return x->a_val; }
 /* Add returns original value */
 inline static _tws_IntType tws_atomicAdd_Acq(tws_AtomicInt *x, _tws_IntType v)
@@ -1038,7 +1032,7 @@ inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
 {
     return _InterlockedExchangeAdd_rel(&x->a_val, v);
 }
-inline static _tws_IntType tws_atomicGet_Seq(tws_AtomicInt *x)
+inline static _tws_IntType tws_atomicGet_Acq(tws_AtomicInt *x)
 {
     return _InterlockedOr(&x->a_val, 0);
 }
@@ -1061,6 +1055,10 @@ inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x)
 {
     return x->a_val.load(std::std::memory_order_relaxed);
 }
+inline static _tws_IntType tws_atomicGet_Acq(const tws_AtomicInt *x)
+{
+    return x->a_val.load(std::std::memory_order_acquire);
+}
 inline static _tws_IntType tws_atomicAdd_Acq(tws_AtomicInt *x, _tws_IntType v)
 {
     return x->a_val.fetch_add(v, std::memory_order_acquire);
@@ -1079,14 +1077,10 @@ inline static int tws_atomicStrongCAS_Acq(tws_AtomicInt *x, _tws_IntType *expect
         *expected = SDL_AtomicGet(&x->a_val);
     return ok;
 }
+/* SDL has no distinction between weak/strong and Rel/Acq, everything is strong and Seq */
 #define tws_atomicWeakCAS_Acq tws_atomicStrongCAS_Acq
-inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
-{
-    int ok = SDL_AtomicCAS(&x->a_val, *expected, newval);
-    if(!ok)
-        *expected = SDL_AtomicGet(&x->a_val);
-    return ok;
-}
+#define tws_atomicWeakCAS_Rel tws_atomicStrongCAS_Acq
+
 inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x)
 {
     SDL_CompilerBarrier();
@@ -1094,32 +1088,38 @@ inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x)
     SDL_CompilerBarrier();
     return ret;
 }
+inline static _tws_IntType tws_atomicGet_Acq(const tws_AtomicInt *x)
+{
+    return SDL_AtomicGet(&x->a_val);
+}
 inline static _tws_IntType tws_atomicAdd_Acq(tws_AtomicInt *x, _tws_IntType v)
 {
     return SDL_atomicAdd(&x->a_val, v);
 }
-inline static _tws_IntType tws_atomicAdd_Rel(tws_AtomicInt *x, _tws_IntType v)
-{
-    return SDL_atomicAdd(&x->a_val, v);
-}
+#define tws_atomicAdd_Rel tws_atomicAdd_Acq
+
 #endif
 
 #ifdef TWS_ATOMIC_USE_GCC_ATOMIC
 inline static int tws_atomicWeakCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
 {
-    return __atomic_compare_exchange_4(&x->a_val, expected, newval, 1, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE);
+    return __atomic_compare_exchange_n(&x->a_val, expected, newval, 1, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE);
 }
 inline static int tws_atomicStrongCAS_Acq(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
 {
-    return __atomic_compare_exchange_4(&x->a_val, expected, newval, 0, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE);
+    return __atomic_compare_exchange_n(&x->a_val, expected, newval, 0, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE);
 }
 inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
 {
-    return __atomic_compare_exchange_4(&x->a_val, expected, newval, 1, __ATOMIC_RELEASE, __ATOMIC_CONSUME);
+    return __atomic_compare_exchange_n(&x->a_val, expected, newval, 1, __ATOMIC_RELEASE, __ATOMIC_CONSUME);
 }
 inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x)
 {
-    return __atomic_load_4(&x->a_val, __ATOMIC_RELAXED);
+    return __atomic_load_n(&x->a_val, __ATOMIC_RELAXED);
+}
+inline static _tws_IntType tws_atomicGet_Acq(const tws_AtomicInt *x)
+{
+    return __atomic_load_n(&x->a_val, __ATOMIC_ACQUIRE);
 }
 inline static _tws_IntType tws_atomicAdd_Acq(tws_AtomicInt *x, _tws_IntType v)
 {
@@ -1146,16 +1146,18 @@ inline static int tws_atomicStrongCAS_Acq(tws_AtomicInt *x, _tws_IntType *expect
     return _tws_sync_cas32(&x->a_val, expected, newval);
 }
 #define tws_atomicWeakCAS_Acq tws_atomicStrongCAS_Acq
-inline static int tws_atomicWeakCAS_Rel(tws_AtomicInt *x, _tws_IntType *expected, _tws_IntType newval)
-{
-    return _tws_sync_cas32(&x->a_val, expected, newval);
-}
+#define tws_atomicWeakCAS_Rel tws_atomicStrongCAS_Acq
+
 inline static _tws_IntType tws_relaxedGet(const tws_AtomicInt *x)
 {
     __asm volatile("" ::: "memory"); /* compiler barrier */
     _tws_IntType ret = x->val;
     __asm volatile("" ::: "memory");
     return ret;
+}
+inline static _tws_IntType tws_atomicGet_Acq(const tws_AtomicInt *x)
+{
+    return __sync_fetch_and_or(&x->a_val, 0);
 }
 inline static _tws_IntType tws_atomicAdd_Acq(tws_AtomicInt *x, _tws_IntType v)
 {
@@ -1282,7 +1284,7 @@ TWS_THREAD_EXPORT void tws_ev_destroy(tws_Event *ev)
 TWS_THREAD_EXPORT int tws_ev_isset(tws_Event *ev)
 {
     tws_EventImpl *impl = (tws_EventImpl*)ev;
-    return tws_atomicGet_Seq(&impl->a_count) > 0;
+    return tws_atomicGet_Acq(&impl->a_count) > 0;
 }
 
 TWS_THREAD_EXPORT void tws_ev_set(tws_Event *ev)
@@ -1300,7 +1302,7 @@ TWS_THREAD_EXPORT void tws_ev_unset(tws_Event *ev)
 {
     tws_EventImpl *impl = (tws_EventImpl*)ev;
     _tws_IntType expected = 1;
-    tws_atomicCAS_Seq(&impl->a_count, &expected, 0); /* does nothing when not set (there might be threads waiting) */
+    tws_atomicStrongCAS_Acq(&impl->a_count, &expected, 0); /* does nothing when not set (there might be threads waiting) */
 }
 
 TWS_THREAD_EXPORT void tws_ev_wait(tws_Event *ev, unsigned spincount)

@@ -1,4 +1,5 @@
 #include "tio_archive_util.h"
+#include <limits.h> // CHAR_BIT is either here or in the included <stdlib.h>
 
 void BinReadBase::skip(size_t n)
 {

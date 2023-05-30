@@ -103,6 +103,7 @@ add_library(tinypile
     luaalloc.h
     jps.hh
     tbsp.hh
+    tinymain.h
 )
 hide_symbols(tinypile)
 

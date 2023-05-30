@@ -205,6 +205,7 @@ SC_EXPORT int sc_init(const void *argv)
 
 SC_EXPORT int sc_init(const void *argv)
 {
+    (void)argv;
     return 0;
 }
 
