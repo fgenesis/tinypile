@@ -181,7 +181,7 @@ const tiov_MountDef mtab[] =
     // (if you don't do this, only the things you actually mount end up in the VFS)
     { ".", sysfs, "." },
 
-    // Make it so that when we ask for "cfg/", we actually end up
+    // Make it so that when we ask for "doc/", we actually end up
     // asking sysfs for "C:\\Users\\user\\Documents\\*"
     { "doc", sysfs, "C:\\Users\\user\\Documents" },
 
@@ -221,7 +221,7 @@ struct tiov_MountDef
    Note that 'fs' and some mtab[].srcfs may be equal -- in this case,
    you're registering an alias.
    Notes:
-    1) 'fs' must be a VFS (allocated with tiov_vfs(). If it's not, this will crash.
+    1) 'fs' must be a VFS (allocated with tiov_vfs()). If it's not, this will crash.
     2) While you can technically create cycles, it's probably not a good idea. */
 TIO_EXPORT tio_error tiov_mount(tiov_FS *fs, const tiov_MountDef *mtab, size_t n);
 

@@ -27,8 +27,10 @@ enum
     ZIP_CDH_MAGIC = 0x02014b50,
     ZIP_END_MAGIC = 0x06054b50,
     ZIP_END_HDR_SIZE = 22, // without comment field
-    ZIP_END_MAXSIZE = ZIP_END_HDR_SIZE + 0xffff // with comment field
+    ZIP_END_MAXSIZE = ZIP_END_HDR_SIZE + 0xffff, // with comment field
 
+    // extended info field identifiers
+    ZIP_EXF_ZIP64INFO = 0x0001
 };
 
 // operator new() without #include <new>
@@ -147,9 +149,9 @@ struct CDH
 static BinReadLE& operator>>(BinReadLE& rd, CDH& h)
 {
     rd >> h.sig >> h.versionMadeBy >> h.versionNeeded
-       >> h.gpBit >> h.compMethod >> h.modtime >> h.moddate >> h.crc >> h.compSize >> h.uncompSize
-       >> h.fileNameLen >> h.extraFieldLen >> h.fileCommentLen >> h.diskNum >> h.internalAttrib
-       >> h.externalAttrib >> h.relOffset;
+       >> h.gpBit >> h.compMethod >> h.modtime >> h.moddate >> h.crc
+       >> h.compSize >> h.uncompSize >> h.fileNameLen >> h.extraFieldLen >> h.fileCommentLen
+       >> h.diskNum >>  h.internalAttrib >> h.externalAttrib >> h.relOffset;
     // rd is now at beginning of file name
     return rd;
 }
@@ -197,6 +199,30 @@ TIO_EXPORT void tio_zip_freeCDH(tio_ZipFileList *pFiles)
     alloc(allocUD, z, sizeof(*z), 0);
 }
 
+static tio_error parseExtraField(tio_ZipFileEntry *e, BinReadLE& rd, size_t sz)
+{
+
+    while(sz)
+    {
+        u16 id = rd.readLE<u16>();
+        size_t len = rd.readLE<u16>();
+        switch(id)
+        {
+            case ZIP_EXF_ZIP64INFO:
+            {
+                e->uncompSize = rd.readLE<u64>();
+                e->compSize = rd.readLE<u64>();
+                e->absOffset = rd.readLE<u64>();
+                u32 numdisks = rd.readLE<u32>(); // number of disks, unused
+            }
+
+        }
+
+
+    }
+    return 0;
+}
+
 // precond: sm reading position is at first CDH entry
 TIO_EXPORT tio_error tio_zip_readCDH(tio_ZipFileList *pFiles, tio_Stream *sm, const tio_ZipInfo *info, tio_Alloc alloc, void *allocUD)
 {
@@ -216,8 +242,6 @@ TIO_EXPORT tio_error tio_zip_readCDH(tio_ZipFileList *pFiles, tio_Stream *sm, co
     const size_t N = info->numCentralDirEntries;
     tio_ZipFileEntry *e = z->files.alloc(N);
 
-    PodVec<char> tmp(alloc, allocUD);
-
     for(size_t i = 0; i < N; ++i, ++e)
     {
         CDH h;
@@ -228,19 +252,14 @@ TIO_EXPORT tio_error tio_zip_readCDH(tio_ZipFileList *pFiles, tio_Stream *sm, co
         }
 
         NameEntry ne = z->addName(size_t(h.fileNameLen) + 1); // + \0
-        if(!tmp.resize(h.extraFieldLen) || !ne.dst)
+        if(!ne.dst)
         {
             err = tio_Error_MemAllocFail;
             break;
         }
 
         rd.rawread(ne.dst, h.fileNameLen);
-        rd.rawread(tmp.data, h.extraFieldLen);
-        rd.skip(h.fileCommentLen);
-
         ne.dst[h.fileNameLen] = 0;
-
-        // TODO: parse the extra field
 
         e->fileName = ne.rel;
         e->fileNameLen = h.fileNameLen;
@@ -248,6 +267,12 @@ TIO_EXPORT tio_error tio_zip_readCDH(tio_ZipFileList *pFiles, tio_Stream *sm, co
         e->absOffset = h.relOffset; // FIXME
         e->uncompSize = h.uncompSize;
         e->compMethod = h.compMethod;
+
+        err = parseExtraField(e, rd, h.extraFieldLen);
+        if(err)
+            break;
+
+        rd.skip(h.fileCommentLen);
     }
 
     if(!err)
