@@ -11,6 +11,8 @@ set(src
     tio_os_win32.cpp
     tio_os_posix.cpp
     tio_os_libc.cpp
+    tio_sys_posix.cpp
+    tio_sys_linux.cpp
     tio_decomp_lz4.cpp
 )
 

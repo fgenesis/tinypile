@@ -30,3 +30,7 @@ SC_EXPORT sc_error sc_call3(sc_out *out, sc_id id, sc_param a, sc_param b, sc_pa
 SC_EXPORT sc_error sc_call4(sc_out *out, sc_id id, sc_param a, sc_param b, sc_param c, sc_param d);
 SC_EXPORT sc_error sc_call5(sc_out *out, sc_id id, sc_param a, sc_param b, sc_param c, sc_param d, sc_param e);
 SC_EXPORT sc_error sc_call6(sc_out *out, sc_id id, sc_param a, sc_param b, sc_param c, sc_param d, sc_param e, sc_param f);
+
+
+/* utility functions */
+SC_EXPORT const void *sc_auxv_from_argv(const void *argv); /* for linux */

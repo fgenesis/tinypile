@@ -16,4 +16,5 @@ set(src
 )
 
 add_library(tws ${src})
+target_link_libraries(tws sc)
 hide_symbols(tws)

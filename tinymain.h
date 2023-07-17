@@ -9,7 +9,9 @@ extern SC_EXPORT int tinymain(int argc, char **argv);
 
 #ifdef SC_SYS_LINUX
 
-__attribute__((noreturn, ))
+static const void *s_auxv;
+
+__attribute__((noreturn))
 SC_EXPORT void _tinyexit(int status)
 {
     sc_out out;
@@ -20,6 +22,7 @@ SC_EXPORT void _tinyexit(int status)
 __attribute__((noreturn, always_inline))
 inline static void _tinystart(int argc, char **argv)
 {
+    s_auxv = sc_auxv_from_argv(argv);
     sc_init(argv);
     int status = tinymain(argc, argv);
     _tinyexit(status);

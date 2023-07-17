@@ -174,32 +174,30 @@ static const void * const s_call_vsys[] =
 
 #include <elf.h>
 
-static void **skip(void**p)
+static sc_error parse_auxv(const Elf32_auxv_t *auxv)
 {
-    for(; *p; ++p) {}
-    return p + 1;
-}
-
-SC_EXPORT int sc_init(const void *argv)
-{
-    if(argv)
+    for ( ; auxv->a_type != AT_NULL; auxv++)
     {
-        Elf32_auxv_t *auxv;
-        void **p = (void**)argv;
-        p = skip(p); /* envp is behind argv */
-        p = skip(p); /* auxv is behind envp */
-        for (auxv = (Elf32_auxv_t *)p; auxv->a_type != AT_NULL; auxv++)
+        if(auxv->a_type == AT_SYSINFO)
         {
-            if(auxv->a_type == AT_SYSINFO)
-            {
-                f_kernel_vsyscall = (void*)auxv->a_un.a_val;
-                s_calltab = s_call_vsys;
-                return 0;
-            }
+            f_kernel_vsyscall = (void*)auxv->a_un.a_val;
+            s_calltab = s_call_vsys;
+            return 0;
         }
     }
+}
+
+SC_EXPORT sc_error sc_init(const void *argv)
+{
+    const Elf32_auxv_t *auxv = (const Elf32_auxv_t*)sc_auxv_from_argv(argv);
+    if(auxv)
+        if(!parse_auxv(auxv))
+            return 0;
+
+    // TODO: try to mmap /proc/self/auxv
+
     /* Even if vsyscall isn't found it's no problem; legacy syscalls are always available */
-    return s_calltab != s_call_legacy;
+    return 1;
 }
 #else /* SC_LINUX_LEGACY_ONLY */
 

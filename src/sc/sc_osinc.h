@@ -6,6 +6,7 @@
 
 #ifdef SC_SYS_LINUX
 #include <asm/unistd.h>
+#include <asm/errno.h>
 #endif
 
 
@@ -13,5 +14,6 @@
 
 /* Libc-compatible names */
 #ifdef __unix__
+#include <sys/types.h>
 #include <sys/syscall.h>
 #endif

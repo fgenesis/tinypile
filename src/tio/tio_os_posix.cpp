@@ -2,38 +2,21 @@
 
 #if TIO_SYS_POSIX+0
 
-/* -- POSIX syscall interface --
-This uses the standard libc functions to make syscalls */
-
-// TODO: look into MAP_HUGETLB -- requirements should be ok since the win32 code already requires a specific alignment and such
+#include "tio_syscall.h"
 
 #include <unistd.h>
-#include <dirent.h>
-#include <fcntl.h> // O_* macros for open()
-#include <errno.h>
-#include <sys/mman.h> // mmap, munmap, madvise+flags
-#include <sys/stat.h> // fstat64
-#include <sys/dir.h> // opendir, closedir
+
+// TODO: look into MAP_HUGETLB -- requirements should be ok since the win32 code already requires a specific alignment and such
 
 typedef size_t IOSizeT;
 #define OS_PATHSEP '/'
 
-template<typename T> struct Has_d_type
-{
-    struct Fallback { int d_type; };
-    struct Derived : T, Fallback { };
-    template<typename C, C> struct ChT;
-    template<typename C> static char (&f(ChT<int Fallback::*, &C::d_type>*))[1];
-    template<typename C> static char (&f(...))[2];
-    static bool const value = sizeof(f<Derived>(0)) == 2;
-};
-
 static inline int h2fd(tio_Handle h) { return (int)(intptr_t)h; }
 static inline tio_Handle fd2h(int fd) { return (tio_Handle)(intptr_t)fd; }
 
-static tio_error oserror()
+static tio_error oserror(int e)
 {
-    const int e = errno;
+    tio__ASSERT(e);
     switch (e)
     {
         case ENOENT:   return tio_Error_NotFound;
@@ -59,38 +42,36 @@ TIO_PRIVATE char os_pathsep()
 TIO_PRIVATE tio_error os_init()
 {
     tio__TRACE0("Using POSIX backend");
-    tio__TRACE("POSIX dirent has d_type member: %d", int(Has_d_type<dirent>::value));
-    return 0;
+    return tio_sys_init(NULL);
 }
 
 static void advise_sequential(int fd)
 {
-    int err = ::posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
-    tio__ASSERT(!err);
+    tioSyscallRet ret = tio_sys_posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+    tio__ASSERT(!ret.err);
 }
-
-/*static void advise_sequential(void* p, size_t sz)
+/*
+static void advise_sequential(void* p, size_t sz)
 {
-    int err = ::posix_madvise(p, sz, POSIX_MADV_SEQUENTIAL);
-    tio__ASSERT(!err);
-}*/
-
+    tioSyscallRet ret = ::tio_sys_madvise(p, sz, MADV_SEQUENTIAL);
+    tio__ASSERT(!ret.err);
+}
+*/
 static void advise_willneed(int fd)
 {
-    int err = ::posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED);
-    tio__ASSERT(!err);
+    tioSyscallRet ret = tio_sys_posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED);
+    tio__ASSERT(!ret.err);
 }
 
 static void advise_willneed(void* p, size_t sz)
 {
-    int err = ::posix_madvise(p, sz, POSIX_MADV_WILLNEED);
-    tio__ASSERT(!err);
+    tioSyscallRet ret = tio_sys_madvise(p, sz, MADV_WILLNEED);
+    tio__ASSERT(!ret.err);
 }
-
 
 TIO_PRIVATE size_t os_pagesize()
 {
-    return ::sysconf(_SC_PAGE_SIZE);
+    return tio_sys_pagesize();
 }
 
 TIO_PRIVATE void os_preloadvmem(void* p, size_t sz)
@@ -120,29 +101,32 @@ TIO_PRIVATE tio_error os_closehandle(tio_Handle h)
 // just opens a file and does nothing else
 // minimal support for tio_Features that are always safe to set
 // returns fd
-TIO_PRIVATE int simpleopen(const char* fn, const OpenMode om, tio_Features features, unsigned osflags)
+TIO_PRIVATE tioSyscallRet simpleopen(const char* fn, const OpenMode om, tio_Features features, unsigned osflags)
 {
     static const int _openflag[] = { O_RDONLY, O_WRONLY, O_RDWR };
     unsigned flag = osflags | _openflag[om.accessidx] | O_LARGEFILE;
     if (features & tioF_NoBuffer)
         flag |= O_DSYNC; // could also be O_SYNC if O_DSYNC doesn't exist. Also check O_DIRECT
-    const int fd = ::open(fn, flag, 0644);
+    tioSyscallRet ret = tio_sys_open(fn, flag, 0644);
+    int fd = (int)ret.val;
     if (fd != -1)
     {
         if (features & tioF_Sequential)
             advise_sequential(fd);
     }
-    return fd;
+    return ret;
 }
 
 // for when user requests a tio_Handle
 // apply all tio_Features
 TIO_PRIVATE tio_error os_openfile(tio_Handle* out, const char* fn, const OpenMode om, tio_Features features, unsigned osflags)
 {
-    const int fd = simpleopen(fn, om, features, osflags);
+    const tioSyscallRet res = simpleopen(fn, om, features, osflags);
+    if (res.err)
+        return oserror(res.err);
+
+    int fd = (int)res.val;
     *out = fd2h(fd); // always write
-    if (fd == -1)
-        return oserror();
 
     if (features & tioF_Background)
         advise_willneed(fd);
@@ -152,13 +136,15 @@ TIO_PRIVATE tio_error os_openfile(tio_Handle* out, const char* fn, const OpenMod
 TIO_PRIVATE tio_error os_getsize(tio_Handle h, tiosize* psz)
 {
     const int fd = h2fd(h);
-    struct stat st;
-    tio_error err = 0;
+    tioSimpleStat st;
     tiosize sz = 0;
-    if (::fstat(fd, &st))
-        err = oserror();
+
+    tioSyscallRet res = tio_sys_fstat(fd, &st);
+        tio_error err = 0;
+    if (res.err)
+        err = oserror(res.err);
     else
-        sz = st.st_size;
+        sz = st.size;
 
     *psz = sz;
     return err;
@@ -167,52 +153,52 @@ TIO_PRIVATE tio_error os_getsize(tio_Handle h, tiosize* psz)
 TIO_PRIVATE tio_error os_read(tio_Handle hFile, size_t *psz, void* dst, size_t n)
 {
     const int fd = h2fd(hFile);
-    ssize_t rd = ::read(fd, dst, n);
-    if(rd == -1)
+    tioSyscallRet res = tio_sys_read(fd, dst, n);
+    if(res.err)
     {
         *psz = 0;
-        return oserror();
+        return oserror(res.err);
     }
-    *psz = rd;
-    return rd ? rd : tio_Error_EOF;
+    *psz = res.val;
+    return 0;
 }
 
 TIO_PRIVATE tio_error os_readat(tio_Handle hFile, size_t *psz, void* dst, size_t n, tiosize offset)
 {
     const int fd = h2fd(hFile);
-    ssize_t rd = ::pread(fd, dst, n, offset);
-    if(rd == -1)
+    tioSyscallRet res = tio_sys_pread(fd, dst, n, offset);
+    if(res.err)
     {
         *psz = 0;
-        return oserror();
+        return oserror(res.err);
     }
-    *psz = rd;
-    return rd ? rd : tio_Error_EOF;
+    *psz = res.val;
+    return 0;
 }
 
 TIO_PRIVATE tio_error os_write(tio_Handle hFile, size_t *psz, const void* src, size_t n)
 {
     const int fd = h2fd(hFile);
-    ssize_t wr = ::write(fd, src, n);
-    if(wr == -1)
+    tioSyscallRet res = tio_sys_write(fd, src, n);
+    if(res.err)
     {
         *psz = 0;
-        return oserror();
+        return oserror(res.err);
     }
-    *psz = wr;
+    *psz = res.val;
     return 0;
 }
 
 TIO_PRIVATE tio_error os_writeat(tio_Handle hFile, size_t *psz, const void* src, size_t n, tiosize offset)
 {
     const int fd = h2fd(hFile);
-    ssize_t wr = ::pwrite(fd, src, n, offset);
-    if(wr == -1)
+    tioSyscallRet res = tio_sys_pwrite(fd, src, n, offset);
+    if(res.err)
     {
         *psz = 0;
-        return oserror();
+        return oserror(res.err);
     }
-    *psz = wr;
+    *psz = res.val;
     return 0;
 }
 
@@ -220,25 +206,29 @@ TIO_PRIVATE tio_error os_seek(tio_Handle hFile, tiosize offset, tio_Seek origin)
 {
     static const int _whence[] = { SEEK_SET, SEEK_CUR, SEEK_END };
     const int fd = h2fd(hFile);
-    off_t off = ::lseek(fd, offset, _whence[origin]);
-    if(off == -1)
-        return oserror();
+    tiosize newpos;
+    tioSyscallRet res = tio_sys_seek(&newpos, fd, offset, _whence[origin]);
+    (void)newpos;
+    if(res.err)
+        return oserror(res.err);
     return 0;
 }
 
 TIO_PRIVATE tio_error os_tell(tio_Handle hFile, tiosize* poffset)
 {
     const int fd = h2fd(hFile);
-    off_t off = ::lseek(fd, 0, SEEK_CUR);
-    if(off == -1)
-        return oserror();
-    *poffset = off;
+    tiosize newpos;
+    tioSyscallRet res = tio_sys_seek(&newpos, fd, 0, SEEK_CUR);
+    if(res.err)
+        return oserror(res.err);
+    *poffset = newpos;
     return 0;
 }
 
 TIO_PRIVATE tio_error os_flush(tio_Handle hFile)
 {
-    return ::fsync(h2fd(hFile));
+    tioSyscallRet res = tio_sys_fsync(h2fd(hFile));
+    return res.err ? oserror(res.err) : 0;
 }
 
 /* ---- End Handle ---- */
@@ -290,103 +280,30 @@ TIO_PRIVATE size_t os_mmioAlignment()
 
 TIO_PRIVATE tio_error os_mmflush(tio_Mapping* map, tio_FlushMode flush)
 {
-    int err = ::msync(map->priv.mm.base, 0, (flush & tio_FlushToDisk) ? MS_SYNC : MS_ASYNC);
-    return !err ? 0 : oserror();
+    tioSyscallRet res = tio_sys_msync(map->priv.mm.base, 0, (flush & tio_FlushToDisk) ? MS_SYNC : MS_ASYNC);
+    return !res.err ? 0 : oserror(res.err);
 }
 
-static tio_FileType posix_getStatFileType(mode_t m)
-{
-    tio_FileType t = tioT_Nothing;
-    if(S_ISDIR(m))
-        t = tioT_Dir;
-    else if(S_ISREG(m))
-        t = tioT_File;
-    else
-        t = tioT_Special;
-    if(S_ISLNK(m))
-        t |= tioT_Link;
-    return t;
-}
-
-static tio_FileType posix_getPathFileType(int pathfd, const char *name)
-{
-    struct stat st;
-    int err = ::fstatat(pathfd, name, &st, 0);
-    if(err == -1)
-        return tioT_Nothing;
-    return posix_getStatFileType(st.st_mode);
-}
-
-
-template<bool has_d_type>
-struct Posix_DirentFileType
-{
-    inline static tio_FileType Get(int pathfd, struct dirent *dp)
-    {
-        return posix_getPathFileType(pathfd, dp->d_name);
-    }
-};
-
-template<>
-struct Posix_DirentFileType<true>
-{
-    inline static tio_FileType Get(int pathfd, struct dirent *dp)
-    {
-        unsigned t = tioT_Nothing;
-        switch(dp->d_type)
-        {
-            case DT_DIR: return tioT_Dir;
-            case DT_REG: return tioT_File;
-            case DT_LNK: // dirent doesn't resolve links, gotta do this manually
-                t = tioT_Link;
-                /* fall through */
-            case DT_UNKNOWN: // file system isn't sure or doesn't support d_type, try this the hard way
-                return tio_FileType(t | posix_getPathFileType(pathfd, dp->d_name));
-            default: ; // avoid warnings
-        }
-        return tioT_Special;
-    }
-};
-
-static inline tio_FileType posix_getDirentFileType(int pathfd, struct dirent *dp)
-{
-    return Posix_DirentFileType<Has_d_type<dirent>::value>::Get(pathfd, dp);
-}
-
-
+// TODO: change this to return tio_error
 TIO_PRIVATE tio_FileType os_fileinfo(const char* path, tiosize* psz)
 {
-    struct stat64 st;
-    if(!::stat64(path, &st))
+    tioSimpleStat sb;
+    tioSyscallRet res = tio_sys_stat(path, &sb);
+    if(!res.err)
     {
         if(psz)
-            *psz = st.st_size;
-        return posix_getStatFileType(st.st_mode);
+            *psz = sb.size;
+        return sb.type;
     }
     return tioT_Nothing;
 }
 
 TIO_PRIVATE tio_error os_dirlist(const char* path, tio_FileCallback callback, void* ud)
 {
-    struct dirent * dp;
-    int pathfd = ::open(*path ? path : ".", O_DIRECTORY, 0); // Refuses to open("")
-    if(pathfd == -1)
-        return oserror();
-    DIR *dirp = ::fdopendir(pathfd);
-    if(!dirp)
-    {
-        tio_error err = oserror();
-        ::close(pathfd);
-        return err;
-    }
-    int ret = 0;
-    while((dp=::readdir(dirp)) != NULL)
-        if(!dirlistSkip(dp->d_name))
-            if((ret = callback(path, dp->d_name, posix_getDirentFileType(pathfd, dp), ud)))
-                break;
-    ::closedir(dirp); // also closes pathfd
-
-    return ret;
+    tioSyscallRet res = tio_sys_dirlist(path, callback, ud);
+    if(res.err)
+        return oserror(res.err);
+    return (tio_error)res.val;
 }
 
 // note that an existing (regular) file will be considered success, even though that means the directory wasn't created.
@@ -394,11 +311,12 @@ TIO_PRIVATE tio_error os_dirlist(const char* path, tio_FileCallback callback, vo
 TIO_PRIVATE tio_error os_createSingleDir(const char* path, void *ud)
 {
     (void)ud;
-    if(!::mkdir(path, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH))
+    unsigned perm = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
+    tioSyscallRet res = tio_sys_mkdir(path, perm);
+    if(!res.err || res.err == EEXIST)
         return 0;
-    if(errno == EEXIST)
-        return 0;
-    return  oserror(); // TODO: No error when it already exists?
+
+    return oserror(res.err);
 }
 
 TIO_PRIVATE tio_error os_createpath(char* path)

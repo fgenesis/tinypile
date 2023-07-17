@@ -1,3 +1,6 @@
+add_subdirectory(sc)
+include_directories(sc)
+
 add_subdirectory(tio)
 add_subdirectory(tio_addons)
 add_subdirectory(tio_vfs)
@@ -22,5 +25,3 @@ if(MSVC)
 else()
     target_compile_options(nolibc PRIVATE -fno-builtin -nostdlib)
 endif()
-
-add_subdirectory(sc)
