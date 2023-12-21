@@ -113,7 +113,7 @@ double runScenario(const char *file)
         bool found = false;
         const JPS::Position startpos = JPS::Pos(ex.GetStartX(), ex.GetStartY());
         const JPS::Position endpos = JPS::Pos(ex.GetGoalX(), ex.GetGoalY());
-        JPS_Result res = search.findPathInit(startpos, endpos/*, JPS_Flag_AStarOnly*/);
+        JPS_Result res = search.findPathInit(startpos, endpos, JPS_Flag_UseJumpCache /*, JPS_Flag_AStarOnly*/);
         if(res == JPS_EMPTY_PATH)
             found = true;
         else

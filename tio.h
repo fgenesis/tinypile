@@ -741,17 +741,8 @@ inline static size_t tio_savail(tio_Stream *sm) { return sm->end - sm->cursor; }
 TIO_EXPORT tiosize tio_sread(tio_Stream *sm, void *dst, size_t bytes);
 
 /* Advance the stream cursor and refill the stream as necessary. Skips up to 'bytes'.
-   Returns how many bytes were skipped.
-   Stops on error or if a stream refills 0 bytes (which may be spurious or
-   because the stream is nonblocking and has no data).
-   To skip exactly N bytes, call this function multiple times if needed:
-     while(!sm->err)
-     {
-         N -= tio_sskip(sm, N);
-         if(!N) break;
-         // if stream is nonblocking, do something else for a bit here before trying again
-     }
-*/
+   Stops on error or if a stream is nonblocking and has not enough data to skip.
+   Returns how many bytes were skipped. */
 TIO_EXPORT tiosize tio_sskip(tio_Stream *sm, tiosize bytes);
 
 

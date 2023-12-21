@@ -20,7 +20,7 @@ struct tioLZ4StreamPriv
     tio_error (*onBlockEnd)(tio_Stream* sm); // transition to this Refill function once decomp() has finished a block
     // frame/header only
     size_t blocksize; // for decomp() to know the (remaining) size of the current block
-    size_t framestodo;
+    size_t framesmax;
     size_t framesdone;
     unsigned char flg; // part of the LZ4 frame header that is needed every now and then
     char magicbuf[sizeof(s_lz4_magic)];
@@ -271,8 +271,9 @@ static tio_error footer(tio_Stream* sm)
             _lz4_getbyte(3, c);
         }
     priv->framesdone++;
-    priv->framestodo--; // this underflows if this started as 0
-    sm->Refill = priv->framestodo ? magic : streamEOF; // either it's EOF or the start of the next concatenated frame
+    sm->Refill = priv->framesdone < priv->framesmax
+        ? magic      // keep going (multiple concatenated frames)
+        : streamEOF; // end of data
 out:
     return err;
 }
@@ -476,7 +477,7 @@ static tio_error commonInit(tio_Stream* sm, tio_Stream* packed, tio_StreamFlags 
     priv->allocUD = allocUD;
     priv->onBlockEnd = onBlockEnd;
     priv->blocksize = blocksize;
-    priv->framestodo = maxframes;
+    priv->framesmax = maxframes;
     priv->framesdone = 0;
 
     sm->impl = &s_lz4impl;

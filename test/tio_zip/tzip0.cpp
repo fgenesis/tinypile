@@ -16,7 +16,7 @@ int main(int argc, char *argv[])
     tio_MMIO mm;
     tio_Mapping m;
     //const char *fn = "the_unknown_world_bbs1b.zip"
-    const char *fn = "THI_2018_files.zip";
+    const char *fn = "test0.zip";
     //const char *fn = "cgproj.zip";
     void *p = tio_mopenmap(&m, &mm, fn, tio_R, 0, 0, tioF_Default);
     if(!p)

@@ -4,7 +4,7 @@
 void BinReadBase::skip(size_t n)
 {
     while(n)
-        n -= tio_sskip(this->sm, n);
+        n -= tio_sskip(this->sm, n); // FIXME: handle non-blocking read
 }
 
 void BinReadBase::_readslow(void *dst, size_t have, size_t n)

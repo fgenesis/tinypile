@@ -405,7 +405,8 @@ TIO_EXPORT tiosize tio_sskip(tio_Stream* sm, tiosize bytes)
     goto loopstart;
     for(;;)
     {
-        avail = tio_srefill(sm);
+        tio_error err = tio_srefillx(sm);
+        avail = tio_savail(sm);
         if (sm->err || (!avail && gtfo))
             break;
         gtfo = !avail; // try again once, then get out

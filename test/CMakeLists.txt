@@ -11,7 +11,14 @@ add_subdirectory(tws)
 add_subdirectory(tio_zip)
 
 add_executable(tinymain tinymain.c)
-target_compile_options(tinymain PRIVATE -fno-builtin -fno-stack-protector -fno-exceptions -fno-asynchronous-unwind-tables)
-target_link_options(tinymain PRIVATE -nostdlib -static)
+
+if(MSVC)
+    target_compile_options(tinymain PRIVATE /GS-)
+    target_link_options(tinymain PRIVATE /NODEFAULTLIB )
+else()
+    target_compile_options(tinymain PRIVATE -fno-builtin -fno-stack-protector -fno-exceptions -fno-asynchronous-unwind-tables)
+    target_link_options(tinymain PRIVATE -nostdlib -static)
+endif()
+
 target_link_libraries(tinymain sc)
 hide_symbols(tinymain)

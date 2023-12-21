@@ -27,7 +27,7 @@ inline static unsigned lowbias32(unsigned x)
     return x;
 }
 
-// Note: Not endian safe, but doesn't komatter as long as we get those bits jumbled
+// Note: Not endian safe, but doesn't matter as long as we get those bits jumbled
 static unsigned strhash(const void *s, size_t len)
 {
     unsigned hash = 0;

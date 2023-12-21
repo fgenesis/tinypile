@@ -13,7 +13,9 @@
 #elif defined(__FreeBSD__)
 #  define SC_SYS_FREEBSD 1
 #elif defined(__APPLE__)
-#  define SC_SYS_OSX
+#  define SC_SYS_OSX 1
+#elif defined(_WIN32)
+#  define SC_SYS_WIN 1
 #else
 #  define SC_SYS_UNKNOWN 1
 #endif

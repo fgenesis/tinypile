@@ -302,6 +302,8 @@ enum JPS_Flags_
 
     // Don't check whether end position is walkable.
     JPS_Flag_NoEndCheck    = 0x08,
+
+    JPS_Flag_UseJumpCache  = 0x10
 };
 
 enum JPS_Result
@@ -469,10 +471,12 @@ public:
     {
         return cap < newcap ? _grow(newcap) : _data;
     }
-    void resize(SizeT sz)
+    T *resize(SizeT sz)
     {
-        if(_reserve(sz))
+        T *ret = static_cast<T*>(_reserve(sz));
+        if(ret)
             used = sz;
+        return ret;
     }
     SizeT _getMemSize() const
     {
@@ -964,6 +968,80 @@ struct NoManipulator
     inline static int getNodeBitsNoParent(Position /*pos*/) { return 0; }
 };
 
+struct JumpCache
+{
+    enum { MAXDIR = 8, MAX_PER_DIR = 3 };
+    struct Entry
+    {
+        SizeT n; // noidx if not cached
+        Position next[MAX_PER_DIR];
+    };
+
+    struct EachDir
+    {
+        Entry dir[MAXDIR];
+    };
+
+
+    typedef PodVec<EachDir> Cache;
+    Cache cache; // indexed by node idx
+
+
+    Entry *getNeighbors(SizeT nodeidx, int dx, int dy)
+    {
+        const SizeT d = GetNeighborIndex(dx, dy);
+        const SizeT N = cache.size();
+        if(nodeidx < N)
+            return &cache[nodeidx].dir[d];
+
+        const size_t newsize = nodeidx + 1;
+        EachDir *newp = cache.resize(newsize);
+        if(newp)
+        {
+            // manually construct newly added Entries to invalid, to be filled later
+            for(SizeT i = N; i < newsize; ++i)
+                for(SizeT j = 0; j < MAXDIR; ++j)
+                    cache[i].dir[j].n = noidx;
+            return &cache[nodeidx].dir[d];
+        }
+
+        return NULL;
+    }
+
+    // returns index in [0..MAXDIR)
+    static SizeT GetNeighborIndex(int dx, int dy)
+    {
+        // TODO: optimize this
+        if(dy < 0)
+        {
+            if(dx < 0)
+                return 0;
+            else if(!dx)
+                return 1;
+            else
+                return 2;
+        }
+        else if(!dy)
+        {
+            if(dx < 0)
+                return 3;
+            else if(dx > 0)
+                return 4;
+        }
+        else
+        {
+            if(dx < 0)
+                return 5;
+            else if(!dx)
+                return 6;
+            else
+                return 7;
+        }
+        JPS_ASSERT(false);
+        return 0;
+    }
+};
+
 template <typename GRID, typename Manipulator = NoManipulator>
 class Searcher : public GridSearcher<GRID>
 {
@@ -987,6 +1065,7 @@ public:
 private:
 
     Manipulator manip;
+    JumpCache jcache;
 
     bool identifySuccessors(const Node *n);
 
@@ -1327,27 +1406,68 @@ unsigned GridSearcher<GRID>::findNeighborsAStar(const Node& n, Position *wptr)
 template <typename GRID, typename Manipulator>
 bool Searcher<GRID, Manipulator>::identifySuccessors(const Node *n)
 {
+    Position stkbuf[8];
+
     const Position np = n->pos;
     const SizeT nidx = this->storage.getindex(n);
     const JPS_Flags flags = this->_flags;
-    Position buf[8];
 
-    const unsigned num = (flags & JPS_Flag_AStarOnly)
-        ? this->findNeighborsAStar(*n, &buf[0])
-        : this->findNeighborsJPS(*n, &buf[0]);
+    SizeT num = noidx;
 
-    for(unsigned i = 0; i < num; ++i)
+    // Fast path: If cached, use that
+    JumpCache::Entry *jce = NULL;
+    Position *bufp = NULL;
+    if((flags & JPS_Flag_UseJumpCache) && n->hasParent())
     {
+        const Position pp = n->getParent().pos;
+        int dx = Sgn(int(pp.x - np.x));
+        int dy = Sgn(int(pp.y - np.y));
+
+        jce = jcache.getNeighbors(nidx, dx, dy);
+        if(jce) // possible if out of memory, but doesn't stop us from proceeding
+        {
+            num = jce->n; // == noidx if not yet cached
+            bufp = &jce->next[0];
+        }
+    }
+
+    if(num == noidx)
+    {
+        bufp = &stkbuf[0];
+
         // Invariant: A node is only a valid neighbor if the corresponding grid position is walkable (asserted in jumpP)
-        Position jp;
         if(flags & JPS_Flag_AStarOnly)
-            jp = buf[i];
+            num = this->findNeighborsAStar(*n, bufp);
         else
         {
-            jp = this->jumpP(buf[i], np);
-            if(!jp.isValid())
-                continue;
+            num = this->findNeighborsJPS(*n, bufp);
+            SizeT used = 0;
+            // Generate valid jump points from neighbors
+            for(unsigned i = 0; i < num; ++i)
+            {
+                Position jp  = this->jumpP(bufp[i], np);
+                if(jp.isValid())
+                    bufp[used++] = jp;
+            }
+            num = used;
         }
+
+        // Invariant: bufp[0..num) contains points where we can expand nodes
+
+        if(jce) // Update cache if cacheable
+        {
+            JPS_ASSERT(num <= JumpCache::MAX_PER_DIR);
+            jce->n = num;
+            for(SizeT i = 0; i < num; ++i)
+                jce->next[i] = bufp[i];
+        }
+    }
+
+    // Expand nodes
+    for(unsigned i = 0; i < num; ++i)
+    {
+        Position jp = bufp[i];
+
         // Now that the grid position is definitely a valid jump point, we have to create the actual node.
         // First, make sure that the manipulator allows us to create the node in the first place
         const int userbits = manip.getNodeBits(jp, *n);
