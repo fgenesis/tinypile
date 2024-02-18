@@ -15,6 +15,8 @@
 # define tbsp__freea(x) _freea(x)
 #endif
 
+#include "tbsp.hh"
+
 namespace tbsp {
 
 // ------- portable _malloca() impl if not supported by compiler, but alloca() is --------
@@ -150,7 +152,7 @@ public:
 };
 
 
-template<typename T>
+template<typename T, size_t Stride = 1>
 class VecAcc
 {
 public:
@@ -204,8 +206,8 @@ public:
     inline       T *data()       { return p; }
     inline const T *data() const { return p; }
 
-    T * const p;
-    const size_t n;
+    T *p;
+    size_t n;
 };
 
 // row matrix
@@ -245,8 +247,8 @@ public:
         return ColAcc(p + x, w, h);
     }
 
-    T * const p;
-    const size_t w, h;
+    T *p;
+    size_t w, h;
 };
 
 template<typename T>
@@ -265,7 +267,25 @@ public:
     Matrix(size_t w, size_t h, NoInit)
         : Base(_talloc<T>(w*h), w, h) {}
     ~Matrix()
-        { _destruct_n(this->p, this->w * this->h); _tfree(this->p); }
+        { clear(); }
+    Matrix(Matrix&& o)
+        : Base(o) { o.p = NULL; o.w = o.h = 0; }
+
+    void clear()
+    {
+        _destruct_n(this->p, this->w * this->h);
+        _tfree(this->p);
+        this->p = NULL;
+        this->w = this->h = 0;
+    }
+
+    void resizeNoInit(size_t w, size_t h)
+    {
+        clear();
+        this->p = _talloc<T>(w*h);
+        this->w = w;
+        this->h = h;
+    }
 };
 
 template<typename T>
@@ -292,6 +312,21 @@ public:
     {
         Base::operator =(o);
         return *this;
+    }
+
+    void clear()
+    {
+        _destruct_n(this->p, this->n);
+        _tfree(this->p);
+        this->p = NULL;
+        this->n = 0;
+    }
+
+    void resizeNoInit(size_t n)
+    {
+        clear();
+        this->p = _talloc<T>(n);
+        this->n = n;
     }
 };
 
@@ -330,6 +365,31 @@ static void matMult(R& res, const A& a, const B& b)
     }
 }
 
+// T(A) x A
+template<typename R, typename A>
+static void matMultTransposeWithSelf(R& res, const A& a)
+{
+    typename R::value_type *out = res.p;
+    const size_t w = a.w; // also the final size, (w x w)
+    const size_t h = a.h;
+    assert(res.w == w && res.h == w);
+
+    for (size_t y = 0; y < w; ++y)
+    {
+        for (size_t x = 0; x < w; ++x)
+        {
+            const typename A::value_type *row = a.p + y;
+            const typename A::value_type *col = a.p + x;
+            typename R::value_type temp = 0;
+
+            for (size_t k = 0; k < h; ++k, row += w, col += w)
+                temp += *row * *col;
+            *out++ = temp;
+        }
+    }
+}
+
+
 template<typename Scalar, typename A, typename B>
 inline static Scalar vecDot(const A& a, const B& b)
 {
@@ -366,9 +426,171 @@ static void matVecProduct(R& res, const A& a, const V& v)
         res[y] = vecDot<typename R::value_type>(v, a.row(y));
 }
 
+
+// #########################
+
 #include "solvers.h"
 #include "eval.h"
 
+// #########################
+
+
+template<typename T>
+void computeCoeffVector(T *N, size_t numcp, T u, const T *knots, size_t numknots, size_t degree)
+{
+    for(size_t i = 0; i < numcp; ++i)
+        N[i] = T(0);
+
+    const size_t n = numcp - 1;
+    const size_t m = numknots - 1;
+
+    // special cases
+    if(u <= knots[0])
+    {
+        N[0] = T(1);
+        return;
+    }
+    else if(u >= knots[m])
+    {
+        N[n] = T(1);
+        return;
+    }
+
+    // find index, so that u is in [knots[k], knots[k+1])
+    const size_t k = detail::findKnotIndex(u, knots, numknots, degree);
+    N[k] = T(1);
+
+    for(size_t d = 1; d <= degree; ++d)
+    {
+        tbsp__ASSERT(d <= k);
+        const T m = (knots[k+1] - u) / (knots[k+1] - knots[k-d+1]);
+        N[k-d] = m * N[k-d+1];
+
+        for(int i = k-d+1; i < k; ++i)
+        {
+            const T a = (u - knots[i]) / (knots[i+d] - knots[i]);
+            const T b = (knots[i+d+1] - u) / (knots[i+d+1] - knots[i+1]);
+            N[i] = a * N[i] + b * N[i+1];
+        }
+
+        N[k] *= ((u - knots[k]) / (knots[k+d] - knots[k]));
+    }
+}
+
+template<typename T>
+Matrix<T> generateCoeffN(const T *knots, size_t numknots, size_t nump, size_t numcp, size_t degree)
+{
+    /*const T mint = knots[0];
+    const T maxt = knots[numknots - 1];
+    const T dt = maxt - mint;*/
+
+    Matrix<T> N(numcp, nump);
+
+    T invsz = T(1) / T(nump - 1);
+
+    // Nmtx -- accessed as Nmtx[col][row]
+    for(size_t i = 0; i < nump; ++i) // rows
+    {
+        // TODO: this is the parametrization. currently, this is equidistant. allow more.
+        const T t01 = float(i) * invsz; // position of point assuming uniform parametrization
+
+        typename Matrix<T>::RowAcc row = N.row(i);
+        computeCoeffVector(&row[0], numcp, t01, knots, numknots, degree); // row 0 stores all coefficients for _t[0], etc
+    }
+
+
+    return N;
+}
+
+template<typename T>
+Matrix<T> generateLeastSquares(const Matrix<T>& N)
+{
+    Matrix<T> Ncenter(N.w - 2, N.h - 2);
+    for(size_t y = 0; y < Ncenter.h; ++y)
+    {
+        typename Matrix<T>::RowAcc dstrow = Ncenter.row(y);
+        typename Matrix<T>::RowAcc srcrow = N.row(y + 1);
+        for(size_t x = 0; x < Ncenter.w; ++x)
+            dstrow[x] = srcrow[x+1];
+    }
+
+    Matrix<T> M(Ncenter.w, Ncenter.w);
+    matMultTransposeWithSelf(M, Ncenter);
+    return M;
+}
+
+template<typename T, typename P>
+bool _splineInterp(P *cp, const P *points, size_t n, const Matrix<T>& N)
+{
+    solv::Cholesky<T> chol; // TODO PRECOMPUTE
+    if(!chol.init(N))
+        return false;
+
+    VecAcc<P> sol(cp, n);
+    const VecAcc<const P> pointsa(points, n);
+
+    chol.solve(sol, pointsa);
+    return true;
+}
+
+template<typename T, typename P>
+bool _splineApprox(P *cp, size_t numcp, const P *points, size_t nump, const Matrix<T>& N)
+{
+    Matrix<T> M = generateLeastSquares(N);
+    matprint(M);
+    solv::Cholesky<T> chol; // TODO PRECOMPUTE
+    if(!chol.init(M))
+        return false;
+
+    const size_t h = numcp - 1;
+    const size_t n = nump - 1;
+
+    const size_t g = h - 1; // number of points minus endpoints
+    Vector<P> Q  (g);
+    Vector<P> sol(g);
+
+    const P p0 = points[0];
+    const P pn = points[n];
+    const P initial = points[1] - (p0 * N(0,1)) - (pn * N(h,1));
+    for(size_t i = 1; i < h; ++i)
+    {
+        P tmp = initial * N(i,1);
+        for(size_t k = 2; k < n; ++k)
+        {
+            //typename Matrix<T>::RowAcc row = N.row(k);
+            tmp += (points[k] - (p0 * N(0,k)) - (pn * N(h,k))) * N(i,k);
+        }
+        Q[i-1] = tmp;
+    }
+
+    // Solve for all points that are not endpoints
+    chol.solve(sol, Q);
+
+    *cp++ = p0; // first point is endpoint
+    for(size_t i = 0; i < g; ++i)
+        *cp++ = sol[i];
+    *cp++ = pn; // last point is endpoint
+
+
+    return true;
+}
+
+template<typename T, typename P>
+bool splineInterpolate(P *cp, size_t numcp, const P *points, size_t nump, const T *knots, size_t numknots, size_t degree)
+{
+    TBSP_ASSERT(numcp <= nump); // Can only generate less or equal control points than points
+    if(!(numcp <= nump))
+        return false;
+
+    const Matrix<T> N = generateCoeffN(knots, numknots, nump, numcp, degree); // TODO PRECOMPUTE
+    matprint(N);
+
+    if(nump == numcp)
+        return _splineInterp(cp, points, nump, N);
+
+    // spline approximation
+    return _splineApprox(cp, numcp, points, nump, N);
+}
 
 
 

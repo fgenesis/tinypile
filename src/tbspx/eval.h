@@ -18,6 +18,10 @@ static size_t knotindex(K val, const K *p, size_t n)
         else
             R = m;
     }
+    // FIXME: can we just return m at this point?
+    if(!(p[L] < val))
+        --L;
+    tbsp__ASSERT(p[L] < val);
     return L;
 }
 

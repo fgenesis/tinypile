@@ -1,6 +1,39 @@
 
 namespace solv {
 
+    template <typename T, T v>
+struct IntegralConstant
+{
+    typedef T value_type;
+    typedef IntegralConstant<T,v> type;
+    enum { value = v };
+};
+
+typedef IntegralConstant<bool, true>  CompileTrue;
+typedef IntegralConstant<bool, false> CompileFalse;
+template<bool V> struct CompileCheck : IntegralConstant<bool, V>{};
+
+template <typename T, typename U> struct is_same;
+template <typename T, typename U> struct is_same      : CompileFalse { };
+template <typename T>             struct is_same<T,T> : CompileTrue  { };
+
+template <typename T> struct remove_const                { typedef T  type; };
+template <typename T> struct remove_const<const T>      { typedef T type; };
+
+template <typename T> struct remove_volatile             { typedef T  type; };
+template <typename T> struct remove_volatile<volatile T> { typedef T type; };
+
+template <typename T> struct remove_cv;
+template <typename T> struct remove_cv
+{
+    typedef
+        typename remove_volatile <
+            typename remove_const<T>::type
+        >::type
+        type;
+};
+
+#define tbsp__SAME_TYPE(a, b) static_assert(is_same<a, b>::value, "types not equal")
 
 template<typename T>
 class Cholesky
@@ -14,8 +47,7 @@ public:
     const Mat& getLL() const { return L; }
     void clear()
     {
-        L.~Mat();
-        new (&L) Mat();
+        L.clear();
     }
     template<typename TA>
     bool init(const TA& A)
@@ -25,10 +57,8 @@ public:
             return false;
         if(L.w != n)
         {
-            L.~Mat();
-            new (&L) Mat(A.w, A.h, noinit);
-            idiag.~Vec();
-            new (&idiag) Vec(n, noinit);
+            L.resizeNoInit(A.w, A.h);
+            idiag.resizeNoInit(n);
         }
         for(size_t y = 0; y < n; ++y)
         {
@@ -57,17 +87,18 @@ public:
         return true;
     }
     // solves A * x + b
-    template<typename TB, typename TX>
-    void solve(TX *x, const TB *b, size_t n) const
+    template<typename P>
+    void solve(P *x, const P *b, size_t n) const
     {
         tbsp__ASSERT(n == L.w);
-        solve(VecAcc<TX>(x, n), VecAcc<TB>(b, n));
+        solve(VecAcc<P>(x, n), VecAcc<const P>(b, n));
     }
     template<typename BV, typename XV>
     void solve(XV& xv, const BV& bv) const
     {
-        typedef typename BV::value_type TB;
-        typedef typename XV::value_type TX;
+        typedef typename remove_cv<typename BV::value_type>::type TB;
+        typedef typename remove_cv<typename XV::value_type>::type TX;
+        tbsp__SAME_TYPE(TB, TX);
         const size_t n = L.w;
         tbsp__ASSERT(bv.size() == n);
         tbsp__ASSERT(xv.size() == n);
@@ -76,14 +107,14 @@ public:
             const typename Mat::RowAcc row = L.row(y);
             TX s = bv[y];
             for(size_t x = 0; x < y; ++x)
-                s -= row[x] * xv[x];
+                s -= xv[x] * row[x];
             xv[y] = s * idiag[y];
         }
         for(size_t y = n; y--; )
         {
             TX s = xv[y];
             for(size_t x = y+1; x < n; ++x)
-                s -= L(y,x) * xv[x];
+                s -= xv[x] * L(y,x);
             xv[y] = s * idiag[y];
         }
     }
@@ -98,16 +129,13 @@ namespace ConjugateGradient
     template<typename TA, typename TX, typename TB>
     static bool solve(const TA& A, TX& xv, const TB& bv)
     {
-        typedef typename TX::value_type T;
+        typedef typename remove_cv<typename TA::value_type>::type T;
+        typedef typename remove_cv<typename TX::value_type>::type P;
         const size_t dim = A.h;
 
-        T * const mem = (T*)tbsp__malloca(dim * 4 * sizeof(T));
-        _construct_n_default(mem, dim*4);
-        T *p = mem;
-        VecAcc<T> rk(p, dim); p += dim;
-        VecAcc<T> Apk(p, dim); p += dim;
-        VecAcc<T> rkN(p, dim); p += dim;
-        VecAcc<T> pk(p, dim); p += dim;
+        Vector<P> rk(dim);
+        Vector<P> Apk(dim);
+        Vector<P> pk(dim);
 
         // Don't have an initial approximation, so just set this to 0
         for(size_t i = 0; i < dim; ++i)
@@ -122,7 +150,7 @@ namespace ConjugateGradient
         for(size_t k = 0; k < dim; ++k)
         {
             matVecProduct(Apk, A, pk);
-            const T gamma = vecDot<T>(pk, Apk);
+            const T gamma = vecDot<P>(pk, Apk);
             if(!gamma) // converged?
                 break;
             const T alpha = dotrk / gamma;
@@ -137,7 +165,6 @@ namespace ConjugateGradient
             for(size_t i = 0; i < dim; ++i)
                 pk[i] = rk[i] + beta * pk[i];
         }
-        tbsp__freea(mem);
         return true;
     }
 };

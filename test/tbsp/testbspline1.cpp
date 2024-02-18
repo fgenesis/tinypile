@@ -1,7 +1,8 @@
 #include <stdio.h>
 #include <iostream>
 
-#include "tbsp.h"
+#include "tbspx/tbsp.h"
+#include "tbsp.hh"
 
 using namespace tbsp;
 
@@ -57,6 +58,7 @@ void solveChol()
     solv::Cholesky<float> ch;
     if(!ch.init(M))
         abort();
+    matprint(ch.getLL());
     Vector<float> v(3);
     const VecAcc<const float> b(bvec, 3);
     ch.solve(v, b);
@@ -73,29 +75,92 @@ void solveCG()
     vecprint(v);
 }
 
+void testtransposemul()
+{
+    const float fs[] =
+    {
+        1, 2, 3,
+        4, 5, 6
+    };
+
+    MatrixAcc<const float> m(fs, 3, 2);
+    matprint(m);
+    puts("T(m) * m");
+
+    Matrix<float> res(m.w, m.w, noinit);
+    matMultTransposeWithSelf(res, m);
+    matprint(res);
+}
+
+struct Vec4
+{
+    inline Vec4(NoInit) {}
+    Vec4() : x(0), y(0), z(0), w(0) {}
+    Vec4(const Vec4& o) : x(o.x), y(o.y), z(o.z), w(o.w) {}
+    Vec4(float x, float y=0, float z=0, float w=0) : x(x), y(y), z(z), w(w) {}
+
+    float x,y,z,w;
+
+
+    Vec4 operator+(const Vec4& o) const
+    {
+        return Vec4(x+o.x, y+o.y, z+o.z, w+o.w);
+    }
+    Vec4& operator+=(const Vec4& o)
+    {
+        x += o.x;
+        y += o.y;
+        z += o.z;
+        w += o.w;
+        return *this;
+    }
+    Vec4 operator-(const Vec4& o) const
+    {
+        return Vec4(x-o.x, y-o.y, z-o.z, w-o.w);
+    }
+    Vec4& operator-=(const Vec4& o)
+    {
+        x -= o.x;
+        y -= o.y;
+        z -= o.z;
+        w -= o.w;
+        return *this;
+    }
+
+    Vec4 operator*(float m) const
+    {
+        return Vec4(x*m, y*m, z*m, w*m);
+    }
+};
+
+void testinterpolate()
+{
+    const unsigned degree = 2;
+    const unsigned numcp = 3;
+    Vec4 ctrlp[numcp];
+    const Vec4 pt[4] = { Vec4(-1, -1), Vec4(1, -3), Vec4(1, 1), Vec4(-1, 1) };
+    const size_t nk = tbsp__getNumKnots(numcp, degree);
+    float knots[nk];
+    const size_t k = fillKnotVector(knots, numcp, degree, 0.0f, 1.0f);
+
+    bool ok = splineInterpolate(ctrlp, numcp, pt, 4, knots, nk, degree);
+    printf("interpolate ok? %u\n", ok);
+
+}
+
 
 
 int main()
 {
-    solveCG();
-    solveChol();
+    testtransposemul();
+    testinterpolate();
 
     return 0;
 
-    const MatrixAcc<const float> M(mat, 3, 3);
-    matprint(M);
+    puts("------------");
+    solveCG();
+    solveChol();
 
-    solv::Cholesky<float> ch;
-    if(!ch.init(M))
-        return 1;
-
-    matprint(ch.getLL());
-
-    const VecAcc<const float> b(bvec, 3);
-    Vector<float> v(3);
-    ch.solve(v, b);
-
-    vecprint(v);
 
     const MatrixAcc<const float> A(Aa, 2,3);
     const MatrixAcc<const float> B(Ba, 3,2);
@@ -107,10 +172,7 @@ int main()
     matMult(R, A, B);
     matprint(R);
 
-    for(size_t i = 0; i < v.size(); ++i)
-        v[i] = 0;
-    solv::ConjugateGradient::solve(M, v, b);
-    vecprint(v);
+
 
     puts("All ok");
     return 0;
