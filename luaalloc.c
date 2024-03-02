@@ -130,7 +130,7 @@ typedef u32 ubitmap;
 #if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64) || defined(_M_ARM))
 # include <intrin.h>
 # define HAS_BITSCANFORWARD
-#elif defined(__clang__)
+#elif defined(__has_builtin)
 # if __has_builtin(__builtin_ctz)
 #  define HAS_BUILTIN_CTZ
 # endif
