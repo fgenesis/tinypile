@@ -6,6 +6,7 @@
 
 void testsolver();
 
+// Interpolated type. Has all operators as required in tbsp.hh
 struct Vec4
 {
     Vec4() : x(0), y(0), z(0), w(0) {}
@@ -55,8 +56,16 @@ struct Vec4
     }
 };
 
-template<typename M>
-void matprint(const M& a)
+namespace tbsp {
+float distance(const Vec4& a, const Vec4& b)
+{
+    const Vec4 d = a - b;
+    return sqrt(d.x*d.x + d.y*d.y + d.z*d.z + d.w*d.w);
+}
+}
+
+template<typename T>
+void matprint(const tbsp::detail::MatrixAcc<T>& a)
 {
     printf("Matrix[%u, %u]:\n", unsigned(a.size.w), unsigned(a.size.h));
     for(size_t y = 0; y < a.size.h; ++y)
@@ -76,16 +85,21 @@ int main()
     const Vec4 pt[] = { Vec4(-1, -1), Vec4(1, -1), Vec4(1, 1), Vec4(-1, 1) };
 
     // These don't have to be constant, but this example is more concise if they are.
-    // Also, this demonstrates that no memory allocation is required when sizes are known.
+    // Also, this demonstrates that no dynamic memory allocation is required when sizes are known.
     enum
     {
         degree = 3,
         nump = Countof(pt),
         numcp = nump,
         numknots = tbsp__getNumKnots(numcp, degree),
-        interpStorageSize = tbsp__getInterpolatorStorageSize(numcp, nump),
-        interpWorkSize = tbsp_getInterpolatorWorkSize(numcp, nump)
+        interpStorageSize = tbsp__getInterpolatorStorageSize(numcp, nump),   // mem for init
+        interpInitTempSize = tbsp__getInterpolatorInitTempSize(numcp, nump), // tmp for init
+        interpWorkSize = tbsp_getInterpolatorWorkSize(numcp, nump)           // work for generation
     };
+
+    std::cout << "Using float[" << interpStorageSize << "] as interp storage, "
+              << "float[" << interpInitTempSize << "] temporarily during init, "
+              << interpWorkSize << " points work size\n";
 
     // Generate a knot vector like for the regular bspline interpolation.
     // This should be re-used when evaluating the spline we're about to generate.
@@ -96,21 +110,18 @@ int main()
     // but the interpolator can be used many times afterwards as long as the parameters don't change.
     // Make SURE that the underlying memory outlives the interpolator!
     float interpmem[interpStorageSize];
-    for(size_t i = 0; i < interpStorageSize; ++i)
-        interpmem[i] = -9999;
-    float *pm = &interpmem[0];
+
+    // Some extra temp memory is required during init, but can be discarded right afterward
+    float interptmp[interpInitTempSize];
+
     tbsp::Interpolator<float> interp =
-        tbsp::initInterpolator(pm, pm + interpStorageSize, degree, nump, numcp, knots);
+        tbsp::initInterpolator(&interpmem[0], &interptmp[0], degree, nump, numcp, knots);
 
     if(!interp)
     {
         puts("BUG: Interpolator init failed");
         return 1;
     }
-
-    matprint(interp.N);
-    matprint(interp.ludecomp.LU);
-    /*
 
     // This can be called many times with different inputs as long as the sizes stay the same.
     Vec4 ctrlp[numcp];
@@ -119,7 +130,6 @@ int main()
 
     for(size_t i = 0; i < numcp; ++i)
         std::cout << "[" << i << "]: " << ctrlp[i].x << ", " << ctrlp[i].y << "\n";
-        */
 
     puts("All ok");
     return 0;
@@ -167,7 +177,7 @@ void testsolver()
     M.p = mat;
     M.size = {3,3};
     Cholesky<float> ch;
-    if(!ch.init(mem, mem + Countof(mem), M))
+    if(!ch.init(mem, M))
         abort();
     matprint(ch.L);
     float xv[Countof(result)];

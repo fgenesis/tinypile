@@ -94,7 +94,7 @@ tbsp::evalRange(p, NP, tmp, knots, cp, NCP, DEGREE, 0.2f, 0.5f);
 #endif
 
 #ifdef _MSC_VER
-#define TBSP_RESTRICT __restrict
+#  define TBSP_RESTRICT __restrict
 #else
 #  define TBSP_RESTRICT restrict
 #endif
@@ -159,7 +159,7 @@ static void genKnotsUniform(K *knots, size_t nn, K mink, K maxk)
 }
 
 template<typename T, typename P>
-static P deBoor(P *work, const P *src, const T *knots, const size_t r, const size_t k, const T t)
+static P deBoor(P * TBSP_RESTRICT work, const P * TBSP_RESTRICT src, const T * TBSP_RESTRICT knots, const size_t r, const size_t k, const T t)
 {
     P last = src[0]; // init so that it works correctly even with degree == 0
     for(size_t worksize = k; worksize > 1; --worksize)
@@ -215,7 +215,7 @@ static size_t fillKnotVector(T *knots, size_t numcp, size_t degree, T mink, T ma
 
 // evaluate single point at t
 template<typename T, typename P>
-static P evalOne(P *work, const T *knots, const P *controlpoints, size_t numcp, size_t degree, T t)
+static P evalOne(P * TBSP_RESTRICT work, const T * TBSP_RESTRICT knots, const P * TBSP_RESTRICT controlpoints, size_t numcp, size_t degree, T t)
 {
     if(t < knots[0])
         return controlpoints[0]; // left out-of-bounds
@@ -241,7 +241,7 @@ static P evalOne(P *work, const T *knots, const P *controlpoints, size_t numcp, 
 
 // evaluate numdst points in range [tmin..tmax], equally spaced
 template<typename T, typename P>
-static void evalRange(P *dst, size_t numdst, P *work, const T *knots, const P *controlpoints, size_t numcp, size_t degree, T tmin, T tmax)
+static void evalRange(P * TBSP_RESTRICT dst, size_t numdst, P * TBSP_RESTRICT work, const T * TBSP_RESTRICT knots, const P * TBSP_RESTRICT controlpoints, size_t numcp, size_t degree, T tmin, T tmax)
 {
     TBSP_ASSERT(tmin <= tmax);
     if(numcp - 1 < degree)
@@ -454,12 +454,10 @@ struct Cholesky
     // On success, bumps ptr forward by the memory it needs;
     // on failure, returns NULL. Note that this may also fail if A is not well-formed.
     // Memory needed: (sizeof(T) * ((A.size.w + 1) * A.size.h))
-    T *init(T *mem, const T *memend, const Mat& A)
+    T *init(T *mem, const Mat& A)
     {
         T * const pdiag = mem + (A.size.w * A.size.h);
         T * const myend = pdiag + A.size.w;
-        if(memend < myend)
-            return NULL; // not enough memory?
 
         TBSP_ASSERT(A.size.w >= A.size.h);
         const size_t n = A.size.w;
@@ -504,16 +502,16 @@ struct Cholesky
 
     // Solves x for A * x + b. Both b and x must have length n.
     template<typename P>
-    void solve(P * const xv, const P * const bv) const
+    void solve(P * TBSP_RESTRICT const xv, const P * TBSP_RESTRICT const bv) const
     {
         const size_t n = L.size.w;
 
         for(size_t y = 0; y < n; ++y)
         {
-            //const typename Mat::RowAcc row = L.row(y);
+            const typename Mat::RowAcc Lrow = L.row(y);
             P p = bv[y];
             for(size_t x = 0; x < y; ++x)
-                p -= xv[x] * L(x,y);
+                p -= xv[x] * Lrow[x];
             xv[y] = p * idiag[y];
         }
         for(size_t y = n; y--; )
@@ -529,70 +527,83 @@ struct Cholesky
     T *idiag; // 1 / diag; length is L.size.w
 };
 
+// Linear system solver via LU decomposition
+// (Slower than Cholesky, but a bit more general ie. applicable to more cases)
 template<typename T>
 struct LUDecomp
 {
     typedef T value_type;
     typedef MatrixAcc<T> Mat;
 
-    void initAndTakeover(Mat& A)
+    // Initializes a solver in the given memory.
+    // On success, bumps ptr forward by the memory it needs;
+    // on failure, returns NULL. Note that this may also fail if A is not well-formed.
+    // Memory needed: (sizeof(T) * ((A.size.w + 1) * A.size.h))
+    T *init(T *mem, const Mat& A)
     {
+        T * const pdiag = mem + (A.size.w * A.size.h);
+        T * const myend = pdiag + A.size.w;
+
         TBSP_ASSERT(A.size.w == A.size.h);
 
         MatrixAcc<T> LU;
-        LU.p = A.p;
+        LU.p = mem;
+        idiag = pdiag;
         LU.size = A.size;
-        A.p = NULL;
-        A.size.w = A.size.h = 0;
 
         const size_t n = A.size.w;
 
+        // Note: This doesn't do pivoting.
         for (size_t y = 0; y < n; ++y)
         {
             for (size_t x = y; x < n; ++x)
             {
-                T e = LU(x, y);
+                T e = A(x, y);
                 for (size_t k = 0; k < y; ++k)
                     e -= LU(k, y) * LU(x, k);
                 LU(x, y) = e;
             }
+            const T idiagval = T(1) / LU(y,y);
+            idiag[y] = idiagval;
             for (size_t x = y + 1; x < n; ++x)
             {
-                T e = LU(y,x);
+                T e = A(y,x);
                 for (size_t k = 0; k < y; ++k)
                     e -= LU(k, x) * LU(y, k);
-                LU(y, x) = (T(1) / LU(y,y)) * e;
+                LU(y, x) = idiagval * e;
             }
         }
         this->LU = LU;
+
+        return myend;
     }
 
+    // Solves x for A * x + b. Both b and x must have length n.
     template<typename P>
-    void solve(P * const xv, const P * const bv) const
+    void solve(P * TBSP_RESTRICT const xv, const P * TBSP_RESTRICT const bv) const
     {
-        P tmp[16]; // FIXME
         const size_t n = LU.size.w;
 
-        // find solution of Ly = b
-        for (size_t y = 0; y < n; y++)
+        for (size_t y = 0; y < n; ++y)
         {
             P p = bv[y];
-            for (size_t x = 0; x < y; x++)
-                p -= xv[x] * LU(x, y);
-            tmp[y] = p;
+            const typename Mat::RowAcc LUrow = LU.row(y);
+            for (size_t x = 0; x < y; ++x)
+                p -= xv[x] * LUrow[x];
+            xv[y] = p;
         }
-        // find solution of Ux = y
         for (size_t y = n; y--; )
         {
-            P p = tmp[y];
+            P p = xv[y];
+            const typename Mat::RowAcc LUrow = LU.row(y);
             for (size_t x = y + 1; x < n; ++x)
-                p -= tmp[x] * LU(x,y);
-            xv[y] = p * (T(1) / LU(y,y));
+                p -= xv[x] * LUrow[x];
+            xv[y] = p * idiag[y];
         }
     }
 
-    Mat LU; // lower left triangle matrix
-    //T *idiag; // 1 / diag; length is L.size.w // TODO: enable this
+    Mat LU; // combined both lower right & upper left triangles matrix
+    T *idiag; // 1 / diag; length is L.size.w
 };
 
 // The coeff vector for a given position u on the spline describes the influence of each control point
@@ -601,7 +612,7 @@ struct LUDecomp
 //  where Nrow[] are the coefficients for u.
 // And to keep the parametrization simple, u is computed from t=0..1
 template<typename T>
-void computeCoeffVector(T *Nrow, size_t numcp, T t01, const T *knots, size_t degree)
+void computeCoeffVector(T * TBSP_RESTRICT Nrow, size_t numcp, T t01, const T * TBSP_RESTRICT knots, size_t degree)
 {
     for(size_t i = 0; i < numcp; ++i)
         Nrow[i] = T(0);
@@ -653,14 +664,12 @@ void computeCoeffVector(T *Nrow, size_t numcp, T t01, const T *knots, size_t deg
 
 
 template<typename T>
-T* computeCoeffMatrix(MatrixAcc<T>& N, T *mem, T *memend, const T *knots, size_t nump, size_t numcp, size_t degree)
+T* computeCoeffMatrix(MatrixAcc<T>& N, T *mem, const T *knots, size_t nump, size_t numcp, size_t degree)
 {
     N.size.w = numcp;
     N.size.h = nump;
     N.p = mem;
-    T *pend = N.p + (nump * numcp);
-    if(!(pend < memend))
-        return NULL;
+    T * const pend = N.p + (nump * numcp);
 
     const T invsz = T(1) / T(nump - 1);
 
@@ -678,16 +687,13 @@ T* computeCoeffMatrix(MatrixAcc<T>& N, T *mem, T *memend, const T *knots, size_t
 
 // Generate least-squares approximator for spline approximation
 template<typename T>
-T* generateLeastSquares(MatrixAcc<T>& M, T *mem, T *memend, const MatrixAcc<T>& N)
+T* generateLeastSquares(MatrixAcc<T>& M, T *mem, const MatrixAcc<T>& N)
 {
     M.p = mem;
     M.size.w = N.size.w - 2;
     M.size.h = N.size.w - 2; // (h = w) is intended, M is a square matrix!
 
-
     T * const pend = M.p + (M.size.w * M.size.h);
-    if(!(pend <= memend))
-        return NULL;
 
     matMultCenterCutTransposeWithSelf(M, N);
 
@@ -704,14 +710,17 @@ struct Interpolator
     inline Interpolator() : numcp(0), nump(0) {}
 
     size_t numcp, nump;
-    detail::MatrixAcc<T> N, M;
-    detail::Cholesky<T> cholesky;
-    detail::LUDecomp<T> ludecomp;
+    union
+    {
+        detail::Cholesky<T> cholesky;
+        detail::LUDecomp<T> ludecomp;
+    } solver;
+    detail::MatrixAcc<T> N;
 
     // To make it checkable in if()
-#if TBSP_HAS_CPP11 // Explicit conversion operator is not supported in C++98
+#if TBSP_HAS_CPP11
     explicit inline operator bool() const { return !!numcp; }
-#else
+#else // Explicit conversion operator is not supported in C++98
     inline operator const void*() const { return numcp ? this : NULL; }
 #endif
 };
@@ -719,18 +728,22 @@ struct Interpolator
 // Calculate how many elements of type T are needed as storage for the interpolator
 // This should ideally be constexpr, but we want C++98 compatibility.
 #define tbsp__getInterpolatorStorageSize(numControlPoints, numPoints)         \
-    ( ((numControlPoints) * (numPoints)) /* N */                              \
-    + (((numControlPoints) == (numControlPoints))                             \
+    ( ((numControlPoints) == (numControlPoints))                              \
         ? (((numControlPoints)+1) * (numPoints)) /* solver(N) */              \
         : (                                                                   \
-            (((numControlPoints)-2) * ((numControlPoints)-2)) /* M */         \
+            ((numControlPoints) * (numPoints)) /* N */                        \
           + (((numControlPoints)-1) * ((numControlPoints)-2)) /* solver(M) */ \
           )                                                                   \
-      )                                                                       \
+    )
+
+#define tbsp__getInterpolatorInitTempSize(numControlPoints, numPoints)        \
+    ( (numControlPoints) == (numControlPoints)                                \
+        ? ((numControlPoints) * (numPoints)) /* N */                          \
+        : (((numControlPoints)-2) * ((numControlPoints)-2)) /* M */           \
     )
 
 template<typename T>
-Interpolator<T> initInterpolator(T * const mem, T * const memend, size_t degree, size_t nump, size_t numcp, const T *knots)
+Interpolator<T> initInterpolator(T * const mem, T * const tmp, size_t degree, size_t nump, size_t numcp, const T *knots)
 {
     Interpolator<T> interp;
 
@@ -744,40 +757,52 @@ Interpolator<T> initInterpolator(T * const mem, T * const memend, size_t degree,
         return interp;
 
     // Need storage memory
-    TBSP_ASSERT(mem && mem < memend);
+    TBSP_ASSERT(mem && tmp);
 
-    T *p = mem;
-    p = detail::computeCoeffMatrix(interp.N, p, memend, knots, nump, numcp, degree);
+    T *p = numcp == nump ? tmp : mem;
+    p = detail::computeCoeffMatrix(interp.N, p, knots, nump, numcp, degree);
     if(!p)
         return interp;
+    TBSP_ASSERT(p <= tmp + tbsp__getInterpolatorInitTempSize(numcp, nump));
 
     if(nump == numcp)
     {
-        // only N is used, M stays unused
-        interp.M.p = NULL;
-        interp.M.size.w = interp.M.size.h = 0;
+        // N allocated in tmp, solver(N) in mem
 
         // N is point-symmetric, ie. NOT diagonally symmetric.
         // This means we can't use Cholesky decomposition, but LU decomposition is fine.
         // Note: Cholesky decomposition will appear to work, but the solutions calculated with it are wrong.
-        // We don't need N anymore after this, and LU deomposition operates in-place -> give up N here.
-        interp.ludecomp.initAndTakeover(interp.N);
+        p = interp.solver.ludecomp.init(mem, interp.N);
+
+        // N is no longer needed
+        // solver(N) stays
+        interp.N.p = NULL;
+        interp.N.size.w = interp.N.size.h = 0;
     }
     else
     {
+        // N allocated in mem, solver(M) in mem, M in tmp
+
         // This calculates M = T(N') x N', where N' is N with its borders removed.
         // A nice property is that M is diagonally symmetric,
         // means it can be efficiently solved via cholesky decomposition.
-        p = detail::generateLeastSquares(interp.M, p, memend, interp.N);
+        detail::MatrixAcc<T> M;
+        p = detail::generateLeastSquares(M, tmp, interp.N);
         if(!p)
             return interp;
+        TBSP_ASSERT(p <= tmp + tbsp__getInterpolatorInitTempSize(numcp, nump));
 
-        p = interp.cholesky.init(p, memend, interp.M);
-        // TODO: we don't need M anymore either. in-place cholesky? or just use LU?
+        p = interp.solver.cholesky.init(mem, M);
+
+        // M is no longer needed
+        // solver(M) stays
+        // N stays
     }
 
     if(p)
     {
+        TBSP_ASSERT(p <= mem + tbsp__getInterpolatorStorageSize(numcp, nump));
+
         interp.numcp = numcp;
         interp.nump = nump;
     }
@@ -789,16 +814,17 @@ Interpolator<T> initInterpolator(T * const mem, T * const memend, size_t degree,
     ( ((numControlPoints) == (numPoints)) ? 0 : ((numControlPoints) - 2) )
 
 // Pass workmem[] with at least tbsp_getInterpolatorWorkSize() elements;
-// workmem can be NULL if only interpolation is used. Approximation needs this.
+// workmem can be NULL if only interpolation is used (#controlpoints == #points).
+// Approximation (#controlpoints < #points) needs extra working memory though.
 // Returns how many control points were generated, for convenience.
 template<typename P, typename T>
-size_t generateControlPoints(P *cp, P *workmem, const Interpolator<T>& interp, const P *points)
+size_t generateControlPoints(P * TBSP_RESTRICT cp, P * TBSP_RESTRICT workmem, const Interpolator<T>& interp, const P *points)
 {
     const size_t numcp = interp.numcp;
     if(numcp == interp.nump)
     {
         // This does not need extra working memory
-        interp.ludecomp.solve(cp, points);
+        interp.solver.ludecomp.solve(cp, points);
     }
     else
     {
@@ -822,18 +848,49 @@ size_t generateControlPoints(P *cp, P *workmem, const Interpolator<T>& interp, c
             P tmp = initial * N(i,1);
             for(size_t k = 2; k < n; ++k)
             {
-                //typename Matrix<T>::RowAcc row = N.row(k); // TODO
-                tmp += (points[k] - (p0 * N(0,k)) - (pn * N(h,k))) * N(i,k);
+                const typename detail::MatrixAcc<T>::RowAcc Nrow = N.row(k);
+                tmp += (points[k] - (p0 * Nrow[0]) - (pn * Nrow[h])) * Nrow[i];
             }
-            // FIXME: this is an uninitialized move/copy. Make this proper.
             workmem[i-1] = tmp;
         }
 
         // Solve for all points that are not endpoints
-        TBSP_ASSERT(interp.cholesky.L.size.w == h - 1);
-        interp.cholesky.solve(cp + 1, workmem);
+        TBSP_ASSERT(interp.solver.cholesky.L.size.w == h - 1);
+        interp.solver.cholesky.solve(cp + 1, workmem);
     }
     return numcp;
+}
+
+
+// Helper functions for parametrization
+
+template<typename T, typename P>
+void chordal(T *parm, const P *points, size_t n)
+{
+    // Start and end points are always 0 and 1, respectively
+    parm[0] = T(0);
+    parm[--n] = T(1);
+
+    T totaldist = 0;
+    for(size_t i = 1; i < n; ++i)
+    {
+        const T dist = distance(points[i-1], points[i]);
+        totaldist += dist;
+        parm[i] = totaldist
+    }
+
+    // Normalize to 0..1
+    const T m = T(1) / totaldist;
+    for(size_t i = 1; i < n; ++i)
+        parm[i] *= m;
+}
+
+template<typename T, typename P>
+void uniform(T *parm, const P *points, size_t n)
+{
+    const T m = T(1) / T(n - 1);
+    for(size_t i = 0; i < n; ++i)
+        parm[i] = T(i) * m;
 }
 
 } // end namespace tbsp
