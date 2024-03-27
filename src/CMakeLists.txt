@@ -1,4 +1,5 @@
 add_subdirectory(tio)
+add_subdirectory(tio_decomp)
 add_subdirectory(tio_addons)
 add_subdirectory(tio_vfs)
 add_subdirectory(tio_archive)

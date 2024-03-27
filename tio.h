@@ -334,7 +334,8 @@ enum tio_error_
     tio_Error_TooBig = -13,       /* Whatever you're trying to do is too large to handle. Try a smaller size */
     tio_Error_Forbidden = -14,    /* Thing exists but you may not have it */
     tio_Error_RTFM = -15,         /* You mis-used the API. Go read the docs and fix your code! */
-    tio_Error_IOError = -16       /* An IO operation failed. */
+    tio_Error_IOError = -16,       /* An IO operation failed. */
+    tio_Error_TooSmall = -17     /* You're trying to fit something into a too small thing. Try a larger size. */
 };
 typedef int tio_error; /* Typedef'd to make places for error handling easier to spot */
 
@@ -783,27 +784,6 @@ TIO_EXPORT tio_error tio_mmiostream(tio_Stream *sm, tio_MMIO *mmio, tiosize offs
    must stay alive while the stream is in use. */
 TIO_EXPORT void tio_streamFromHandle(tio_Stream *sm, tio_Handle h, int exclusive,
     tio_Features features, tio_StreamFlags flags, void *buf, size_t bufsize);
-
-
-/* ---------------------------- */
-/* ---- Stream composition ---- */
-/* ---------------------------- */
-
-/* Initialize one stream to pull its source data from another.
-   The target stream stores a *pointer* to the source, so make sure that the source stream is not moved in memory
-   after the target was initialized.
-*/
-
-/* Decompress LZ4-framed data. The size of the compressed data is part of the framing, so you don't need to know the size.
-   After 'sm' reports EOF, you can continue using the source stream if more data follow.
-   Larger LZ4 compressed files usually consist of multiple concatenated, independent frames;
-   pass maxframes=0 to autodetect the last frame or any other number to stop after reading this many frames. */
-TIO_EXPORT tio_error tio_sdecomp_LZ4_frame(tio_Stream *sm, tio_Stream *packed, size_t maxframes, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD);
-
-
-/* Decompress a raw LZ4 block.
-   There is no end marker, so you must know the total length of compressed data. */
-TIO_EXPORT tio_error tio_sdecomp_LZ4_block(tio_Stream *sm, tio_Stream *packed, size_t packedbytes, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD);
 
 
 

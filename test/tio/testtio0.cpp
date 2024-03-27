@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <sstream>
 #include "tio.h"
+#include "tio_decomp.h"
 
 static void *myalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 {

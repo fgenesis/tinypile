@@ -31,6 +31,7 @@ include_directories(src/tio_zip)
 include_directories(src/tio_archive)
 include_directories(src/tbsp)
 include_directories(src/sc)
+include_directories(src/extras)
 
 # Tests can also use relaxed warnings
 add_subdirectory(test)
@@ -104,6 +105,7 @@ add_library(tinypile
     jps.hh
     tbsp.hh
     tinymain.h
+    extras/easybsp.hh
 )
 hide_symbols(tinypile)
 

@@ -1,9 +1,5 @@
 #include "tio_priv.h"
 
-enum UpkrState
-{
-    upks_
-};
 
 namespace upkr {
 
@@ -266,8 +262,8 @@ static tio_error resume_decomp(tio_Stream* sm, int v)
                         copylen,                   // how many bytes we want to copy
                         upk->windowSize - wpos,    // how many bytes we can write to the window until hitting the end
                         upk->windowSize - back_ofs // how many bytes we can read from the window until hitting the end
-                    ); 
-                
+                    );
+
                     char* d = window(upk);
                     if (copylen <= offset) // Normal match (can use memcpy since the memory regions are non-overlapping)
                         tio__memcpy(d + wpos, d + back_ofs, cancopy);
@@ -349,21 +345,29 @@ static void freeCtx(tioUpkrStreamPriv *upk)
     upk->alloc(upk->allocUD, upk, upk->windowSize + sizeof(*upk), 0);
 }
 
+static void initCtx(tioUpkrStreamPriv *upk, size_t windowsize)
+{
+    upk->bits = 0;
+    for (size_t i = 0; i < sizeof(upk->probs); ++i)
+        upk->probs[i] = 128;
+    upk->windowSize = windowsize;
+    upk->offset = 0;
+    upk->prev_was_match = 0;
+}
+
 
 TIO_PRIVATE tioUpkrStreamPriv *allocCtx(tio_Alloc alloc, void *allocUD, size_t windowsize)
 {
     size_t allocsize = windowsize + sizeof(tioUpkrStreamPriv);
     tioUpkrStreamPriv *upk = (tioUpkrStreamPriv*)alloc(allocUD, NULL, 0, allocsize);
     if(upk)
-    {
-        upk->bits = 0;
-        for (size_t i = 0; i < sizeof(upk->probs); ++i)
-            upk->probs[i] = 128;
-        upk->windowSize = windowsize;
-        upk->offset = 0;
-        upk->prev_was_match = 0;
-    }
+        initCtx(upk, windowsize);
     return upk;
 }
 
 } // end namespace upkr
+
+TIO_EXPORT tio_error tio_sdecomp_upkr(tio_Stream *sm, tio_Stream *packed, size_t windowSize, tio_StreamFlags flags, tio_Alloc alloc, void* allocUD)
+{
+    upkr::tioUpkrStreamPriv *priv = upkr::allocCtx(alloc, allocUD, windowSize,
+}
