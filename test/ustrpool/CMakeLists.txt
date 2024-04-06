@@ -1,0 +1,2 @@
+add_executable(testustrpool0 testustrpool0.cpp)
+target_link_libraries(testustrpool0 tinypile)
