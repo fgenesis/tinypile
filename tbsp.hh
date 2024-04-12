@@ -159,14 +159,14 @@ static void genKnotsUniform(K *knots, size_t nn, K mink, K maxk)
 }
 
 template<typename T, typename P>
-static P deBoor(P * TBSP_RESTRICT work, const P * TBSP_RESTRICT src, const T * TBSP_RESTRICT knots, const size_t r, const size_t k, const T t)
+static P deBoor(P * TBSP_RESTRICT work, const P * TBSP_RESTRICT src, const T * TBSP_RESTRICT knots, const size_t r, const size_t k, const T t, size_t inputStride)
 {
     P last = src[0]; // init so that it works correctly even with degree == 0
     for(size_t worksize = k; worksize > 1; --worksize)
     {
         const size_t j = k - worksize + 1; // iteration number, starting with 1, going up to k
         const size_t tmp = r - k + 1 + j;
-        for(size_t w = 0; w < worksize - 1; ++w)
+        for(size_t w = 0, wr = 0; w < worksize - 1; ++w, wr += inputStride)
         {
             const size_t i = w + tmp;
             const T ki = knots[i];
@@ -175,9 +175,10 @@ static P deBoor(P * TBSP_RESTRICT work, const P * TBSP_RESTRICT src, const T * T
             TBSP_ASSERT(div > 0);
             const T a = (t - ki) / div;
             const T a1 = T(1) - a;
-            work[w] = last = (src[w] * a1) + (src[w+1] * a); // lerp
+            work[w] = last = (src[wr] * a1) + (src[wr + inputStride] * a); // lerp
         }
         src = work; // done writing the initial data to work, now use that as input for further iterations
+        inputStride = 1;
     }
     return last;
 }
@@ -215,7 +216,7 @@ static size_t fillKnotVector(T *knots, size_t numcp, size_t degree, T mink, T ma
 
 // evaluate single point at t
 template<typename T, typename P>
-static P evalOne(P * TBSP_RESTRICT work, const T * TBSP_RESTRICT knots, const P * TBSP_RESTRICT controlpoints, size_t numcp, size_t degree, T t)
+static P evalOne(P * TBSP_RESTRICT work, const T * TBSP_RESTRICT knots, const P * TBSP_RESTRICT controlpoints, size_t numcp, size_t degree, T t, size_t inputStride = 1)
 {
     if(t < knots[0])
         return controlpoints[0]; // left out-of-bounds
@@ -233,7 +234,7 @@ static P evalOne(P * TBSP_RESTRICT work, const T * TBSP_RESTRICT knots, const P 
         TBSP_ASSERT(r + k < numknots); // check that the copy below stays in bounds
 
         const P* const src = &controlpoints[r - degree];
-        return detail::deBoor(work, src, knots, r, k, t);
+        return detail::deBoor(work, src, knots, r, k, t, inputStride);
     }
 
     return controlpoints[numcp - 1]; // right out-of-bounds
@@ -241,7 +242,7 @@ static P evalOne(P * TBSP_RESTRICT work, const T * TBSP_RESTRICT knots, const P 
 
 // evaluate numdst points in range [tmin..tmax], equally spaced
 template<typename T, typename P>
-static void evalRange(P * TBSP_RESTRICT dst, size_t numdst, P * TBSP_RESTRICT work, const T * TBSP_RESTRICT knots, const P * TBSP_RESTRICT controlpoints, size_t numcp, size_t degree, T tmin, T tmax)
+static void evalRange(P * TBSP_RESTRICT dst, size_t numdst, P * TBSP_RESTRICT work, const T * TBSP_RESTRICT knots, const P * TBSP_RESTRICT controlpoints, size_t numcp, size_t degree, T tmin, T tmax, size_t inputStride = 1, size_t outputStride = 1)
 {
     TBSP_ASSERT(tmin <= tmax);
     if(numcp - 1 < degree)
@@ -262,7 +263,10 @@ static void evalRange(P * TBSP_RESTRICT dst, size_t numdst, P * TBSP_RESTRICT wo
 
     // left out-of-bounds
     for( ; i < numdst && t < knots[0]; ++i, t += step)
-        dst[i] = controlpoints[0];
+    {
+        *dst = controlpoints[0];
+        dst += outputStride;
+    }
 
     // actually interpolated points
     const T maxknot = knots[numknots - 1];
@@ -271,13 +275,17 @@ static void evalRange(P * TBSP_RESTRICT dst, size_t numdst, P * TBSP_RESTRICT wo
         while(r < maxidx && knots[r+1] < t) // find new index; don't need to do binary search again
             ++r;
 
-        const P * const src = &controlpoints[r - degree];
-        dst[i] = detail::deBoor(work, src, knots, r, k, t);
+        const P * const src = &controlpoints[(r - degree) * inputStride];
+        *dst = detail::deBoor(work, src, knots, r, k, t, inputStride);
+        dst += outputStride;
     }
 
     // right out-of-bounds
     for( ; i < numdst; ++i)
-        dst[i] = controlpoints[numcp - 1];
+    {
+        *dst = controlpoints[numcp - 1];
+        dst += outputStride;
+    }
 }
 
 // -----------------------------------------------------------------------------------
