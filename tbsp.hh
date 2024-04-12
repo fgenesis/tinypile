@@ -526,7 +526,7 @@ struct Cholesky
         {
             P p = xv[y];
             for(size_t x = y+1; x < n; ++x)
-                p -= xv[x] * L(y,x); // TODO: L.row()
+                p -= xv[x] * L(y,x);
             xv[y] = p * idiag[y];
         }
     }
@@ -751,7 +751,7 @@ struct Interpolator
     )
 
 template<typename T>
-Interpolator<T> initInterpolator(T * const mem, T * const tmp, size_t degree, size_t nump, size_t numcp, const T *knots)
+Interpolator<T> initInterpolator(T * TBSP_RESTRICT const mem, T * TBSP_RESTRICT const tmp, size_t degree, size_t nump, size_t numcp, const T * TBSP_RESTRICT knots)
 {
     Interpolator<T> interp;
 
@@ -779,7 +779,8 @@ Interpolator<T> initInterpolator(T * const mem, T * const tmp, size_t degree, si
 
         // N is point-symmetric, ie. NOT diagonally symmetric.
         // This means we can't use Cholesky decomposition, but LU decomposition is fine.
-        // Note: Cholesky decomposition will appear to work, but the solutions calculated with it are wrong.
+        // Note: Cholesky decomposition will at first appear to work,
+        // but the solutions calculated with it are wrong. Don't use this here.
         p = interp.solver.ludecomp.init(mem, interp.N);
 
         // N is no longer needed
@@ -826,7 +827,7 @@ Interpolator<T> initInterpolator(T * const mem, T * const tmp, size_t degree, si
 // Approximation (#controlpoints < #points) needs extra working memory though.
 // Returns how many control points were generated, for convenience.
 template<typename P, typename T>
-size_t generateControlPoints(P * TBSP_RESTRICT cp, P * TBSP_RESTRICT workmem, const Interpolator<T>& interp, const P *points)
+size_t generateControlPoints(P * TBSP_RESTRICT cp, P * TBSP_RESTRICT workmem, const Interpolator<T>& interp, const P * TBSP_RESTRICT points)
 {
     const size_t numcp = interp.numcp;
     if(numcp == interp.nump)
