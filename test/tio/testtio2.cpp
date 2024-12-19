@@ -51,7 +51,7 @@ static void unpack(tio_Stream *ppacked)
 {
     tio_Stream sm;
 
-    if (tio_sdecomp_LZ4_frame(&sm, ppacked, 0, tioS_Default, myalloc, NULL))
+    //if (tio_sdecomp_LZ4_frame(&sm, ppacked, 0, tioS_Default, myalloc, NULL))
     //if (tio_sdecomp_zlib(&sm, ppacked, tioS_CloseBoth, myalloc, NULL))
     //if (tio_sdecomp_zstd(&sm, ppacked, tioS_CloseBoth, myalloc, NULL))
         exit(2);

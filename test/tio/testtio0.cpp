@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <sstream>
 #include "tio.h"
-#include "tio_decomp.h"
 
 static void *myalloc(void *ud, void *ptr, size_t osize, size_t nsize)
 {
@@ -70,6 +69,7 @@ int main()
         tio_kclose(h);
     }*/
 
+    /*
     tio_Stream sm;
     if(tio_sopen(&sm, "T:/tobi_pc.img.lz4", tioF_Background | tioF_Sequential, tioS_Default, 0, myalloc, NULL))
         return 1;
@@ -83,6 +83,7 @@ int main()
 
     CHECK(dc.err);
     printf("decompressed size: %zu\n", n);
+    */
 
 
     // Good news!
